@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS public.normalized_observations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     snapshot_id UUID REFERENCES public.raw_provider_snapshots(id) ON DELETE RESTRICT,
     
-    -- Instrument Identification (Canonical UUID reference)
+    -- Instrument Identification (Canonical UUID reference to instruments.id)
     instrument_id UUID NOT NULL,
     asset_class VARCHAR(32) NOT NULL CHECK (
         asset_class IN ('equity', 'fund', 'commodity', 'fx', 'fixed_income', 'etf')
@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS public.normalized_observations (
     source_tier VARCHAR(20) NOT NULL CHECK (
         source_tier IN ('tier_1', 'tier_2', 'tier_3', 'tier_4', 'tier_5')
     ),
-    currency VARCHAR(10) NOT NULL DEFAULT 'TRY',
+    currency VARCHAR(10) NOT NULL, -- Explicit currency (No silent default)
     
     -- Timestamp Semantics (Point-In-Time)
     effective_date DATE NOT NULL,
@@ -166,10 +166,11 @@ CREATE TRIGGER trg_supersede_norm_observation
 
 
 -- ============================================================================
--- 4. DB-Level Immutability & Anti-Tamper Protection
+-- 4. DB-Level Full-Row Immutability & Anti-Tamper Protection
 -- ============================================================================
 -- Prohibits application DELETE or destructive UPDATE on raw snapshots and observations.
--- Only the supersession flag transition (is_superseded, superseded_at) is permitted.
+-- Uses strict allow-list: ONLY is_superseded and superseded_at can change during supersession.
+-- All other columns (including metadata, timestamps, supersedes_record_id) are strictly immutable.
 
 CREATE OR REPLACE FUNCTION public.prevent_raw_snapshot_tamper()
 RETURNS TRIGGER AS $$
@@ -177,14 +178,24 @@ BEGIN
     IF TG_OP = 'DELETE' THEN
         RAISE EXCEPTION 'raw_provider_snapshots is append-only. Deleting records is prohibited.';
     ELSIF TG_OP = 'UPDATE' THEN
-        -- Allow ONLY supersession flag updates
-        IF OLD.raw_payload IS DISTINCT FROM NEW.raw_payload OR
-           OLD.payload_hash IS DISTINCT FROM NEW.payload_hash OR
-           OLD.provider IS DISTINCT FROM NEW.provider OR
-           OLD.endpoint IS DISTINCT FROM NEW.endpoint OR
-           OLD.retrieved_at IS DISTINCT FROM NEW.retrieved_at OR
-           OLD.schema_version IS DISTINCT FROM NEW.schema_version THEN
-            RAISE EXCEPTION 'raw_provider_snapshots payload and metadata are immutable. Revisions must be inserted as new records with supersedes_record_id.';
+        -- Allow ONLY is_superseded and superseded_at state transitions
+        IF (OLD.id IS DISTINCT FROM NEW.id) OR
+           (OLD.provider IS DISTINCT FROM NEW.provider) OR
+           (OLD.endpoint IS DISTINCT FROM NEW.endpoint) OR
+           (OLD.request_params IS DISTINCT FROM NEW.request_params) OR
+           (OLD.retrieved_at IS DISTINCT FROM NEW.retrieved_at) OR
+           (OLD.http_status IS DISTINCT FROM NEW.http_status) OR
+           (OLD.response_metadata IS DISTINCT FROM NEW.response_metadata) OR
+           (OLD.content_type IS DISTINCT FROM NEW.content_type) OR
+           (OLD.raw_payload IS DISTINCT FROM NEW.raw_payload) OR
+           (OLD.storage_ref IS DISTINCT FROM NEW.storage_ref) OR
+           (OLD.payload_hash IS DISTINCT FROM NEW.payload_hash) OR
+           (OLD.schema_version IS DISTINCT FROM NEW.schema_version) OR
+           (OLD.parser_version IS DISTINCT FROM NEW.parser_version) OR
+           (OLD.license_profile IS DISTINCT FROM NEW.license_profile) OR
+           (OLD.supersedes_record_id IS DISTINCT FROM NEW.supersedes_record_id) OR
+           (OLD.created_at IS DISTINCT FROM NEW.created_at) THEN
+            RAISE EXCEPTION 'raw_provider_snapshots is immutable. Only is_superseded and superseded_at may be updated by system supersession.';
         END IF;
     END IF;
     RETURN NEW;
@@ -204,15 +215,29 @@ BEGIN
     IF TG_OP = 'DELETE' THEN
         RAISE EXCEPTION 'normalized_observations is append-only. Deleting records is prohibited.';
     ELSIF TG_OP = 'UPDATE' THEN
-        -- Allow ONLY supersession flag updates
-        IF OLD.observation_data IS DISTINCT FROM NEW.observation_data OR
-           OLD.instrument_id IS DISTINCT FROM NEW.instrument_id OR
-           OLD.observation_type IS DISTINCT FROM NEW.observation_type OR
-           OLD.effective_date IS DISTINCT FROM NEW.effective_date OR
-           OLD.published_at IS DISTINCT FROM NEW.published_at OR
-           OLD.observed_at IS DISTINCT FROM NEW.observed_at OR
-           OLD.ingested_at IS DISTINCT FROM NEW.ingested_at THEN
-            RAISE EXCEPTION 'normalized_observations content and timestamps are immutable. Revisions must be inserted as new records with supersedes_record_id.';
+        -- Allow ONLY is_superseded and superseded_at state transitions
+        IF (OLD.id IS DISTINCT FROM NEW.id) OR
+           (OLD.snapshot_id IS DISTINCT FROM NEW.snapshot_id) OR
+           (OLD.instrument_id IS DISTINCT FROM NEW.instrument_id) OR
+           (OLD.asset_class IS DISTINCT FROM NEW.asset_class) OR
+           (OLD.instrument_type IS DISTINCT FROM NEW.instrument_type) OR
+           (OLD.observation_type IS DISTINCT FROM NEW.observation_type) OR
+           (OLD.observation_data IS DISTINCT FROM NEW.observation_data) OR
+           (OLD.data_status IS DISTINCT FROM NEW.data_status) OR
+           (OLD.confidence_level IS DISTINCT FROM NEW.confidence_level) OR
+           (OLD.source_tier IS DISTINCT FROM NEW.source_tier) OR
+           (OLD.currency IS DISTINCT FROM NEW.currency) OR
+           (OLD.effective_date IS DISTINCT FROM NEW.effective_date) OR
+           (OLD.published_at IS DISTINCT FROM NEW.published_at) OR
+           (OLD.observed_at IS DISTINCT FROM NEW.observed_at) OR
+           (OLD.ingested_at IS DISTINCT FROM NEW.ingested_at) OR
+           (OLD.revised_at IS DISTINCT FROM NEW.revised_at) OR
+           (OLD.supersedes_record_id IS DISTINCT FROM NEW.supersedes_record_id) OR
+           (OLD.missing_inputs IS DISTINCT FROM NEW.missing_inputs) OR
+           (OLD.warnings IS DISTINCT FROM NEW.warnings) OR
+           (OLD.source_refs IS DISTINCT FROM NEW.source_refs) OR
+           (OLD.created_at IS DISTINCT FROM NEW.created_at) THEN
+            RAISE EXCEPTION 'normalized_observations is immutable. Only is_superseded and superseded_at may be updated by system supersession.';
         END IF;
     END IF;
     RETURN NEW;

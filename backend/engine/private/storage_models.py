@@ -150,8 +150,9 @@ class NormalizedObservationRecord:
     source_tier: SourceTier
     effective_date: date
     observed_at: datetime
-    currency: Currency = Currency.TRY
+    currency: Currency
     published_at: Optional[datetime] = None
+
     ingested_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     revised_at: Optional[datetime] = None
     supersedes_record_id: Optional[UUID] = None

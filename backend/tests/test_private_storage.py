@@ -7,10 +7,9 @@ and Supabase migration schema definitions.
 Verifies:
     - Raw snapshot creation and deterministic SHA-256 hash calculation
     - Normalized observation timestamp semantics (effective_date, observed_at, published_at, etc.)
-    - Immutability & supersession record linkage
     - Dual Point-In-Time query modes: SOURCE_AS_OF vs SYSTEM_AS_OF
     - Future revisions/supersessions are completely invisible to past as_of queries
-    - Anti-tamper trigger definitions in SQL migration 004
+    - Anti-tamper trigger definitions and full-row immutability contracts in SQL migration 004
     - Enum mapping consistency between domain.py and migration 004 SQL
 """
 
@@ -213,6 +212,7 @@ class TestDualPitQuerySemantics:
             data_status=DataStatus.COMPLETE,
             confidence_level=DataConfidenceLevel.HIGH,
             source_tier=SourceTier.TIER_1_REGULATORY,
+            currency=Currency.USD,
             effective_date=date(2026, 3, 31),
             published_at=datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc),
             observed_at=datetime(2026, 5, 1, 12, 5, tzinfo=timezone.utc),
@@ -232,6 +232,7 @@ class TestDualPitQuerySemantics:
             data_status=DataStatus.COMPLETE,
             confidence_level=DataConfidenceLevel.HIGH,
             source_tier=SourceTier.TIER_1_REGULATORY,
+            currency=Currency.USD,
             effective_date=date(2026, 3, 31),
             published_at=datetime(2026, 6, 15, 14, 0, tzinfo=timezone.utc),
             observed_at=datetime(2026, 6, 15, 14, 5, tzinfo=timezone.utc),
@@ -288,6 +289,7 @@ class TestDualPitQuerySemantics:
             data_status=DataStatus.COMPLETE,
             confidence_level=DataConfidenceLevel.HIGH,
             source_tier=SourceTier.TIER_2_EXCHANGE,
+            currency=Currency.USD,
             effective_date=date(2026, 5, 1),
             published_at=datetime(2026, 5, 1, 9, 0, tzinfo=timezone.utc),
             observed_at=datetime(2026, 5, 1, 13, 55, tzinfo=timezone.utc),
@@ -318,7 +320,7 @@ class TestMigrationSchemaValidity:
         assert "CREATE TABLE IF NOT EXISTS public.raw_provider_snapshots" in sql
         assert "CREATE TABLE IF NOT EXISTS public.normalized_observations" in sql
 
-        # Anti-tamper triggers
+        # Full-row Anti-tamper triggers
         assert "prevent_raw_snapshot_tamper" in sql
         assert "prevent_observation_tamper" in sql
         assert "trg_protect_raw_snapshot_immutability" in sql

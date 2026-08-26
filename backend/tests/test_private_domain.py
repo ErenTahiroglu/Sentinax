@@ -16,8 +16,10 @@ No external network calls. No mocking required — pure unit tests.
 
 import pytest
 from datetime import date, datetime, timezone
+from uuid import uuid4
 
 from backend.engine.private.domain import (
+
     AssetClass,
     InstrumentType,
     PortfolioMode,
@@ -214,6 +216,7 @@ class TestAnalysisResultAggregation:
 class TestProviderResponse:
     def test_provider_response_instantiation(self):
         now = datetime.now(timezone.utc)
+        inst_uuid = uuid4()
         resp = ProviderResponse(
             provider_name="test_provider",
             source_quality=SourceTier.TIER_3_AGGREGATOR,
@@ -222,10 +225,13 @@ class TestProviderResponse:
             effective_date=date.today(),
             status=DataStatus.COMPLETE,
             raw={"close": 150.0},
-            instrument_id="THYAO.IS",
+            canonical_instrument_id=inst_uuid,
+            provider_symbol="THYAO.IS",
         )
         assert resp.is_usable is True
         assert resp.provider_name == "test_provider"
+        assert resp.canonical_instrument_id == inst_uuid
+        assert resp.provider_symbol == "THYAO.IS"
 
     def test_unavailable_response_not_usable(self):
         now = datetime.now(timezone.utc)
@@ -237,7 +243,8 @@ class TestProviderResponse:
             effective_date=None,
             status=DataStatus.UNAVAILABLE,
             raw=None,
-            instrument_id="UNKNOWN",
+            canonical_instrument_id=None,
+            provider_symbol="UNKNOWN",
             warnings=["Instrument not found in provider database."],
         )
         assert resp.is_usable is False
@@ -252,7 +259,7 @@ class TestProviderResponse:
             effective_date=date(2024, 3, 31),
             status=DataStatus.COMPLETE,
             raw={},
-            instrument_id="GARAN.IS",
+            provider_symbol="GARAN.IS",
         )
         ref = resp.to_source_ref()
         assert "bist_feed" in ref
@@ -268,3 +275,4 @@ class TestProviderResponse:
         class NotAProvider:
             pass
         assert not isinstance(NotAProvider(), DataProviderContract)
+

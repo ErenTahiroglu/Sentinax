@@ -4,12 +4,13 @@ backend/engine/private/identity.py
 Instrument Identity, Symbology & Corporate Action Resolution Service.
 
 Core Principles:
-    - Ticker and company names are NOT primary keys.
-    - Every master instrument has a pure, immutable UUID `internal_instrument_id`.
+    - `id` (UUID) is the SINGLE canonical instrument identity across Sentinax.
+    - No duplicate or redundant internal ID fields.
+    - Missing market identity or currency is NEVER silently defaulted to XIST/TRY.
+    - Provider aliases enforce deterministic case-insensitive normalization (e.g. Yahoo/yahoo, META/meta).
     - Symbology is point-in-time aware with half-open [valid_from, valid_to) interval semantics.
-    - Overlapping validity intervals for the same (provider, provider_symbol) are strictly rejected.
-    - Action-specific corporate action semantics (splits, dividends, symbol changes) isolate
-      mathematical fields to prevent erroneous adjustments.
+    - Overlapping validity intervals for the same (normalized_provider, normalized_symbol) are strictly rejected.
+    - Corporate actions enforce strict field exclusivity to eliminate mathematical misapplication.
 """
 
 from __future__ import annotations
@@ -31,14 +32,14 @@ from backend.engine.private.domain import (
 @dataclass
 class InstrumentRecord:
     """
-    Master financial instrument definition with pure UUID-based identity.
+    Master financial instrument definition with a single canonical UUID identity (`id`).
+    Currency is explicitly required. MIC is explicit (None for non-exchange assets).
     """
     canonical_name: str
     asset_class: AssetClass
     instrument_type: InstrumentType
-    internal_instrument_id: UUID = field(default_factory=uuid4)
-    currency: Currency = Currency.TRY
-    mic: str = "XIST"
+    currency: Currency
+    mic: Optional[str] = None
     isin: Optional[str] = None
     cik: Optional[str] = None
     status: InstrumentStatus = InstrumentStatus.ACTIVE
@@ -56,7 +57,6 @@ class InstrumentRecord:
     def to_record_dict(self) -> Dict[str, Any]:
         return {
             "id": str(self.id),
-            "internal_instrument_id": str(self.internal_instrument_id),
             "canonical_name": self.canonical_name,
             "asset_class": self.asset_class.value,
             "instrument_type": self.instrument_type.value,
@@ -73,8 +73,8 @@ class InstrumentRecord:
 @dataclass
 class ProviderAliasRecord:
     """
-    Mapping between an external provider's ticker symbol and the internal instrument ID.
-    Enforces half-open [valid_from, valid_to) boundary semantics.
+    Mapping between an external provider's ticker symbol and the canonical instrument ID (`id`).
+    Enforces half-open [valid_from, valid_to) boundary semantics and normalized lookup keys.
     """
     instrument_id: UUID
     provider: str
@@ -83,8 +83,15 @@ class ProviderAliasRecord:
     valid_to: Optional[date] = None
     is_primary: bool = True
     id: UUID = field(default_factory=uuid4)
+    normalized_provider: str = field(init=False)
+    normalized_symbol: str = field(init=False)
 
     def __post_init__(self) -> None:
+        self.provider = self.provider.strip()
+        self.provider_symbol = self.provider_symbol.strip()
+        self.normalized_provider = self.provider.lower()
+        self.normalized_symbol = self.provider_symbol.upper()
+
         if self.valid_to is not None and self.valid_from >= self.valid_to:
             raise ValueError(
                 f"Invalid date range [{self.valid_from}, {self.valid_to}): "
@@ -101,8 +108,8 @@ class ProviderAliasRecord:
 
     def overlaps_with(self, other: ProviderAliasRecord) -> bool:
         """Checks if two aliases for the same (provider, symbol) overlap in [from, to)."""
-        if self.provider.lower() != other.provider.lower() or \
-           self.provider_symbol.upper() != other.provider_symbol.upper():
+        if self.normalized_provider != other.normalized_provider or \
+           self.normalized_symbol != other.normalized_symbol:
             return False
 
         end_self = self.valid_to or date.max
@@ -117,6 +124,8 @@ class ProviderAliasRecord:
             "instrument_id": str(self.instrument_id),
             "provider": self.provider,
             "provider_symbol": self.provider_symbol,
+            "normalized_provider": self.normalized_provider,
+            "normalized_symbol": self.normalized_symbol,
             "valid_from": self.valid_from.isoformat(),
             "valid_to": self.valid_to.isoformat() if self.valid_to else None,
             "is_primary": self.is_primary,
@@ -127,7 +136,7 @@ class ProviderAliasRecord:
 class CorporateActionRecord:
     """
     Action-specific corporate action and reference event model.
-    Isolates fields to prevent mathematical misapplication (e.g. split factor on dividend).
+    Enforces strict field exclusivity to prevent mathematical misapplication.
     """
     instrument_id: UUID
     action_type: CorporateActionType
@@ -149,18 +158,34 @@ class CorporateActionRecord:
                 raise ValueError("SPLIT corporate action requires split_factor > 0.")
             if self.cash_amount is not None:
                 raise ValueError("SPLIT corporate action must not have cash_amount.")
+            if self.old_symbol is not None or self.new_symbol is not None:
+                raise ValueError("SPLIT corporate action must not contain old_symbol or new_symbol.")
 
         elif self.action_type == CorporateActionType.DIVIDEND:
             if self.cash_amount is None or self.cash_amount < 0:
                 raise ValueError("DIVIDEND corporate action requires cash_amount >= 0.")
+            if self.currency is None:
+                raise ValueError("DIVIDEND corporate action requires currency.")
             if self.split_factor is not None:
                 raise ValueError("DIVIDEND corporate action must not have split_factor.")
+            if self.old_symbol is not None or self.new_symbol is not None:
+                raise ValueError("DIVIDEND corporate action must not contain old_symbol or new_symbol.")
 
         elif self.action_type in (CorporateActionType.SYMBOL_CHANGE, CorporateActionType.FUND_CODE_CHANGE):
             if not self.old_symbol or not self.new_symbol:
                 raise ValueError(f"{self.action_type.name} requires both old_symbol and new_symbol.")
             if self.split_factor is not None or self.cash_amount is not None:
                 raise ValueError(f"{self.action_type.name} must not contain split_factor or cash_amount.")
+
+        elif self.action_type == CorporateActionType.MERGER:
+            if self.split_factor is not None or self.cash_amount is not None:
+                raise ValueError("MERGER corporate action must not contain split_factor or cash_amount.")
+
+        elif self.action_type == CorporateActionType.DELISTING:
+            if self.split_factor is not None or self.cash_amount is not None:
+                raise ValueError("DELISTING corporate action must not contain split_factor or cash_amount.")
+            if self.old_symbol is not None or self.new_symbol is not None:
+                raise ValueError("DELISTING corporate action must not contain old_symbol or new_symbol.")
 
     def to_record_dict(self) -> Dict[str, Any]:
         return {
@@ -188,19 +213,17 @@ class InstrumentResolverService:
 
     def __init__(self) -> None:
         self._instruments_by_id: Dict[UUID, InstrumentRecord] = {}
-        self._instruments_by_internal_id: Dict[UUID, InstrumentRecord] = {}
         self._aliases: List[ProviderAliasRecord] = []
         self._corporate_actions: List[CorporateActionRecord] = []
 
     def register_instrument(self, instrument: InstrumentRecord) -> None:
         """Register or update a master instrument."""
         self._instruments_by_id[instrument.id] = instrument
-        self._instruments_by_internal_id[instrument.internal_instrument_id] = instrument
 
     def register_alias(self, alias: ProviderAliasRecord) -> None:
         """
         Registers a provider symbol mapping with strict overlap validation.
-        Raises ValueError if an existing alias for the same (provider, symbol) overlaps.
+        Raises ValueError if an existing alias for the same (normalized_provider, normalized_symbol) overlaps.
         """
         for existing in self._aliases:
             if existing.overlaps_with(alias):
@@ -218,24 +241,24 @@ class InstrumentResolverService:
     def get_instrument_by_id(self, instrument_id: UUID) -> Optional[InstrumentRecord]:
         return self._instruments_by_id.get(instrument_id)
 
-    def get_instrument_by_internal_id(self, internal_id: UUID) -> Optional[InstrumentRecord]:
-        return self._instruments_by_internal_id.get(internal_id)
-
-    def resolve_provider_symbol_to_internal_id(
+    def resolve_provider_symbol_to_instrument_id(
         self,
         provider: str,
         provider_symbol: str,
         as_of_date: Optional[date] = None,
     ) -> Optional[UUID]:
         """
-        Resolves an external provider symbol to the canonical internal_instrument_id (UUID).
-        Point-in-time aware with half-open [valid_from, valid_to) range.
+        Resolves an external provider symbol to the single canonical instrument UUID (`id`).
+        Point-in-time aware with half-open [valid_from, valid_to) range and case normalization.
         """
+        norm_prov = provider.strip().lower()
+        norm_sym = provider_symbol.strip().upper()
         query_date = as_of_date or date.today()
+
         matching_aliases = [
             a for a in self._aliases
-            if a.provider.lower() == provider.lower()
-            and a.provider_symbol.upper() == provider_symbol.upper()
+            if a.normalized_provider == norm_prov
+            and a.normalized_symbol == norm_sym
             and a.is_valid_on(query_date)
         ]
 
@@ -244,28 +267,25 @@ class InstrumentResolverService:
 
         matching_aliases.sort(key=lambda a: (a.is_primary, a.valid_from), reverse=True)
         selected_alias = matching_aliases[0]
-        instrument = self._instruments_by_id.get(selected_alias.instrument_id)
-        return instrument.internal_instrument_id if instrument else None
+        return selected_alias.instrument_id
 
-    def resolve_internal_id_to_provider_symbol(
+    def resolve_instrument_id_to_provider_symbol(
         self,
-        internal_instrument_id: UUID,
+        instrument_id: UUID,
         provider: str,
         as_of_date: Optional[date] = None,
     ) -> Optional[str]:
         """
-        Resolves canonical internal_instrument_id (UUID) to the specific provider symbol
+        Resolves canonical instrument UUID (`id`) to the specific provider symbol
         that was in effect on `as_of_date`.
         """
-        instrument = self._instruments_by_internal_id.get(internal_instrument_id)
-        if not instrument:
-            return None
-
+        norm_prov = provider.strip().lower()
         query_date = as_of_date or date.today()
+
         matching_aliases = [
             a for a in self._aliases
-            if a.instrument_id == instrument.id
-            and a.provider.lower() == provider.lower()
+            if a.instrument_id == instrument_id
+            and a.normalized_provider == norm_prov
             and a.is_valid_on(query_date)
         ]
 
@@ -277,34 +297,27 @@ class InstrumentResolverService:
 
     def get_historical_aliases_for_instrument(
         self,
-        internal_instrument_id: UUID,
+        instrument_id: UUID,
         provider: Optional[str] = None,
     ) -> List[ProviderAliasRecord]:
         """Returns all provider aliases over time for an instrument."""
-        instrument = self._instruments_by_internal_id.get(internal_instrument_id)
-        if not instrument:
-            return []
-
-        aliases = [a for a in self._aliases if a.instrument_id == instrument.id]
+        aliases = [a for a in self._aliases if a.instrument_id == instrument_id]
         if provider:
-            aliases = [a for a in aliases if a.provider.lower() == provider.lower()]
+            norm_prov = provider.strip().lower()
+            aliases = [a for a in aliases if a.normalized_provider == norm_prov]
         return sorted(aliases, key=lambda a: a.valid_from)
 
     def get_corporate_actions_between(
         self,
-        internal_instrument_id: UUID,
+        instrument_id: UUID,
         start_date: date,
         end_date: date,
         action_type: Optional[CorporateActionType] = None,
     ) -> List[CorporateActionRecord]:
         """Returns all corporate actions for an instrument within a date window."""
-        instrument = self._instruments_by_internal_id.get(internal_instrument_id)
-        if not instrument:
-            return []
-
         actions = [
             ca for ca in self._corporate_actions
-            if ca.instrument_id == instrument.id
+            if ca.instrument_id == instrument_id
             and start_date <= ca.effective_date <= end_date
         ]
         if action_type:
@@ -313,16 +326,15 @@ class InstrumentResolverService:
 
     def get_cumulative_split_factor(
         self,
-        internal_instrument_id: UUID,
+        instrument_id: UUID,
         from_date: date,
         to_date: date,
     ) -> float:
         """
         Calculates cumulative split adjustment factor between two dates.
-        (Conceptually similar to LEAN FactorFile split multiplier).
         """
         splits = self.get_corporate_actions_between(
-            internal_instrument_id,
+            instrument_id,
             from_date,
             to_date,
             action_type=CorporateActionType.SPLIT,
