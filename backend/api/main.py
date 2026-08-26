@@ -1,8 +1,14 @@
 """
-🧩 Puzzle Parça: API Giriş Noktası (Entrypoint) — v4.0
-======================================================
+🧩 API Giriş Noktası — Sentinax v5.0
+======================================
 FastAPI uygulamasını başlatır, middleware'leri tanımlar ve
-dekuple edilmiş router'ları include eder.
+aktif Buffett Engine router'ını include eder.
+
+Aktif router'lar:
+- /buffett/* (Buffett Engine — Public)
+
+Devre dışı (deprecated routers silindi):
+- analysis, billing, admin, user, chat, telemetry
 """
 
 import os
@@ -21,12 +27,11 @@ from fastapi.exceptions import RequestValidationError
 from starlette.middleware.base import BaseHTTPMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from backend.infrastructure.scheduler import start_alert_scheduler
 from backend.infrastructure.redis_cache import cache_close, cache_get, cache_set, cache_delete, cache_is_redis_active
 from backend.infrastructure.http_client import init_global_http_client, close_global_http_client
 from backend.api.websocket import register_websocket_routes, _clients
 from backend.utils.logger import setup_logging, CorrelationIdMiddleware, correlation_id_ctx
-from backend.api.routers import analysis, chat, user, admin, billing, telemetry, buffett
+from backend.api.routers import buffett
 
 def validate_critical_env():
     """Kritik ortam değişkenlerini başlatmadan önce doğrular (Fail-Fast)."""
@@ -36,7 +41,6 @@ def validate_critical_env():
     critical_vars = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]
     missing = [v for v in critical_vars if not os.getenv(v)]
     if missing:
-        # 🛡️ Gevşetilmiş hata (Sistemin kalkmasına izin verir, ama log'a basar)
         print(f"⚠️ UYARI: Kritik ortam değişkenleri eksik: {', '.join(missing)}")
         print("Sistem işlevleri (Örn: DB, Auth) kısıtlı çalışabilir.")
 
@@ -47,31 +51,24 @@ logger = logging.getLogger(__name__)
 validate_critical_env()
 
 
-# ── Lifespan (Background Tasks) ───────────────────────────────────────────
+# ── Lifespan ──────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # API kalktığında HTTP Client havuzunu başlat
     init_global_http_client()
-    
-    # API kalktığında otonom tarayıcıyı ayağa kaldır
-    task = asyncio.create_task(start_alert_scheduler())
     yield
-    # API kapandığında memory leak olmaması için iptal et
-    task.cancel()
-    # Redis ve HTTP havuzunu kapat (Graceful Shutdown)
     try:
         await close_global_http_client()
         cache_close()
-        logger.info("✅ Redis & HTTP Sessions safely closed.")
+        logger.info("✅ HTTP & Redis sessions safely closed.")
     except Exception as e:
          logger.warning(f"Error during shutdown closures: {e}")
 
-# ── FastAPI Uygulaması ────────────────────────────────────────────────────
+# ── FastAPI App ───────────────────────────────────────────────────────────
 is_prod = os.getenv("ENVIRONMENT", "production").lower() == "production"
 
 app = FastAPI(
-    title="Portföy Analiz Platformu", 
-    version="4.0", 
+    title="Sentinax — Investment Decision Platform", 
+    version="5.0", 
     lifespan=lifespan,
     docs_url=None if is_prod else "/docs",
     redoc_url=None if is_prod else "/redoc"
@@ -111,28 +108,22 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                     media_type=headers.get("content-type", "application/json")
                 )
         
-        # İşlemi Kilitli Olarak İşaretle (PROCESSING) - Max 5 dakika
         cache_set(redis_key, {"status": "PROCESSING"}, ttl=300)
         
         try:
             response = await call_next(request)
-            
             content_type = response.headers.get("content-type", "")
             
-            # SSE akışlarını (StreamingResponse) belleğe almamak için kilidi kaldırırız
-            # Böylece yeniden denendiğinde güvenle baştan çalıştırılabilir.
             if "text/event-stream" in content_type:
                 cache_delete(redis_key)
                 return response
                 
-            # Standart JSON yanıtlarını cache'leriz
             if "application/json" in content_type:
                 res_body = b""
                 if isinstance(response, StreamingResponse):
                     async for chunk in response.body_iterator:
                         res_body += cast(bytes, chunk)
                 else:
-                    # Non-streaming responses like JSONResponse already have .body
                     res_body = cast(bytes, getattr(response, "body", b""))
                 
                 new_response = Response(
@@ -142,7 +133,6 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                     media_type=response.media_type
                 )
                 
-                # Sadece başarılı istekleri cache'le
                 if response.status_code < 400:
                     cache_set(redis_key, {
                         "status": "COMPLETED",
@@ -177,7 +167,6 @@ app.add_middleware(IdempotencyMiddleware)
 app.add_middleware(NoCacheMiddleware)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-
 # ── Middleware: CORS ──────────────────────────────────────────────────────
 origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5500,http://127.0.0.1:5500,https://ai-destekli-portfoy-yoneticisi.vercel.app")
 origins = [o.strip() for o in origins_str.split(",") if o.strip()]
@@ -191,24 +180,16 @@ app.add_middleware(
     expose_headers=["X-Correlation-ID"],
 )
 
-# ── Exception Handlers ──────────────────────────────────────────────────
+# ── Exception Handlers ────────────────────────────────────────────────────
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     corr_id = correlation_id_ctx.get()
     headers = getattr(exc, "headers", {}) or {}
-    
-    # 🛡️ Rate Limit (429) için Retry-After ekle
     if exc.status_code == 429 and "Retry-After" not in headers:
-        headers["Retry-After"] = "60" # Varsayılan 1 dakika
-
+        headers["Retry-After"] = "60"
     return JSONResponse(
         status_code=exc.status_code,
-        content={
-            "error": True,
-            "message": exc.detail,
-            "status_code": exc.status_code,
-            "correlation_id": corr_id
-        },
+        content={"error": True, "message": exc.detail, "status_code": exc.status_code, "correlation_id": corr_id},
         headers=headers
     )
 
@@ -217,13 +198,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     corr_id = correlation_id_ctx.get()
     return JSONResponse(
         status_code=422,
-        content={
-            "error": True,
-            "message": "Veri doğrulama hatası (Validation Error)",
-            "detail": exc.errors(),
-            "status_code": 422,
-            "correlation_id": corr_id
-        }
+        content={"error": True, "message": "Veri doğrulama hatası", "detail": exc.errors(), "status_code": 422, "correlation_id": corr_id}
     )
 
 @app.exception_handler(Exception)
@@ -232,55 +207,37 @@ async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled Exception: {str(exc)}", exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={
-            "error": True,
-            "message": "Sunucu tarafında beklenmedik bir hata oluştu.",
-            "status_code": 500,
-            "correlation_id": corr_id
-        }
+        content={"error": True, "message": "Sunucu tarafında beklenmedik bir hata oluştu.", "status_code": 500, "correlation_id": corr_id}
     )
 
-# ── WebSocket Entegrasyonu ────────────────────────────────────────────────
+# ── WebSocket ─────────────────────────────────────────────────────────────
 register_websocket_routes(app)
 
-# ── Sub-Routers Include ───────────────────────────────────────────────────
-# app.include_router(analysis.router)
-# app.include_router(chat.router)
-# app.include_router(user.router)
-# app.include_router(admin.router)
-# app.include_router(billing.router)
-# app.include_router(telemetry.router)
-
-# ── Buffett Engine Router ─────────────────────────────────────────────────
+# ── Active Router ─────────────────────────────────────────────────────────
 app.include_router(buffett.router)
 
-# ── Root Redirect & Static Files (Frontend) ───────────────────────────────
+# ── Health & Metrics Endpoints ────────────────────────────────────────────
 @app.get("/api/health")
 async def health_check():
-    """
-    Sistem Sağlık Kontrolü (Liveness Probe).
-    🛡️ Render/K8s çökme döngüsünü engeller, DB & Redis denetler.
-    """
+    """Sistem Sağlık Kontrolü (Liveness Probe)."""
     health_status = {"status": "ok", "redis": "connected", "supabase": "connected"}
     
-    # 1. Redis Check
     if not cache_is_redis_active():
         health_status["redis"] = "disconnected (fallback active)"
 
-    # 2. Supabase Check
     try:
         import httpx
-        from backend.infrastructure.scheduler import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
-        headers = {
-            "apikey": SUPABASE_SERVICE_ROLE_KEY,
-            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}"
-        }
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            # Basit bir limit=1 query atarak bağlantıyı test edelim
-            resp = await client.get(f"{SUPABASE_URL}/rest/v1/portfolios?limit=1", headers=headers)
-            if resp.status_code not in (200, 206):
-                health_status["supabase"] = f"error (HTTP {resp.status_code})"
-                health_status["status"] = "degraded"
+        supa_url = os.getenv("SUPABASE_URL", "")
+        supa_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+        if supa_url and supa_key:
+            headers = {"apikey": supa_key, "Authorization": f"Bearer {supa_key}"}
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(f"{supa_url}/rest/v1/portfolios?limit=1", headers=headers)
+                if resp.status_code not in (200, 206):
+                    health_status["supabase"] = f"error (HTTP {resp.status_code})"
+                    health_status["status"] = "degraded"
+        else:
+            health_status["supabase"] = "not configured"
     except Exception as e:
          health_status["supabase"] = f"error: {str(e)}"
          health_status["status"] = "critical"

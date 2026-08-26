@@ -28,15 +28,19 @@ def detect_market(ticker: str) -> tuple:
     """
     Ticker'ın pazarını otomatik algılar (Network isteği olmadan, Kural Tabanlı).
     
+    Desteklenen pazarlar: TR (BIST), TR/TEFAS, US
+    Kapsam dışı (kripto vb.): UNKNOWN döner.
+    
     Returns:
         (market, fetcher_ticker, is_tefas)
         Örn: ("US", "AAPL", False) veya ("TR", "TP2", True)
     """
     ticker = ticker.upper().strip()
     
-    # 0. Kripto Para Kontrolü (USDT veya -USD ile bitenler)
+    # 0. Kripto Para — Kapsam Dışı
+    # Sentinax Private Engine kripto varlıkları kapsamaz.
     if ticker.endswith("USDT") or ticker.endswith("-USD"):
-        return "CRYPTO", ticker, False
+        return "UNKNOWN", ticker, False
     
     # 1. Açıkça BIST formatıysa (.IS soneki)
     if ticker.endswith(".IS"):
@@ -46,19 +50,14 @@ def detect_market(ticker: str) -> tuple:
     if ticker in _BILINEN_BIST:
         return "TR", f"{ticker}.IS", False
     
-    # 3. Kısa kod kriteri -> TEFAS Fonu
+    # 3. Kısa kod kriteri → TEFAS Fonu
     #    Tam 3 harfliyse ve sadece harflerden veya rakamlardan oluşuyorsa (TP2, ZP8 vb.)
-    #    Kural: len(ticker) == 3 ve ticker.isalnum() -> TEFAS
     if len(ticker) == 3 and ticker.isalnum():
         return "TR", ticker, True
         
-    # 4. Alternatif: 4+ harfliyse ve bilinen listesinde olmasa dahi .IS eklenebilir ama varsayılan BIST 4-5 harflidir.
-    #    Ancak kural dışı kalmasın diye len(ticker) >= 4 ise BIST ihtimalini .is takısıyla koruruz.
-    #    Fakat Spec gereği -> Geri kalan her şey US. 
-    #    Dolayısıyla "XYZ.IS" olmadan gelen BIST hisseleri için standart kural:
-    #    Eğer .IS yoksa ve short 3 harf değilse -> US (Spec uyarınca)
-    
+    # 4. Geri kalan → US olarak varsayılan
     return "US", ticker, False
+
 
 
 def classify_fund(ticker: str) -> dict:

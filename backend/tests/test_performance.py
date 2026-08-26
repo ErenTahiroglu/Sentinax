@@ -23,14 +23,24 @@ async def test_full_analysis_performance_gate():
     2. RAM kullanımı ölçülür ve raporlanır (Artifact).
     """
     # Create a fake LLM response for all adversarial agents
-    fake_llm = FakeListChatModel(responses=['{"decision": "BUY", "reason": "Mocked performance test"}'])
+    fake_llm = FakeListChatModel(responses=['{"decision": "BUY", "reason": "Mocked performance test"}'] * 100)
     
+    mock_market_res = {
+        "son_fiyat": {"fiyat": 150.0, "degisim": 1.5, "para_birimi": "USD"},
+        "klines": [{"close": 150.0}],
+        "yg": 10.0,
+        "ay": 2.0,
+        "risk": 1.0
+    }
+
     # Patch targets everywhere they are imported
     with patch("backend.nodes.adversarial_agents.get_quick_think_llm", return_value=fake_llm), \
          patch("backend.nodes.adversarial_agents.get_deep_think_llm", return_value=fake_llm), \
-         patch("backend.engine.graph.get_quick_think_llm", return_value=fake_llm):
+         patch("backend.engine.graph.get_quick_think_llm", return_value=fake_llm), \
+         patch("backend.analyzers.bist_analyzer.HisseAnaliz.analiz_et", return_value=mock_market_res):
         
         graph = compile_trading_graph()
+
         
         start_mem = get_process_memory()
         start_time = time.time()

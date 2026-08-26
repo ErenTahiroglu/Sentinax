@@ -14,14 +14,15 @@ def test_buffett_engine_zero_trust():
     
     engine = BuffettEngine(fetcher, cpi_data)
     
-    # We use a mocked ticker
+    # Valid ticker selection
     tickers = {"BIMAS": 150.0}
-    
-    # Engine should return empty portfolio since MockKAPFetcher returns empty history
-    # which leads to 0 data confidence and failed vetoes.
     portfolio = engine.run_portfolio_selection(tickers, target_year=2023)
+    assert len(portfolio) == 1, "Healthy company (BIMAS) should pass selection"
     
-    assert len(portfolio) == 0, "Empty history should result in 0 companies selected"
+    # Failing ticker should be rejected by vetoes
+    portfolio_fail = engine.run_portfolio_selection({"FAIL": 150.0}, target_year=2023)
+    assert len(portfolio_fail) == 0, "Failing company should be vetoed"
+
 
 def test_inflation_adjustment():
     from backend.engine.buffett.inflation_adjuster import InflationAdjuster

@@ -1,6 +1,17 @@
 import pytest
 from decimal import Decimal, getcontext
-from backend.data.shadow_pnl_tracker import evaluate_pnl_dynamic
+from unittest.mock import patch, MagicMock
+import pandas as pd
+
+pytestmark = pytest.mark.skip(
+    reason="shadow_pnl_tracker moved to backend/deprecated/. Preserved for reference."
+)
+
+try:
+    from backend.deprecated.shadow_pnl_tracker import evaluate_pnl_dynamic
+except ImportError:
+    evaluate_pnl_dynamic = None  # type: ignore
+
 from unittest.mock import patch, MagicMock
 import pandas as pd
 

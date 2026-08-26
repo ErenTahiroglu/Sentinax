@@ -2,7 +2,18 @@ import pytest
 from unittest.mock import patch, MagicMock
 from decimal import Decimal
 import pandas as pd
-from backend.data.shadow_pnl_tracker import evaluate_pnl_dynamic
+
+pytestmark = pytest.mark.skip(
+    reason="shadow_pnl_tracker moved to backend/deprecated/. "
+           "PnL engine will be redesigned for Private Engine. "
+           "Preserved for reference only."
+)
+
+try:
+    from backend.deprecated.shadow_pnl_tracker import evaluate_pnl_dynamic
+except ImportError:
+    evaluate_pnl_dynamic = None  # type: ignore
+
 
 # ── 1. Multi-User Isolation Mock Data ───────────────────────────────────────
 

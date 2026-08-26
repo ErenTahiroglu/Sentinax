@@ -1,84 +1,257 @@
-# 🏛️ Sistem Mimarisi (ARCHITECTURE.md)
+# Sentinax — Architecture v5.0
 
-**AI-Portföy-Yöneticisi** platformu, yüksek erişilebilirlik, hız ve kurumsal güvenlik (SRE) standartları gözetilerek **Three-Tier (3 Katmanlı)** bir monorepo mimarisiyle tasarlanmıştır.
-
----
-
-## 🗺️ 1. Genel Mimari (Three-Tier)
-
-Sistem 3 temel katmandan oluşur:
-
-### 🌟 A. Sunum Katmanı (Frontend - Vercel)
-
-* *Teknoloji:* Vanilla JS, HTML5, CSS3, Chart.js.
-* *Görev:* Kullanıcının portföyünü görselleştirmek, AI chatbot ile konuşmasını sağlamak ve canlı fiyatları yansıtmak.
-* *Özellik:* API_BASE dinamik yönetimi ve **Render Cold Start** koruma mekanizmalarına sahiptir.
-
-### ⚙️ B. Mantık Katmanı (Backend - Render)
-
-* *Teknoloji:* FastAPI (Python), httpx, ASGI (Uvicorn).
-* *Görev:* Analitik hesaplamalar, AI Ajan orkestrasyonu, veri proxy'liği ve WebSocket canlı akışı yönetimi.
-* *Güvenlik:* JWT tabanlı Sıfır Güven (Zero-Trust) IAM, Rate Limiter ve Mutex Cache kalkanları Backend'ten yönetilir.
-
-### 🗄️ C. Veri Katmanı (Data Lake - Supabase & Redis)
-
-* *Supabase (PostgreSQL + PostgREST):* Kullanıcı portföyleri, geçmiş snapshotlar ve loglar burada tutulur. Erişimler Backend proxy üzerinden stateless HTTP REST ile HTTPS güvenliğiyle gerçekleşir.
-* *Redis (Upstash):* Dağıtık önbellek (Cache), API hız sınırlaması (Rate Limit) ve token revokasyonu (Blocklist) için kullanılır.
+**Revizyon:** 2026-08-26  
+**Önceki sürüm:** v4.0 (otonom portföy yöneticisi — kaldırıldı)
 
 ---
 
-## 🔄 2. Veri Akış Modelleri (Data Flow)
+## Temel İlkeler
 
-### 📈 Örnek Senaryo: Portföy Optimizasyonu Talebi
-
-Kullanıcı arayüzden **"Portföyümü Analiz Et"** butonuna bastığında veri şu yollardan geçer:
-
-1. *İstemci (Vercel):* İstek ön yüz üzerinden fırlatılır. `X-Correlation-ID` başlığı eklenir (Tracing).
-2. *Güvenlik Kapısı (CORS & Rate Limiter):* Render'a ulaşan istek CORS whitelist süzgecinden geçer. Redis üzerindeki IP bazlı **Rate Limiter** hızı doğrular.
-3. *Kimlik Doğrulama (Auth):* `verify_jwt` middleware'i, Supra Auth JWT tokenı doğrular ve kullanıcının oturumunun Redis **Blocklist**'te olup olmadığına bakar.
-4. *Önbellek Sorgulama (Cache):* Analiz sonucu talep edilmeden önce Redis Cache sorgulanır. Cache Miss olursa **Mutex Locking** devreye girerek Cache Stampede önlenir.
-5. *Analitik & AI Orkestrasyonu (`ai_agent.py`):*
-   * **Market Detection (Pazar Tespiti):** İstekler önce `data_nodes.py` süzgecinden geçer. ABD hisseleri (`AAPL`, `MSFT` vb.) ve popüler Kriptolar (`BTC`, `ETH` vb.) için ağır BİST analiz motoru bypass edilir (**Fast-Path**). 
-   * **Dinamik Sağlayıcı (Multi-Provider):** Gelen `model_name` prefix'ine göre **Gemini** veya **Groq** (Llama/Mixtral) motorları dinamik sarmalanır.
-   * Hassas değerler prompt öncesi **Maskelenir (PII Sanitization)**.
-   * İçerikler `<news_item>` etiketleriyle beslenerek **Indirect Prompt Injection** engellenir.
-6. *Nihai Sonuç:* Yapay zeka orkestratörü (CIO) çıktı üretir ve Frontend'e basar. İstek veritabanına loglanır.
+1. **Karar destek, emir değil.** Sistem asla BUY/SELL emri göndermez.
+2. **Eksik veri ≠ sıfır.** `DataStatus.UNAVAILABLE` → `None`. Asla uydurma.
+3. **Kripto kapsam dışı.** `detect_market()` kripto için `UNKNOWN` döner.
+4. **PARTIAL geçerli sonuçtur.** Sistem eksik inputla çökmez.
+5. **Point-in-time bütünlüğü.** `effective_date` ≠ `retrieved_at`.
+6. **Zero-Trust test izolasyonu.** `pytest-socket` ağ erişimini engeller.
 
 ---
 
-## 🛡️ 3. SRE ve Hata Toleransı
+## İki Bounded Context
 
-* *Circuit Breaker (Şalter):* Dış finansal API (Polygon vb.) çöktüğünde sistem kilitlenmez, Falling-back modeline geçilir.
-* *Stateless Scaling:* Backend kurgusu RAM'de session tutmaz, bu sayede Render üzerinde yatayda sonsuz çoğaltılabilir (Scale-out).
+### Context A — Public Buffett Engine
+
+```
+frontend/buffett/          → Static UI
+backend/api/routers/buffett.py  → FastAPI router (/buffett/*)
+backend/engine/buffett/    → Orchestrator, data_fetcher, valuation, scoring
+```
+
+**Bağımsız modül.** Diğer engine'lerden izole.  
+Giriş: ticker listesi + CPI verisi  
+Çıkış: puanlanmış portföy (moat, profitability, balance_sheet, valuation, DCF)
+
+### Context B — Private Personal Investment Decision Engine *(Foundation)*
+
+```
+backend/engine/private/
+├── __init__.py            → Scope dokümantasyonu
+├── domain.py              → Core domain enums (AssetClass, DataStatus, vb.)
+├── result.py              → DataResult, AnalysisResult contracts
+└── provider_contract.py   → DataProviderContract Protocol, ProviderResponse
+```
+
+**Mevcut durum:** Domain contract katmanı tamamlandı.  
+**Sonraki faz:** Data provider implementasyonları (BIST, TEFAS, SEC, EVDS).
 
 ---
 
-## 🧩 4. Modüler Mimari (Puzzle Architecture)
+## Üç Katmanlı Mimari
 
-Kod tabanının sürdürülebilirliği (Maintainability) ve Tek Sorumluluk Prensibi (SRP) için sistem monolitik yapılardan arındırılmıştır.
-
-### 🏛️ A. Frontend Modülerliği (`frontend/js/`)
-
-* *services/:* Ağ/Fetch (Network) ve harici API (örneğin AI Sihirbazı) orkestrasyonunu üstlenir.
-  * *Örn:* `WizardService.js`, `NewsService.js`, `ExportService.js`
-* *components/:* DOM manipülasyonu, HTML şablonları (Templates) ve UI render işlemlerini izole eder.
-  * *Örn:* `TechnicalsComponent.js`, `HeatmapComponent.js`
-* *state/ (`app.js`):* Sayfa yaşam döngüsünü ve component'lerin reaktif re-render mekanizmalarını birbirine bağlar.
-
-### 🧪 5. Zero Trust Testing & SRE Guard
-
-Platformun CI/CD süreçleri, "Zero Trust" (Sıfır Güven) prensibiyle test edilir. Bu sayede üretim hataları ve maliyet sızıntıları (API/Token leak) engellenir.
-
-* *Ağ İzolasyonu (Network Sandbox):* `pytest-socket` eklentisiyle test ortamında `localhost` (127.0.0.1) dışındaki tüm dış ağ erişimi kilitlenmiştir.
-* *LLM Mocking:* Tüm LangChain invocation'ları (`ainvoke`) `conftest.py` üzerinden global olarak mocklanır. Gerçek bir API çağrısı yapılmaya çalışıldığında sistem anında `SocketBlockedError` fırlatır.
-* *Performans Kalkanı (Performance Gate):* Tam kapsamlı bir analiz süreci 20 saniyeyi geçerse CI pipeline'ı otomatik olarak durdurulur (**Hard-fail**). Her PR'da RAM tüketimi ölçülür ve 512MB (Render) sınırına yaklaşıldığında uyarı verilir.
+```
+┌─────────────────────────────────────────────────────────┐
+│  PRESENTATION                                           │
+│  frontend/buffett/  (Vanilla JS, HTML5, CSS3)           │
+└─────────────────────────────────────────────────────────┘
+                        │ HTTP / WebSocket
+┌─────────────────────────────────────────────────────────┐
+│  APPLICATION (FastAPI)                                  │
+│                                                         │
+│  /buffett/*   ← BuffettEngine orchestrator              │
+│  /api/health  ← Liveness probe                          │
+│  /ws          ← WebSocket                               │
+│                                                         │
+│  Middleware: CORS · GZip · Idempotency · Correlation-ID │
+│  Auth: JWT (Supabase)  Rate-limit: Redis (Upstash)      │
+└─────────────────────────────────────────────────────────┘
+                        │
+┌─────────────────────────────────────────────────────────┐
+│  DATA                                                   │
+│  Supabase (PostgreSQL) · Redis (Upstash)                │
+│  yfinance / yahooquery (market data)                    │
+│  TEFAS scraper (fund data)                              │
+└─────────────────────────────────────────────────────────┘
+```
 
 ---
 
-### 🏛️ B. Backend Modülerliği (`backend/`)
+## LangGraph Agent Pipeline (Old Public Engine)
 
-* *services/:* Router'lar üzerindeki ağır veri işleme/birleştirme logic’lerini soyutlar.
-  * *Örn:* `analysis_service.py` (DataFrame inşası ve Ticker analiz sarmalları)
-* *api/routers/:* Sadece HTTP endpoint trafiğini ve **Idempotency** (Double-submit) korumasını yönetir.
-* *core/graph/:* **LangGraph** tabanlı çoklu-ajan orkestrasyonunu (Puzzle Engine) barındırır.
-* *core/agents/:* Otonom veri toplayıcıları (Data Nodes) ve LLM araştırmacılarını (Adversarial Agents) içerir.
+Eski CIO orchestrator (multi-agent debate) şu anda `graph.py` içinde
+hâlâ tanımlı fakat aktif router tarafından kullanılmıyor.
+`chat_orchestrator.py` bu graph'ı import ediyor.
+
+```
+START → MarketDataNode → NewsNode → IslamicNode(no-op)
+     → InvestmentDebate(Bull/Bear/Neutral/PM)
+     → RiskDebate (conditional)
+     → OutputMapper → END
+```
+
+**Not:** IslamicNode graph'ta no-op stub olarak bırakıldı.
+Gelecekte bu agent pipeline Private Engine için yeniden tasarlanacak.
+
+---
+
+## Data Flow — Private Engine (Foundation)
+
+```
+Instrument ID
+    │
+    ▼
+DataProviderContract.fetch()
+    │
+    ▼
+ProviderResponse
+    │── provider_name
+    │── source_quality (SourceTier)
+    │── retrieved_at  (wall-clock UTC)
+    │── effective_date (economic date ≠ retrieved_at)
+    │── status (DataStatus)
+    │── raw (unmodified payload)
+    │
+    ▼
+DataProviderContract.normalize()
+    │
+    ▼
+DataProviderContract.validate()  → warnings: list[str]
+    │
+    ▼
+DataResult
+    │── value (None if UNAVAILABLE — never 0)
+    │── status (COMPLETE | PARTIAL | DEGRADED | STALE | UNAVAILABLE)
+    │── confidence (HIGH | MEDIUM | LOW | NONE)
+    │── as_of (date)
+    │── source_refs
+    │── warnings
+    │── missing_inputs
+    │
+    ▼
+AnalysisResult
+    │── components: dict[str, DataResult]
+    │── status (derived from components)
+    │── computed_at
+    └── global_warnings
+```
+
+---
+
+## Deprecated Modules
+
+Üretim yolundan çıkarılmış modüller `backend/deprecated/` altında arşivlenmiştir.
+
+| Modül | Sebep |
+|-------|-------|
+| `optimization_engine.py` | Monte-Carlo MVO — yanlış metodoloji. HRP/CVaR ile yeniden yazılacak. |
+| `ml_predictor.py` | Gerçek ML değil. Crypto bağımlılıkları. |
+| `shadow_pnl_tracker.py` | Paper-trade semantics. Kapsam dışı. |
+
+**Kural:** `from backend.deprecated.*` aktif kodda yasaktır.  
+`test_no_crypto_path.py` bunu her CI çalışmasında doğrular.
+
+---
+
+## Güvenlik Mimarisi
+
+```
+API Request
+    │
+    ├─ CorrelationIdMiddleware  (tracing)
+    ├─ IdempotencyMiddleware    (POST/PUT/PATCH dedup)
+    ├─ NoCacheMiddleware        (UI routes)
+    ├─ GZipMiddleware           (>1KB)
+    ├─ CORSMiddleware           (allowlist)
+    │
+    ├─ JWT Auth (Supabase)      (per-endpoint dependency)
+    ├─ Rate Limiter (Redis)     (per-endpoint dependency)
+    │
+    └─ Handler
+```
+
+### LLM Güvenliği
+
+- **PII Sanitizasyonu:** Kullanıcı verileri LLM prompt'larına girmeden önce temizlenir
+- **XML Tag İzolasyonu:** Harici veriler `<news_item>`, `<context>` tag'leri ile izole edilir
+- **Mocked LLM (Test):** `conftest.py` tüm LLM çağrılarını mock'lar
+
+---
+
+## Test Stratejisi
+
+```bash
+# Tüm testler
+pytest backend/tests/ -v --disable-socket
+
+# Private engine domain
+pytest backend/tests/test_private_domain.py -v
+
+# Structural regression guard (no crypto, no deprecated imports)
+pytest backend/tests/test_no_crypto_path.py -v
+
+# Buffett engine
+pytest tests/test_buffett_engine.py -v
+```
+
+**Zero-Trust kuralı:**  
+`pytest-socket` tüm network erişimini engeller.  
+Harici API çağrıları mock edilmeli; aksi hâlde test isolation hatası alınır.
+
+---
+
+## Klasör Yapısı (Tam)
+
+```
+sentinax/
+├── backend/
+│   ├── analyzers/
+│   │   ├── base_analyzer.py
+│   │   ├── bist_analyzer.py       ← BIST + TEFAS
+│   │   ├── technical_analyzer.py
+│   │   └── us_analyzer.py
+│   ├── api/
+│   │   ├── main.py               ← FastAPI app
+│   │   ├── models.py
+│   │   ├── config.py
+│   │   ├── dependencies.py
+│   │   ├── websocket.py
+│   │   └── routers/
+│   │       └── buffett.py        ← Single active router
+│   ├── data/
+│   │   ├── constants.py
+│   │   ├── data_sources.py
+│   │   ├── market_detector.py    ← BIST/TEFAS/US/UNKNOWN (no CRYPTO)
+│   │   ├── news_fetcher.py
+│   │   └── tefas_scraper.py
+│   ├── deprecated/               ← Archive (not in production path)
+│   │   ├── optimization_engine.py
+│   │   ├── ml_predictor.py
+│   │   └── shadow_pnl_tracker.py
+│   ├── engine/
+│   │   ├── agent_states.py
+│   │   ├── circuit_breaker.py
+│   │   ├── graph.py              ← LangGraph pipeline (old engine)
+│   │   ├── buffett/              ← Public Buffett Engine
+│   │   └── private/              ← Private Engine (foundation)
+│   │       ├── domain.py
+│   │       ├── result.py
+│   │       └── provider_contract.py
+│   ├── infrastructure/           ← Redis, Supabase, LLM, auth, metrics
+│   ├── nodes/
+│   │   ├── adversarial_agents.py
+│   │   ├── ai_agent.py
+│   │   └── data_nodes.py         ← Market + News nodes (no crypto path)
+│   ├── services/
+│   │   ├── analysis_service.py   ← Placeholder (optimization removed)
+│   │   └── chat_orchestrator.py
+│   ├── tests/
+│   │   ├── conftest.py           ← Zero-Trust mocking
+│   │   ├── test_private_domain.py
+│   │   ├── test_no_crypto_path.py
+│   │   ├── test_market_detector.py
+│   │   └── ... (other tests)
+│   └── utils/
+├── docs/
+│   └── FOUNDATION_AUDIT.md
+├── frontend/
+│   └── buffett/                  ← Public Buffett UI
+└── infrastructure/               ← Docker, CI/CD
+```

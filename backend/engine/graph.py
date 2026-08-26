@@ -9,10 +9,15 @@ from backend.infrastructure.llm_factory import get_quick_think_llm
 
 from backend.nodes.data_nodes import (
     market_data_node,
-    islamic_node,
     news_node
 )
+
+async def islamic_node(state) -> dict:  # islamic_analyzer removed — no-op stub
+    """Islamic analysis removed from scope. Returns empty report."""
+    return {"islamic_report": {}}
+
 from backend.engine.circuit_breaker import evaluate_risk_circuit_breaker
+
 from backend.nodes.adversarial_agents import (
     bull_researcher_node,
     bear_researcher_node,
@@ -157,11 +162,9 @@ async def output_mapper_node(state: GraphState) -> dict:
             "trade_decision": state.get("final_trade_decision"),
             "ticker": state.get("ticker"),
             "market_data": state.get("market_report", {}).get("market_data"),
-            "islamic_report": state.get("islamic_report"),
             "klines": state.get("market_report", {}).get("klines", []),
             "intent": state.get("intent"),
-            "check_financials": state.get("check_financials", True),
-            "check_islamic": state.get("check_islamic", True)
+            "check_financials": state.get("check_financials", True)
         }
     }
 

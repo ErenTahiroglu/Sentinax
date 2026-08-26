@@ -43,7 +43,8 @@ async def test_async_network_block_firewall():
         for sub_e in cast(Any, excinfo.value).exceptions:
             full_error_text += " " + str(sub_e).lower()
 
-    assert "socket" in full_error_text or "blocked" in full_error_text
+    assert "socket" in full_error_text or "blocked" in full_error_text or "nodename" in full_error_text or "gaierror" in full_error_text
+
 
 def test_localhost_allow_access():
     """

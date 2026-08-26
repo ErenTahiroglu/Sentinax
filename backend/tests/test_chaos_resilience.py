@@ -79,6 +79,7 @@ def test_tefas_scraper_retry_chaos():
 
 # ── 3. Negative API Verification (Edge Case Payloads) ───────────────────────
 
+@pytest.mark.skip(reason="/api/analyze router removed. Endpoint no longer in scope.")
 @pytest.mark.asyncio
 async def test_api_analytics_bad_types():
     """Analiz endpoint'lerine bozuk şema/tip beslendiğinde Pydantic koruması."""
@@ -86,16 +87,14 @@ async def test_api_analytics_bad_types():
     from httpx import AsyncClient, ASGITransport
     
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        # Tickers listesinde string yerine integer var (Dengesiz veri)
         payload = {
             "tickers": [123, None], 
-            "use_ai": "Evvet" # Boolean yerine string
+            "use_ai": "Evvet"
         }
         response = await ac.post("/api/analyze", json=payload)
-        
-        # FastAPI'nin 500 crash yerine 422 Unprocessable Entity vermesi beklenir.
         assert response.status_code == 422
 
+@pytest.mark.skip(reason="/api/analyze router removed. Endpoint no longer in scope.")
 @pytest.mark.asyncio
 async def test_api_analytics_empty_tickers():
     """Boş tickers listesi verildiğinde guard'ın patlamadan 400/422 döndürmesi."""
@@ -105,6 +104,8 @@ async def test_api_analytics_empty_tickers():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
          response = await ac.post("/api/analyze", json={"tickers": []})
          assert response.status_code in [400, 422]
+
+
 
 
 # [DEPRECATED] Simulator logic has been moved to Frontend (api.js/runPVSimulationJS).

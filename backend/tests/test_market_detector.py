@@ -45,11 +45,16 @@ class TestDetectMarketCaseInsensitive:
         assert "THYAO" in fetcher
 
 
-class TestDetectMarketCrypto:
-    """Kripto paraların doğru algılanması."""
+class TestDetectMarketOutOfScope:
+    """Kripto paraların kapsam dışı (UNKNOWN) olarak algılanması."""
 
     @pytest.mark.parametrize("ticker", ["BTC-USD", "ETHUSDT"])
-    def test_crypto_tickers(self, ticker):
+    def test_out_of_scope_tickers_return_unknown(self, ticker):
+        """
+        Kripto varlıklar Private Engine scope'unda değil.
+        detect_market() UNKNOWN döndürmeli, CRYPTO değil.
+        """
         market, _, is_tefas = detect_market(ticker)
-        assert market == "CRYPTO"
+        assert market == "UNKNOWN"
         assert is_tefas is False
+

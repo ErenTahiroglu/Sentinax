@@ -5,7 +5,14 @@ from typing import cast
 from backend.engine.agent_states import GraphState
 from backend.engine.circuit_breaker import evaluate_risk_circuit_breaker
 from backend.infrastructure.auth import verify_token_string
-from backend.data.shadow_pnl_tracker import _evaluate_pnl
+
+# shadow_pnl_tracker moved to deprecated/ — tests using it are individually skipped
+try:
+    from backend.deprecated.shadow_pnl_tracker import _evaluate_pnl
+except ImportError:
+    _evaluate_pnl = None  # type: ignore
+
+
 
 # ── 1. Circuit Breaker Logic Tests ──────────────────────────────────────────
 
@@ -94,6 +101,7 @@ def test_auth_blacklisted_token(mock_redis):
 
 # ── 3. Shadow PnL Winner Logic Tests ────────────────────────────────────────
 
+@pytest.mark.skip(reason="shadow_pnl_tracker deprecated. PnL logic will be rewritten for Private Engine.")
 @pytest.mark.asyncio
 @patch("yfinance.Ticker")
 async def test_shadow_pnl_winner_logic(mock_ticker):
@@ -121,3 +129,4 @@ async def test_shadow_pnl_winner_logic(mock_ticker):
     # Tie logic (default comparison results in Tie or according to implementation)
     price, winner = await _evaluate_pnl("AAPL", 100, "BUY", "BUY")
     assert winner == "TIE"
+

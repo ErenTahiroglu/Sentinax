@@ -1,6 +1,6 @@
 import time
 import logging
-from typing import Callable, Optional, Any, SupportsIndex
+from typing import Callable, Optional, Any, SupportsIndex, Union
 
 logger = logging.getLogger(__name__)
 
@@ -10,7 +10,7 @@ class CircuitBreaker:
         Simple Circuit Breaker.
         
         Args:
-            name: Name of the circuit (e.g., 'Yahoo', 'Binance')
+            name: Name of the circuit (e.g., 'Yahoo', 'TEFAS')
             threshold: Number of consecutive failures before opening
             timeout: Seconds to wait before testing again (Half-Open)
             fallback_factory: Callable that returns a default/neutral value when Open
@@ -66,7 +66,8 @@ class FastFailList(list):
         super().__init__(*args)
         self.cb = cb
     
-    def __getitem__(self, index: SupportsIndex | slice) -> Any:
+    def __getitem__(self, index: Union[SupportsIndex, slice]) -> Any:
         if self.cb and self.cb.state == "OPEN":
             return 0
         return super().__getitem__(index)
+

@@ -2,7 +2,19 @@ import pytest
 from unittest.mock import patch, MagicMock
 from decimal import Decimal
 import pandas as pd
-from backend.data.shadow_pnl_tracker import _evaluate_pnl
+
+pytestmark = pytest.mark.skip(
+    reason="shadow_pnl_tracker moved to backend/deprecated/. "
+           "PnL engine will be redesigned for Private Engine. "
+           "Preserved for reference only."
+)
+
+try:
+    from backend.deprecated.shadow_pnl_tracker import _evaluate_pnl
+except ImportError:
+    _evaluate_pnl = None  # type: ignore
+
+
 
 # ── 1. Precision & Rounding Stress Tests ────────────────────────────────────
 

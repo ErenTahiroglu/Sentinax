@@ -4,6 +4,7 @@ from httpx import AsyncClient, ASGITransport
 from unittest.mock import patch
 from backend.api.main import app
 
+@pytest.mark.skip(reason="/api/search router removed. Endpoint no longer in scope.")
 @pytest.mark.asyncio
 async def test_api_search():
     """Autocomplete Endpoint testi."""
@@ -15,9 +16,12 @@ async def test_api_search():
         if len(data) > 0:
             assert "symbol" in data[0]
 
+
+@pytest.mark.skip(reason="/api/analyze router removed. Endpoint no longer in scope.")
 @pytest.mark.asyncio
 async def test_api_analyze_sse():
     """SSE Stream Endpoint testi (Mocklanmış AI)."""
+
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         payload = {
             "tickers": ["AAPL"],
@@ -54,6 +58,7 @@ async def test_ai_agent_mock_sentiment():
         assert res["sentiment_label"] == "Açgözlülük"
         assert res["islamic_risk_flag"] is False
 
+@pytest.mark.skip(reason="/api/news router removed. Endpoint no longer in scope.")
 @pytest.mark.asyncio
 async def test_api_news_endpoint():
     """Haber filtreleme API Endpoint testi."""
