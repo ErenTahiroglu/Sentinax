@@ -32,6 +32,9 @@ class MacroCategory(Enum):
     INTEREST_RATE = "interest_rate"
     INFLATION_CPI = "inflation_cpi"
     INFLATION_PPI = "inflation_ppi"
+    LABOR = "labor"
+    OUTPUT = "output"
+    INDUSTRIAL_ACTIVITY = "industrial_activity"
     MONEY_SUPPLY = "money_supply"
     RESERVES = "reserves"
 
@@ -55,6 +58,7 @@ class MacroUnit(Enum):
     INDEX_POINTS = "INDEX_POINTS"
     MILLION_TRY = "MILLION_TRY"
     MILLION_USD = "MILLION_USD"
+    BILLIONS_USD = "BILLIONS_USD"
 
 
 class VerificationStatus(Enum):
@@ -77,15 +81,20 @@ class MacroSeriesDefinition:
     Canonical definition of a macroeconomic series.
     Decoupled from financial instruments (equities/funds).
     """
-    canonical_key: str              # e.g. 'TR_FX_USDTRY', 'TR_CPI_TUIK_YOY'
-    provider: str                   # e.g. 'TCMB_EVDS', 'TUIK_SDMX', 'ENAG_MANUAL'
-    provider_series_code: str       # e.g. 'TP.DK.USD.A.YTL', 'CPI_2003_INDEX'
+    canonical_key: str              # e.g. 'TR_FX_USDTRY', 'US_CPI_HEADLINE_INDEX'
+    provider: str                   # e.g. 'TCMB_EVDS', 'FRED_ALFRED', 'TUIK_SDMX'
+    provider_series_code: str       # e.g. 'TP.DK.USD.A.YTL', 'CPIAUCSL'
     category: MacroCategory
     description: str
     unit: MacroUnit
     frequency: MacroFrequency
     freshness_basis: FreshnessBasis
     source_tier: SourceTier
+    geography: str = "TR"           # 'TR', 'US', etc.
+    provider_native_units: Optional[str] = None
+    seasonal_adjustment: Optional[str] = None
+    origin_source: Optional[str] = None
+    release_name: Optional[str] = None
     contract_status: ContractStatus = ContractStatus.VERIFIED
     expected_release_interval_days: int = 1
     source_url: Optional[str] = None
@@ -111,6 +120,12 @@ class MacroObservationRecord:
     retrieved_at: datetime
     published_at: Optional[datetime] = None
     observed_at: Optional[datetime] = None
+    source_available_date: Optional[date] = None       # e.g. ALFRED realtime_start
+    availability_precision: str = "DATE"               # 'DATE' or 'TIMESTAMP'
+    realtime_end: Optional[date] = None
+    vintage_date: Optional[date] = None
+    origin_source: Optional[str] = None
+    release_name: Optional[str] = None
     snapshot_id: Optional[UUID] = None
     supersedes_record_id: Optional[UUID] = None
     is_superseded: bool = False
@@ -143,6 +158,12 @@ class MacroObservationRecord:
             "retrieved_at": self.retrieved_at.isoformat(),
             "published_at": self.published_at.isoformat() if self.published_at else None,
             "observed_at": self.observed_at.isoformat() if self.observed_at else None,
+            "source_available_date": self.source_available_date.isoformat() if self.source_available_date else None,
+            "availability_precision": self.availability_precision,
+            "realtime_end": self.realtime_end.isoformat() if self.realtime_end else None,
+            "vintage_date": self.vintage_date.isoformat() if self.vintage_date else None,
+            "origin_source": self.origin_source,
+            "release_name": self.release_name,
             "snapshot_id": str(self.snapshot_id) if self.snapshot_id else None,
             "supersedes_record_id": str(self.supersedes_record_id) if self.supersedes_record_id else None,
             "is_superseded": self.is_superseded,

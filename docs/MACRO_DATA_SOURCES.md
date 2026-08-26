@@ -1,52 +1,72 @@
-# Turkey Official Macroeconomic Data Layer
+# Global & Turkey Macroeconomic Data Layer
 
-**Version:** 1.1 (Hardened)  
+**Version:** 2.0 (Global Hardened)  
 **Effective Date:** 26 August 2026  
-**Scope:** Macroeconomic data sources, PIT semantics, authentication, contract verification, and canonical registry for Sentinax Private Engine.
+**Scope:** Macroeconomic data sources, Point-in-Time (PIT) vintage semantics, authentication, contract verification, and canonical registry for Sentinax Private Engine.
 
 ---
 
 ## 1. Overview & Data Sources
 
-| Source | Authority Level | Access Method | Contract Status | Freshness Basis | Secret Requirement | Tax Indexation Eligible? |
-|---|---|---|---|---|---|---|
-| **TCMB EVDS** | `TIER_1_REGULATORY` | REST API (JSON) | **VERIFIED (EVDS2)** | `EFFECTIVE_DATE` | `TCMB_EVDS_API_KEY` (Header `key`) | N/A (FX / Funding Rates) |
-| **TÜİK SDMX** | `TIER_1_REGULATORY` | SDMX 2.1 REST API | **UNVERIFIED (YELLOW)** | `PUBLISHED_AT` | None (Open Web Service) | **YES** (Yİ-ÜFE Only, once verified) |
-| **ENAG Manual** | `TIER_3_AGGREGATOR` | Manual Ingestion | **VERIFIED (MANUAL)** | `PUBLISHED_AT` | None (Audit Trail) | **NO** (Strictly Prohibited) |
+| Source | Geography | Authority Level | Access Method | Contract Status | Freshness Basis | Secret Requirement | Tax Indexation Eligible? |
+|---|---|---|---|---|---|---|---|
+| **TCMB EVDS** | TR | `TIER_1_REGULATORY` | REST API (JSON) | **VERIFIED (EVDS2)** | `EFFECTIVE_DATE` | `TCMB_EVDS_API_KEY` (Header `key`) | N/A (FX / Funding Rates) |
+| **TÜİK SDMX** | TR | `TIER_1_REGULATORY` | SDMX 2.1 REST API | **UNVERIFIED (YELLOW)** | `PUBLISHED_AT` | None (Open Web Service) | **YES** (Yİ-ÜFE Only, once verified) |
+| **ENAG Manual** | TR | `TIER_3_AGGREGATOR` | Manual Ingestion | **VERIFIED (MANUAL)** | `PUBLISHED_AT` | None (Audit Trail) | **NO** (Strictly Prohibited) |
+| **FRED / ALFRED** | US | `TIER_1_REGULATORY` | REST API v1 (JSON) | **VERIFIED** | `PUBLISHED_AT` / `EFFECTIVE_DATE` | `FRED_API_KEY` (Query `api_key`) | N/A (Global Macro) |
 
 ---
 
-## 2. Source Details & Specifications
+## 2. FRED / ALFRED Unified Adapter (United States)
 
-### A. TCMB EVDS (Electronic Data Delivery System)
-- **Base Endpoint:** `https://evds2.tcmb.gov.tr/service/evds/`
-- **EVDS3 Beta Transition:** TCMB launched EVDS3 Beta on **26 January 2026**. EVDS2 remains fully supported and accessible concurrently during the transition.
-- **Security:** The user API key is provided strictly in the HTTP request header (`headers={"key": api_key}`).
-  - *Invariant:* The API key is **NEVER** placed in URL query strings, application logs, cache keys, or exception messages.
-- **Verified Core Series:**
-  - `TR_FX_USDTRY` (`TP.DK.USD.A.YTL`): TCMB Gösterge Niteliğindeki ABD Doları Döviz Alış Kuru (TL).
-  - `TR_FX_EURTRY` (`TP.DK.EUR.A.YTL`): TCMB Gösterge Niteliğindeki Euro Döviz Alış Kuru (TL).
-  - `TR_TCMB_AOFM` (`TP.APIFON4`): TCMB Ağırlıklı Ortalama Fonlama Maliyeti (AOFM) (%).
-- **Policy Rate Status:**
-  - *Note:* `TP.APIFON4` represents the **Weighted Average Cost of Funding (AOFM)**, not the 1-week repo policy rate. The statutory 1-week repo policy rate code in EVDS is marked `UNVERIFIED` and disabled until confirmed by official EVDS series documentation.
+### A. Architectural Concept
+- **Unified Engine:** St. Louis Fed FRED (Current) and ALFRED (Vintage Point-in-Time) operate on the **same underlying API (Version 1)**. Rather than creating duplicate adapters, `FREDALFREDProvider` provides a single unified interface supporting both `CURRENT` observations and `SOURCE_VINTAGE` historical revisions.
+- **Base Endpoint:** `https://api.stlouisfed.org/fred/`
+- **Security:** `api_key` is passed as a query parameter as required by official FRED API v1 specifications.
+  - *Invariant:* The API key is stripped from cache keys, logs, raw snapshots, diagnostics, and exceptions.
 
-### B. TÜİK SDMX (TurkStat)
-- **Status:** **YELLOW / UNVERIFIED DATAFLOWS**
-- **Base Endpoint:** `https://data.tuik.gov.tr/api/sdmx/v1/`
-- **Audit Findings:** While TÜİK's data portal operates on SDMX 2.1 standards, exact public machine-readable dataflow codes and codelist dimensions require official catalog discovery confirmation. Hardcoded guesses (e.g. `CPI_INDEX_2003`) are disabled (`is_active = False`) until verified against the live portal metadata.
+### B. Execution Modes
+1. **Current Mode (FRED):**
+   - Fetches latest available observations from `series/observations` with `units=lin` (enforces raw linear levels; server-side aggregations/transformations are strictly avoided).
+2. **Vintage Mode (ALFRED):**
+   - Point-in-Time requests with `as_of_mode == "SOURCE_AS_OF"` pass `vintage_dates=YYYY-MM-DD(as_of_time)`.
+   - Returns the exact revision that was public knowledge on the requested date. Future revisions are strictly prevented from leaking into historical queries.
+3. **SYSTEM_AS_OF Historical Guard:**
+   - Historical queries with `as_of_mode == "SYSTEM_AS_OF"` are rejected at the external provider boundary with a clear diagnostic (`"Historical SYSTEM_AS_OF requires local PIT storage"`).
 
-### C. ENAG (Inflation Research Group)
-- **Methodology:** Independent, research-based inflation estimates.
-- **Lifecycle & History:** `PENDING` -> `VERIFIED` -> `REJECTED`.
-  - Only records with `verification_status == VERIFIED` and a valid `source_url` can be used in decision support.
-  - Overwriting existing records is strictly forbidden; updates must reference `supersedes_record_id`.
-  - Verification is immutable regarding substantive data (values, dates, sources).
-- **Strict Constraint:** ENAG data is **NEVER** used for statutory tax indexation or official accounting calculations.
+### C. Origin-Source Distinction & Provenance
+FRED is the delivery aggregator; the originating statistical authorities are distinct:
+- `CPIAUCSL`, `CPILFESL`, `UNRATE` -> **U.S. Bureau of Labor Statistics (BLS)**
+- `GDPC1` -> **U.S. Bureau of Economic Analysis (BEA)**
+- `INDPRO`, `DFF` -> **Board of Governors of the Federal Reserve System**
+
+### D. Availability & Lookahead Semantics
+- `realtime_start` provides **DATE-level precision** (e.g. `2024-05-15`).
+- *Conservative Rule:* Date-only availability cannot guarantee intraday timing. An observation is safe for backtesting if `source_available_date < as_of_date`. If exact `published_at` timestamp is known, `published_at <= as_of_time` is used.
+- *Missing Marker:* FRED missing marker `"."` is strictly normalized to `None`. Zero values (`0.0`, `0`) are preserved.
+
+### E. Verified Initial US Registry
+1. `US_CPI_HEADLINE_INDEX` (`CPIAUCSL`): Headline Consumer Price Index (Index 1982-1984=100, SA).
+2. `US_CPI_CORE_INDEX` (`CPILFESL`): Core Consumer Price Index Less Food & Energy (Index 1982-1984=100, SA).
+3. `US_UNEMPLOYMENT_RATE` (`UNRATE`): Civilian Unemployment Rate (Percent, SA).
+4. `US_REAL_GDP` (`GDPC1`): Real Gross Domestic Product (Billions of Chained 2017 Dollars, SAAR).
+5. `US_INDUSTRIAL_PRODUCTION` (`INDPRO`): Industrial Production Index (Index 2017=100, SA).
+6. `US_EFFECTIVE_FED_FUNDS_RATE` (`DFF`): Effective Federal Funds Rate (Percent, NSA).
+
+*(Note: U.S. Treasury yield curve series such as DGS10/DGS2 are intentionally excluded from this phase and will be added in a dedicated official Treasury layer).*
 
 ---
 
-## 3. Point-in-Time (PIT) Storage & Immutability
-Macroeconomic time-series are stored in `macro_series` and `macro_observations` (Migration 006):
-- Full-row immutability enforced by PostgreSQL trigger (allow-list: only `is_superseded` and `superseded_at` can be updated).
-- Insertion of a revision automatically supersedes the previous observation.
-- Point-in-Time RPC `get_pit_macro_observation` prevents historical lookahead leaks.
+## 3. Turkey Official Macroeconomic Sources
+
+### A. TCMB EVDS
+- **EVDS3 Transition:** TCMB opened EVDS3 Beta on **26 January 2026**. EVDS2 remains fully active and supported.
+- **Verified Series:** `TR_FX_USDTRY`, `TR_FX_EURTRY`, `TR_TCMB_AOFM` (`TP.APIFON4` - Weighted Average Funding Cost).
+- **Policy Rate:** Statutory 1-week repo policy rate code in EVDS is `UNVERIFIED` and disabled until officially confirmed.
+
+### B. TÜİK SDMX
+- **Status:** `ProviderAccessStatus.YELLOW`. Guessed dataflows are disabled pending official catalog discovery.
+
+### C. Manual ENAG
+- **Status:** Manual verified ingestion (`PENDING` -> `VERIFIED`). Overwrites are strictly prohibited; revisions require `supersedes_record_id`.
+- **Constraint:** Strictly prohibited from tax indexation (tax indexation strictly requires TÜİK Yİ-ÜFE).
