@@ -1,7 +1,7 @@
 """
 backend/engine/private/sec/__init__.py
 ========================================
-SEC EDGAR Filing & Raw XBRL CompanyFacts Backbone (Phase 8A Hardened).
+SEC EDGAR Filing, Raw XBRL & Canonical Concept Resolver Module (Phase 8A + 8B.1).
 """
 
 from backend.engine.private.sec.cik import format_cik_for_path, normalize_cik
@@ -18,6 +18,22 @@ from backend.engine.private.sec.company_facts import (
     SECCompanyFactsProvider,
     parse_sec_decimal,
 )
+from backend.engine.private.sec.concept_resolver import (
+    SECConceptResolver,
+    classify_form_role,
+    validate_unit_compatibility,
+)
+from backend.engine.private.sec.concepts import (
+    CanonicalSECConceptDefinition,
+    ConceptVariant,
+    FormRole,
+    MatchStrength,
+    SECConceptMatchStatus,
+    StatementFamily,
+    UnitClass,
+    VerificationStatus,
+    get_initial_canonical_concept_definitions,
+)
 from backend.engine.private.sec.discovery import (
     SECTickerCandidate,
     SECTickerDiscoveryService,
@@ -30,6 +46,7 @@ from backend.engine.private.sec.lineage import (
 )
 from backend.engine.private.sec.models import (
     PeriodType,
+    SECCanonicalFactCandidate,
     SECFactFilingLinkRecord,
     SECFilingRecord,
     SECRawFactRecord,
@@ -56,6 +73,7 @@ __all__ = [
     "SECFilingRecord",
     "SECRawFactRecord",
     "SECFactFilingLinkRecord",
+    "SECCanonicalFactCandidate",
     "SECSubmissionMetadata",
     "SECSubmissionsFetchResult",
     "build_submissions_url",
@@ -81,4 +99,16 @@ __all__ = [
     "get_fact_source_available_at",
     "SECTickerCandidate",
     "SECTickerDiscoveryService",
+    "UnitClass",
+    "MatchStrength",
+    "StatementFamily",
+    "VerificationStatus",
+    "FormRole",
+    "SECConceptMatchStatus",
+    "ConceptVariant",
+    "CanonicalSECConceptDefinition",
+    "get_initial_canonical_concept_definitions",
+    "SECConceptResolver",
+    "classify_form_role",
+    "validate_unit_compatibility",
 ]

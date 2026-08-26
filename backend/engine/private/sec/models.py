@@ -237,6 +237,85 @@ class SECFactFilingLinkRecord:
         self.accession_number = self.accession_number.strip()
 
 
+@dataclass
+class SECCanonicalFactCandidate:
+    """
+    Canonical economic concept candidate resolved from a raw XBRL fact.
+    Contains verified taxonomy mapping, exact Decimal value, period/unit compatibility status,
+    and form role metadata without premature metric calculations or winner selection.
+    """
+    raw_fact_id: UUID
+    cik: str
+    canonical_concept: str
+    taxonomy: str
+    source_concept: str
+    match_strength: str                 # "exact", "compatible", "legacy_compatible"
+    variant_priority: int               # 1 = primary, 2 = secondary
+    value: Optional[Decimal]
+    unit: str
+    period_type: PeriodType
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    accession_number: Optional[str] = None
+    form: Optional[str] = None
+    form_role: str = "other"            # FormRole value (e.g. "primary_annual", "amendment_annual")
+    is_amendment: bool = False
+    fiscal_year: Optional[int] = None
+    fiscal_period: Optional[str] = None
+    filed_date: Optional[date] = None
+    frame: Optional[str] = None
+    snapshot_id: Optional[UUID] = None
+    filing_id: Optional[UUID] = None
+    lineage_status: str = "UNRESOLVED"  # "RESOLVED", "UNRESOLVED_ACCESSION", "UNRESOLVED_FILING"
+    unit_match_status: str = "VALID"
+    period_match_status: str = "VALID"
+    confidence_level: str = "HIGH"      # DataConfidenceLevel value
+    diagnostics: List[str] = field(default_factory=list)
+    id: UUID = field(default_factory=uuid4)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def __post_init__(self) -> None:
+        self.cik = normalize_cik(self.cik)
+        if isinstance(self.period_type, str):
+            self.period_type = PeriodType(self.period_type)
+        if self.accession_number:
+            self.accession_number = self.accession_number.strip()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "raw_fact_id": str(self.raw_fact_id),
+            "cik": self.cik,
+            "canonical_concept": self.canonical_concept,
+            "taxonomy": self.taxonomy,
+            "source_concept": self.source_concept,
+            "match_strength": self.match_strength,
+            "variant_priority": self.variant_priority,
+            "value": str(self.value) if self.value is not None else None,
+            "unit": self.unit,
+            "period_type": self.period_type.value,
+            "start_date": self.start_date.isoformat() if self.start_date else None,
+            "end_date": self.end_date.isoformat() if self.end_date else None,
+            "accession_number": self.accession_number,
+            "form": self.form,
+            "form_role": self.form_role,
+            "is_amendment": self.is_amendment,
+            "fiscal_year": self.fiscal_year,
+            "fiscal_period": self.fiscal_period,
+            "filed_date": self.filed_date.isoformat() if self.filed_date else None,
+            "frame": self.frame,
+            "snapshot_id": str(self.snapshot_id) if self.snapshot_id else None,
+            "filing_id": str(self.filing_id) if self.filing_id else None,
+            "lineage_status": self.lineage_status,
+            "unit_match_status": self.unit_match_status,
+            "period_match_status": self.period_match_status,
+            "confidence_level": self.confidence_level,
+            "diagnostics": self.diagnostics,
+            "created_at": self.created_at.isoformat(),
+        }
+
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Official URL Builders
 # ─────────────────────────────────────────────────────────────────────────────

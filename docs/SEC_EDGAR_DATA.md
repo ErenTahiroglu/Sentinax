@@ -100,7 +100,44 @@ Base URL: `https://data.sec.gov`
 
 ---
 
-## 9. Boundary to Phase 8B
+## 9. Phase 8B.1 — Canonical Concept Families & Raw-Fact Candidate Resolver
 
-Phase 8A provides the **hardened, Point-in-Time, entity-level raw fact backbone**.  
-Financial concept standardization (e.g. mapping `Revenues` vs `SalesRevenueNet`, computing TTM, FCF, ROIC, EPS, Margins, or Restatement Reconciliation) is strictly deferred to **Phase 8B**.
+Phase 8B.1 defines the deterministic registry that maps raw taxonomy tags to canonical economic concept families without metric calculations or winner selection.
+
+### 9.1 Initial Canonical Concept Families
+
+| Canonical Concept | Statement Family | Expected Period | Expected Unit Class | Primary Verified Tags |
+|---|---|---|---|---|
+| `REVENUE` | `INCOME_STATEMENT` | `DURATION` | `MONETARY` | `us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax`, `us-gaap:Revenues`, `ifrs-full:Revenue` |
+| `OPERATING_INCOME` | `INCOME_STATEMENT` | `DURATION` | `MONETARY` | `us-gaap:OperatingIncomeLoss`, `ifrs-full:ProfitLossFromOperatingActivities` |
+| `NET_INCOME` | `INCOME_STATEMENT` | `DURATION` | `MONETARY` | `us-gaap:NetIncomeLoss`, `us-gaap:ProfitLoss`, `ifrs-full:ProfitLoss` |
+| `TOTAL_ASSETS` | `BALANCE_SHEET` | `INSTANT` | `MONETARY` | `us-gaap:Assets`, `ifrs-full:Assets` |
+| `TOTAL_LIABILITIES` | `BALANCE_SHEET` | `INSTANT` | `MONETARY` | `us-gaap:Liabilities`, `ifrs-full:Liabilities` |
+| `EQUITY_ATTRIBUTABLE_TO_PARENT` | `BALANCE_SHEET` | `INSTANT` | `MONETARY` | `us-gaap:StockholdersEquity`, `ifrs-full:EquityAttributableToOwnersOfParent` |
+| `EQUITY_INCLUDING_NCI` | `BALANCE_SHEET` | `INSTANT` | `MONETARY` | `us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest`, `ifrs-full:Equity` |
+| `CURRENT_ASSETS` | `BALANCE_SHEET` | `INSTANT` | `MONETARY` | `us-gaap:AssetsCurrent`, `ifrs-full:CurrentAssets` |
+| `CURRENT_LIABILITIES` | `BALANCE_SHEET` | `INSTANT` | `MONETARY` | `us-gaap:LiabilitiesCurrent`, `ifrs-full:CurrentLiabilities` |
+| `CASH_AND_CASH_EQUIVALENTS` | `BALANCE_SHEET` | `INSTANT` | `MONETARY` | `us-gaap:CashAndCashEquivalentsAtCarryingValue`, `ifrs-full:CashAndCashEquivalents` |
+| `OPERATING_CASH_FLOW` | `CASH_FLOW_STATEMENT` | `DURATION` | `MONETARY` | `us-gaap:NetCashProvidedByUsedInOperatingActivities`, `ifrs-full:CashFlowsFromUsedInOperatingActivities` |
+| `CAPEX_PP&E` | `CASH_FLOW_STATEMENT` | `DURATION` | `MONETARY` | `us-gaap:PaymentsToAcquirePropertyPlantAndEquipment`, `ifrs-full:PurchaseOfPropertyPlantAndEquipment` |
+| `DILUTED_EPS` | `INCOME_STATEMENT` | `DURATION` | `MONETARY_PER_SHARE` | `us-gaap:EarningsPerShareDiluted`, `ifrs-full:DilutedEarningsLossPerShare` |
+| `DILUTED_WEIGHTED_AVERAGE_SHARES` | `SHARE_DATA` | `DURATION` | `SHARES` | `us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding`, `ifrs-full:AdjustedWeightedAverageShares` |
+| `SHARES_OUTSTANDING` | `SHARE_DATA` | `INSTANT` | `SHARES` | `dei:EntityCommonStockSharesOutstanding`, `us-gaap:CommonStockSharesOutstanding` |
+
+### 9.2 Candidate Invariant (Candidate != Winner)
+
+- `SECCanonicalFactCandidate` represents a validly mapped economic disclosure entry.
+- All candidate entries from original filings, amendments (`10-K/A`), and comparative restatement columns are preserved simultaneously.
+- No candidate is discarded or chosen as a single "winner" in Phase 8B.1.
+
+---
+
+## 10. Boundary to Phase 8B.2
+
+Phase 8B.2 is strictly responsible for:
+- Accession and form precedence resolution.
+- Fiscal period alignment (Annual vs Quarter vs Year-to-Date subtraction).
+- Amendment and restatement reconciliation.
+- Point-in-Time (PIT) as-of knowledge view construction.
+- Current-view selection for downstream analytical engines.
+
