@@ -1,157 +1,79 @@
 # Sentinax — Foundation Audit Report
 
 **Audit Date:** 2026-08-26  
-**Version:** 5.0 (Foundation)  
-**Scope:** Full repo audit — KEEP / REFACTOR / REMOVE / DEFER classification
+**Version:** 6.0 (Hardened Foundation)  
+**Scope:** Full repo audit & hardening — KEEP / REFACTOR / REMOVE / DEFER classification
 
 ---
 
 ## Executive Summary
 
-Sentinax was refactored from an attempted autonomous portfolio management system
-to a focused **investment decision-support platform** with two bounded contexts:
+Sentinax is a focused **investment decision-support platform** with two clear bounded contexts:
 
-- **Public Buffett Engine**: Value investing screener for BIST stocks
-- **Private Personal Investment Decision Engine**: Personal portfolio analysis (foundation phase)
+- **Public Buffett Engine**: Value investing screener for BIST stocks.
+- **Private Personal Investment Decision Engine**: Institutional-grade personal portfolio analysis and decision engine.
 
-Crypto support, order execution, paper trading, and ML predictions have been
-permanently removed from the production path.
+All out-of-scope legacy systems (crypto, automated order execution, paper trading, unverified ML models, and Monte-Carlo optimizers) have been **permanently purged** from the repository.
 
 ---
 
-## Audit Classification Table
+## Audit Classification & Actions
 
 ### Backend — Engine
 
-| File | Classification | Action | Notes |
-|------|---------------|--------|-------|
-| `engine/graph.py` | REFACTOR | Islamic node → no-op stub | LangGraph graph preserved |
-| `engine/agent_states.py` | KEEP | No change | `check_islamic` field retained (harmless) |
-| `engine/circuit_breaker.py` | KEEP | No change | Risk gate logic is correct |
-| `engine/execution_engine.py` | **REMOVE** | ✅ Deleted | Paper trading / BUY-SELL orders. Scope violation. |
-| `engine/optimization_engine.py` | **DEFER** | ✅ → `deprecated/` | Monte-Carlo MVO. Will be rewritten as HRP/CVaR. |
-| `engine/buffett/` | KEEP | No change | Entire Buffett Engine preserved |
-| `engine/private/` | **NEW** | ✅ Created | Private Engine bounded context |
+| Component | Status | Action | Rationale |
+|-----------|--------|--------|-----------|
+| `engine/graph.py` | REFACTOR | IslamicNode removed entirely; 2-branch data ingestion (Market, News) | Scope hardening. |
+| `engine/agent_states.py` | REFACTOR | `islamic_report` and `check_islamic` removed | Clean GraphState. |
+| `engine/circuit_breaker.py` | KEEP | Python 3.9 type-hint compatibility fixed | SRE risk firewall. |
+| `engine/execution_engine.py` | **REMOVE** | ✅ Deleted | Sentinax does not send orders. |
+| `deprecated/` | **REMOVE** | ✅ Permanently deleted | Git history preserves archive. Prevents accidental re-import. |
+| `engine/buffett/` | KEEP | Untouched | Production value-investing screener. |
+| `engine/private/` | **NEW** | ✅ Hardened | Pure UUID identity, interval overlap prevention, dual PIT query modes. |
 
-### Backend — Analyzers
+### Backend — Identity & Storage Layer (Private Engine)
 
-| File | Classification | Action | Notes |
-|------|---------------|--------|-------|
-| `analyzers/bist_analyzer.py` | KEEP | No change | Core BIST+TEFAS analyzer |
-| `analyzers/base_analyzer.py` | KEEP | No change | Base class |
-| `analyzers/technical_analyzer.py` | KEEP | No change | Technical indicators |
-| `analyzers/us_analyzer.py` | KEEP | No change | US stock analysis |
-| `analyzers/ml_predictor.py` | **REMOVE** | ✅ → `deprecated/` | Not real ML. Crypto deps. |
-| `analyzers/islamic_analyzer.py` | **REMOVE** | ✅ Deleted | Out of scope. User decision. |
-
-### Backend — Data
-
-| File | Classification | Action | Notes |
-|------|---------------|--------|-------|
-| `data/market_detector.py` | REFACTOR | CRYPTO → UNKNOWN | Crypto route removed |
-| `data/data_sources.py` | KEEP | No change | SSL, session management |
-| `data/constants.py` | KEEP | No change | Ticker lists |
-| `data/news_fetcher.py` | KEEP | No change | News feed |
-| `data/tefas_scraper.py` | KEEP | No change | TEFAS data |
-| `data/shadow_pnl_tracker.py` | **DEFER** | ✅ → `deprecated/` | Paper-trade semantics. PnL will be redesigned. |
-
-### Backend — API / Routers
-
-| File | Classification | Action | Notes |
-|------|---------------|--------|-------|
-| `api/main.py` | REFACTOR | ✅ Cleaned | Removed scheduler, dead imports |
-| `api/routers/buffett.py` | KEEP | No change | Active. `/buffett/*` |
-| `api/routers/analysis.py` | **REMOVE** | ✅ Deleted | Comment-out. optimization + predict paths gone. |
-| `api/routers/billing.py` | **REMOVE** | ✅ Deleted | Comment-out. No scope. |
-| `api/routers/admin.py` | **REMOVE** | ✅ Deleted | Comment-out. No scope. |
-| `api/routers/user.py` | **REMOVE** | ✅ Deleted | Comment-out. paper_trades references. |
-| `api/routers/chat.py` | **REMOVE** | ✅ Deleted | Comment-out. Old chat system. |
-| `api/routers/telemetry.py` | **REMOVE** | ✅ Deleted | Comment-out. |
-| `api/models.py` | KEEP | No change | Pydantic request/response models |
-| `api/dependencies.py` | KEEP | No change | JWT, rate-limit deps |
-| `api/config.py` | KEEP | No change | Settings |
-
-### Backend — Nodes
-
-| File | Classification | Action | Notes |
-|------|---------------|--------|-------|
-| `nodes/data_nodes.py` | REFACTOR | ✅ Crypto path removed | BIST/TEFAS/US only |
-| `nodes/adversarial_agents.py` | KEEP | No change | Bull/Bear/Neutral/PM agents |
-| `nodes/ai_agent.py` | KEEP | No change | LLM advisory functions |
-
-### Backend — Services
-
-| File | Classification | Action | Notes |
-|------|---------------|--------|-------|
-| `services/analysis_service.py` | REFACTOR | ✅ optimize_portfolio removed | Placeholder only |
-| `services/chat_orchestrator.py` | KEEP | No change | Old graph orchestrator (kept for now) |
-
-### Backend — Infrastructure
-
-| File | Classification | Action | Notes |
-|------|---------------|--------|-------|
-| `infrastructure/` (all) | KEEP | No change | Redis, Supabase, LLM factory, auth |
-
-### Backend — Tests
-
-| File | Classification | Action | Notes |
-|------|---------------|--------|-------|
-| `tests/conftest.py` | KEEP | No change | Zero-trust mocking |
-| `tests/test_market_detector.py` | REFACTOR | ✅ CRYPTO→UNKNOWN | Test expectation updated |
-| `tests/test_pnl_isolation.py` | SKIP | ✅ `pytestmark skip` | PnL deprecated |
-| `tests/test_financial_integrity.py` | SKIP | ✅ `pytestmark skip` | PnL deprecated |
-| `tests/test_decimal_precision_v3.py` | SKIP | ✅ `pytestmark skip` | PnL deprecated |
-| `tests/test_shadow_pnl_chaos.py` | SKIP | ✅ `pytestmark skip` | PnL deprecated |
-| `tests/test_logic_hardening.py` | REFACTOR | ✅ PnL test individually skipped | CB + auth tests active |
-| `tests/test_private_domain.py` | **NEW** | ✅ Created | Private engine domain tests |
-| `tests/test_no_crypto_path.py` | **NEW** | ✅ Created | Structural regression guard |
+| Component | Status | Description |
+|-----------|--------|-------------|
+| `domain.py` | NEW | Missing data ≠ 0 invariant, PARTIAL aggregate analysis, `AsOfMode` (SOURCE_AS_OF vs SYSTEM_AS_OF). |
+| `identity.py` | NEW | Master `InstrumentRecord` with pure UUID identity, `ProviderAliasRecord` with [valid_from, valid_to) interval semantics, `CorporateActionRecord` with action-specific field validation, `InstrumentResolverService`. |
+| `storage_models.py` | NEW | `RawProviderSnapshotRecord` (deterministic SHA-256 hash), `NormalizedObservationRecord` (UUID instrument reference, strict PIT timestamps). |
+| `provider_contract.py` | NEW | Runtime checkable `DataProviderContract` protocol. |
+| `004_private_engine_pit_storage.sql` | NEW | Immutable raw snapshots, PIT normalized observations, anti-tamper triggers, dual-mode PIT RPC. |
+| `005_instrument_identity.sql` | NEW | Master instruments (UUID), provider aliases with `btree_gist` exclusion constraint, corporate action semantic constraints. |
 
 ### Frontend
 
-| File/Dir | Classification | Action | Notes |
-|----------|---------------|--------|-------|
-| `frontend/buffett/` | KEEP | No change | Public Buffett UI |
-| `frontend/` (main) | KEEP | No change | General UI (legacy, low priority) |
-| `frontend-vanilla-backup/` | **REMOVE** | ✅ Deleted | Byte-for-byte duplicate of `frontend/` |
-
-### New Modules Created
-
-| File | Purpose |
-|------|---------|
-| `backend/deprecated/__init__.py` | Deprecated package marker |
-| `backend/deprecated/README.md` | Deprecated archive documentation |
-| `backend/engine/private/__init__.py` | Private Engine package |
-| `backend/engine/private/domain.py` | Core domain enums and value types |
-| `backend/engine/private/result.py` | DataResult / AnalysisResult contracts |
-| `backend/engine/private/provider_contract.py` | DataProviderContract Protocol |
-| `backend/tests/test_private_domain.py` | Private Engine domain tests |
-| `backend/tests/test_no_crypto_path.py` | Structural crypto regression guard |
-| `docs/FOUNDATION_AUDIT.md` | This file |
+| Component | Status | Action | Rationale |
+|-----------|--------|--------|-----------|
+| `frontend/` (Buffett) | KEEP | Untouched | Active UI for Buffett Screener. |
+| `frontend-vanilla-backup/` | **REMOVE** | ✅ Deleted | 100% duplicate directory. |
 
 ---
 
-## Deferred (Explicit DEFER — Not This Phase)
+## Key Invariants Enforced
 
-| Topic | Reason |
-|-------|--------|
-| EVDS / TEFAS API integration | Data provider implementation — Phase 2 |
-| CVaR / HRP / HERC optimizer | Optimizer rewrite — Phase 3 |
-| Tax engine | Tax framework — Phase 4+ |
-| Portfolio import UI | Frontend Private Engine — Phase 2 |
-| ML (experimental) | Shadow mode only — future phase |
-| Telegram alerts | Scheduler refactor — future phase |
-| Billing / Admin routers | Not in MVP scope |
-| `oracle_worker/` | Not yet inspected — standing decision |
-| `scripts/` | Not yet inspected — standing decision |
+1. **UUID Instrument Identity:**
+   - Tickers, fund codes, company names are NEVER primary keys.
+   - Master instruments use immutable UUIDs (`internal_instrument_id`).
+   - Ticker renames (e.g. `FB` -> `META`) preserve historical continuity without breaking time series.
 
----
+2. **Provider Alias Interval Integrity:**
+   - Boundary semantics: Half-open `[valid_from, valid_to)`.
+   - Overlapping date intervals for the same `(provider, provider_symbol)` are strictly rejected by PostgreSQL `btree_gist` exclusion constraint and Python resolver service.
+   - Non-overlapping historical ticker reuse is fully supported.
 
-## Core Principles Established
+3. **Corporate Action Field Isolation:**
+   - `SPLIT` requires `split_factor > 0` and forbids `cash_amount`.
+   - `DIVIDEND` requires `cash_amount >= 0` and forbids `split_factor`.
+   - `SYMBOL_CHANGE` requires `old_symbol` and `new_symbol` and forbids split/cash amounts.
 
-1. **Missing data ≠ zero.** `DataResult.unavailable()` always returns `None`.
-2. **PARTIAL is a valid, first-class result.** Never crash on missing data.
-3. **No fabrication.** If a value cannot be computed, it is `UNAVAILABLE`.
-4. **No crypto in scope.** `detect_market()` returns `UNKNOWN` for crypto-like tickers.
-5. **No execution.** System never sends orders or simulates paper trades.
-6. **Point-in-time integrity.** `effective_date` ≠ `retrieved_at` in provider responses.
-7. **Audit trail.** Every data point can be traced to its `ProviderProvenance`.
+4. **Point-In-Time (PIT) Storage & Dual Query Modes:**
+   - `SOURCE_AS_OF`: Returns facts publicly available to the market at `as_of` (`published_at <= as_of`, fallback to `observed_at`).
+   - `SYSTEM_AS_OF`: Returns facts ingested into Sentinax at `as_of` (`ingested_at <= as_of` AND `published_at <= as_of`).
+   - Revisions & amendments published after `as_of` are strictly invisible to historical queries.
+   - Anti-tamper triggers prohibit DELETE and destructive UPDATE on raw snapshots and observations.
+
+5. **Missing Data Contract:**
+   - Missing data is NEVER represented as 0.0 or fabricated.
+   - Results with missing inputs produce `DataStatus.PARTIAL` or `DataStatus.UNAVAILABLE`.

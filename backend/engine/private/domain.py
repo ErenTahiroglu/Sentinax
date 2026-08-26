@@ -130,11 +130,30 @@ class SourceTier(Enum):
     TIER_5_PROXY = "tier_5"         # Best-available proxy — lowest confidence
 
 
+class AsOfMode(Enum):
+    """
+    Point-in-Time (PIT) query semantics modes.
+
+    SOURCE_AS_OF:
+        Backtest view: returns the fact that was publicly known to the market
+        at the specified time: (published_at <= as_of).
+        If published_at is NULL, deterministic fallback uses observed_at <= as_of.
+
+    SYSTEM_AS_OF:
+        Production / Audit view: returns what Sentinax had actually ingested
+        into its database at that moment:
+        (published_at IS NULL OR published_at <= as_of) AND ingested_at <= as_of.
+    """
+    SOURCE_AS_OF = "source_as_of"
+    SYSTEM_AS_OF = "system_as_of"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Time / Horizon
 # ─────────────────────────────────────────────────────────────────────────────
 
 class Horizon(Enum):
+
     """
     Investment or analysis horizon.
     Does NOT imply any trading or execution timeframe.

@@ -26,26 +26,22 @@ DEPRECATED_DIR = os.path.join(BACKEND_ROOT, "deprecated")
 
 def collect_active_py_files() -> list[str]:
     """
-    Returns all .py files in backend/ EXCEPT:
-    - backend/deprecated/ (archive)
-    - backend/tests/ (test files legitimately import from deprecated with try/except guards)
+    Returns all .py files in backend/ EXCEPT backend/tests/.
     """
     active_files = []
     excluded_dirs = [
-        os.path.abspath(DEPRECATED_DIR),
         os.path.abspath(os.path.join(BACKEND_ROOT, "tests")),
     ]
     for dirpath, dirnames, filenames in os.walk(BACKEND_ROOT):
         abs_dirpath = os.path.abspath(dirpath)
-        # Skip excluded directories
         if any(abs_dirpath.startswith(ex) for ex in excluded_dirs):
             continue
-        # Skip __pycache__
         dirnames[:] = [d for d in dirnames if d != "__pycache__"]
         for fname in filenames:
             if fname.endswith(".py"):
                 active_files.append(os.path.join(dirpath, fname))
     return active_files
+
 
 
 
@@ -89,20 +85,12 @@ class TestNoCryptoProductionPath:
             "Crypto path was removed — check for regression."
         )
 
-    def test_no_active_module_imports_from_deprecated(self):
+    def test_deprecated_directory_does_not_exist(self):
         """
-        No active (non-deprecated) module may import from backend.deprecated.
+        backend/deprecated/ was purged. It must not exist in the working tree.
         """
-        active_files = collect_active_py_files()
-        violations = []
-        
-        for fpath in active_files:
-            content = read_file(fpath)
-            if "from backend.deprecated" in content or "import backend.deprecated" in content:
-                violations.append(os.path.relpath(fpath, REPO_ROOT))
-        
-        assert not violations, (
-            f"Active modules must not import from backend.deprecated: {violations}"
+        assert not os.path.exists(DEPRECATED_DIR), (
+            f"backend/deprecated/ must not exist: {DEPRECATED_DIR}"
         )
 
     def test_execution_engine_not_importable_from_active_code(self):
@@ -130,43 +118,58 @@ class TestNoCryptoProductionPath:
         
         for fpath in active_files:
             content = read_file(fpath)
-            if "from backend.analyzers.islamic_analyzer" in content:
+            if "islamic_analyzer" in content or "islamic_node" in content:
                 violations.append(os.path.relpath(fpath, REPO_ROOT))
         
         assert not violations, (
-            f"islamic_analyzer import found in active code: {violations}"
+            f"islamic_analyzer / islamic_node reference found in active code: {violations}"
         )
 
     def test_ml_predictor_not_imported_in_active_code(self):
         """
-        ml_predictor.py was moved to deprecated. No active module should import it
-        from the original location.
+        ml_predictor.py was deleted. No active module should reference it.
         """
         active_files = collect_active_py_files()
         violations = []
         
         for fpath in active_files:
             content = read_file(fpath)
-            if "from backend.analyzers.ml_predictor" in content:
+            if "ml_predictor" in content:
                 violations.append(os.path.relpath(fpath, REPO_ROOT))
         
         assert not violations, (
-            f"ml_predictor import from original location found in active code: {violations}"
+            f"ml_predictor reference found in active code: {violations}"
         )
 
     def test_optimization_engine_not_imported_in_active_code(self):
         """
-        optimization_engine.py was moved to deprecated. No active module should
-        import it from the original location.
+        optimization_engine.py was deleted. No active module should reference it.
         """
         active_files = collect_active_py_files()
         violations = []
         
         for fpath in active_files:
             content = read_file(fpath)
-            if "from backend.engine.optimization_engine" in content:
+            if "optimization_engine" in content:
                 violations.append(os.path.relpath(fpath, REPO_ROOT))
         
         assert not violations, (
-            f"optimization_engine import from original location found: {violations}"
+            f"optimization_engine reference found in active code: {violations}"
         )
+
+    def test_shadow_pnl_tracker_not_referenced_in_active_code(self):
+        """
+        shadow_pnl_tracker.py was deleted. No active module should reference it.
+        """
+        active_files = collect_active_py_files()
+        violations = []
+        
+        for fpath in active_files:
+            content = read_file(fpath)
+            if "shadow_pnl_tracker" in content:
+                violations.append(os.path.relpath(fpath, REPO_ROOT))
+        
+        assert not violations, (
+            f"shadow_pnl_tracker reference found in active code: {violations}"
+        )
+

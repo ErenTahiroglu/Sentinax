@@ -6,11 +6,6 @@ from backend.engine.agent_states import GraphState
 from backend.engine.circuit_breaker import evaluate_risk_circuit_breaker
 from backend.infrastructure.auth import verify_token_string
 
-# shadow_pnl_tracker moved to deprecated/ — tests using it are individually skipped
-try:
-    from backend.deprecated.shadow_pnl_tracker import _evaluate_pnl
-except ImportError:
-    _evaluate_pnl = None  # type: ignore
 
 
 
@@ -99,34 +94,5 @@ def test_auth_blacklisted_token(mock_redis):
     assert exc.value.status_code == 401
     assert "This session has been signed out" in exc.value.detail
 
-# ── 3. Shadow PnL Winner Logic Tests ────────────────────────────────────────
 
-@pytest.mark.skip(reason="shadow_pnl_tracker deprecated. PnL logic will be rewritten for Private Engine.")
-@pytest.mark.asyncio
-@patch("yfinance.Ticker")
-async def test_shadow_pnl_winner_logic(mock_ticker):
-    """Shadow PnL hesaplamasında NEW ve OLD kararlarının performansını karşılaştırır."""
-    import pandas as pd
-    # Mock yfinance return
-    mock_instance = MagicMock()
-    # Create a real DataFrame to avoid iloc/mock issues
-    df = pd.DataFrame({"Close": [110.0]})
-    mock_instance.history.return_value = df
-    mock_ticker.return_value = mock_instance
-    
-    # CASE 1: NEW correctly predicted BUY, OLD predicted SELL
-    # Gain: +10. New (BUY) perf: +10. Old (SELL) perf: -10. New Wins.
-    price, winner = await _evaluate_pnl("AAPL", 100, "SELL", "BUY")
-    assert price == 110.0
-    assert winner == "NEW"
-
-    # CASE 2: OLD correctly predicted BUY, NEW predicted SELL
-    # Gain: +10. Old (BUY) perf: +10. New (SELL) perf: -10. Old Wins.
-    price, winner = await _evaluate_pnl("AAPL", 100, "BUY", "SELL")
-    assert winner == "OLD"
-
-    # CASE 3: Both predicted same direction
-    # Tie logic (default comparison results in Tie or according to implementation)
-    price, winner = await _evaluate_pnl("AAPL", 100, "BUY", "BUY")
-    assert winner == "TIE"
 

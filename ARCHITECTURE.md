@@ -81,14 +81,15 @@ hâlâ tanımlı fakat aktif router tarafından kullanılmıyor.
 `chat_orchestrator.py` bu graph'ı import ediyor.
 
 ```
-START → MarketDataNode → NewsNode → IslamicNode(no-op)
+START → MarketDataNode → NewsNode
      → InvestmentDebate(Bull/Bear/Neutral/PM)
      → RiskDebate (conditional)
      → OutputMapper → END
 ```
 
-**Not:** IslamicNode graph'ta no-op stub olarak bırakıldı.
+**Not:** İslami analiz kapsam dışı bırakılarak graph ve registry'den tamamen temizlendi.
 Gelecekte bu agent pipeline Private Engine için yeniden tasarlanacak.
+
 
 ---
 

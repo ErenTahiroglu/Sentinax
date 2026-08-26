@@ -12,11 +12,8 @@ from backend.nodes.data_nodes import (
     news_node
 )
 
-async def islamic_node(state) -> dict:  # islamic_analyzer removed — no-op stub
-    """Islamic analysis removed from scope. Returns empty report."""
-    return {"islamic_report": {}}
-
 from backend.engine.circuit_breaker import evaluate_risk_circuit_breaker
+
 
 from backend.nodes.adversarial_agents import (
     bull_researcher_node,
@@ -204,20 +201,17 @@ async def risk_join_and_circuit_node(state: GraphState) -> dict:
 NODE_REGISTRY = {  # noqa: F841
     "IntentNode": {
         "func": intent_detector_node,
-        "edges": ["MarketNode", "IslamicNode", "NewsNode"]
+        "edges": ["MarketNode", "NewsNode"]
     },
     "MarketNode": {
         "func": market_data_node,
-        "edges": ["DataSyncNode"]
-    },
-    "IslamicNode": {
-        "func": islamic_node,
         "edges": ["DataSyncNode"]
     },
     "NewsNode": {
         "func": news_node,
         "edges": ["DataSyncNode"]
     },
+
     "DataSyncNode": {
         "func": data_sync_node,
         "edges": ["DataJoinAndCircuit"]

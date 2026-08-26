@@ -28,7 +28,6 @@ class GraphState(TypedDict):
     market_report: Annotated[Dict, merge_dicts]
     fundamentals_report: Annotated[Dict, merge_dicts]
     news_report: Annotated[Dict, merge_dicts]
-    islamic_report: Annotated[Dict, merge_dicts]
     
     investment_debate_state: Annotated[Dict, merge_dicts]
     trader_investment_plan: str
@@ -48,8 +47,8 @@ class GraphState(TypedDict):
 
     # Analysis Mode Flags (Modular Analysis)
     check_financials: bool
-    check_islamic: bool
     use_ai: bool
+
 
     # Dynamic Transaction Costs (User-Specific)
     commission_rate: float

@@ -51,12 +51,12 @@ async def test_ai_agent_mock_sentiment():
     with patch("langchain_google_genai.ChatGoogleGenerativeAI") as MockLLM:
         mock_instance = MockLLM.return_value
         # Simulate structured JSON response
-        mock_instance.invoke.return_value.content = '{"score": 80, "sentiment_label": "Açgözlülük", "islamic_risk_flag": false, "risk_reason": "Sorun yok"}'
+        mock_instance.invoke.return_value.content = '{"score": 80, "sentiment_label": "Açgözlülük", "risk_reason": "Sorun yok"}'
         
-        res = analyze_news_sentiment([{"title": "Good News"}], check_islamic=True, api_key="fake")
+        res = analyze_news_sentiment([{"title": "Good News"}], api_key="fake")
         assert res["score"] == 80
         assert res["sentiment_label"] == "Açgözlülük"
-        assert res["islamic_risk_flag"] is False
+
 
 @pytest.mark.skip(reason="/api/news router removed. Endpoint no longer in scope.")
 @pytest.mark.asyncio

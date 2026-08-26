@@ -140,7 +140,7 @@ class NormalizedObservationRecord:
     Enforces strict point-in-time semantics.
     """
     snapshot_id: UUID
-    instrument_id: str
+    instrument_id: UUID
     asset_class: AssetClass
     instrument_type: InstrumentType
     observation_type: str
@@ -167,10 +167,11 @@ class NormalizedObservationRecord:
         return {
             "id": str(self.id),
             "snapshot_id": str(self.snapshot_id),
-            "instrument_id": self.instrument_id,
+            "instrument_id": str(self.instrument_id),
             "asset_class": self.asset_class.value,
             "instrument_type": self.instrument_type.value,
             "observation_type": self.observation_type,
+
             "observation_data": self.observation_data,
             "data_status": self.data_status.value,
             "confidence_level": self.confidence_level.value,

@@ -53,19 +53,17 @@ def generate_wizard_portfolio(prompt: str, api_key: str, model: str, lang: str, 
         logger.error(f"Wizard JSON parse error: {e}")
         return {"tickers": [], "reasoning": "Portföy oluşturulurken bir hata oluştu.", "error": str(e)}
 
-def analyze_news_sentiment(news_items: list, check_islamic: bool, api_key: str):
+def analyze_news_sentiment(news_items: list, api_key: str = "", check_islamic: bool = False):
     """
-    Haber listesinin duyarlılığını ve (opsiyonel) İslami risklerini analiz eder.
-    (Tests dependency)
+    Haber listesinin piyasa duyarlılığını analiz eder.
     """
     llm = get_quick_think_llm(api_key=api_key)
     
     prompt = f"""
     Aşağıdaki haber başlıklarını analiz et ve toplu bir duyarlılık skoru (0-100) ile etiket üret.
-    JSON formatında dön: {{"score": 75, "sentiment_label": "Pozitif", "islamic_risk_flag": false, "risk_reason": ""}}
+    JSON formatında dön: {{"score": 75, "sentiment_label": "Pozitif", "risk_reason": ""}}
     
     Haberler: {json.dumps(news_items, ensure_ascii=False)}
-    İslami Uygunluk Taraması: {'Aktif' if check_islamic else 'Pasif'}
     """
     
     response = llm.invoke([SystemMessage(content=prompt)])
@@ -73,4 +71,5 @@ def analyze_news_sentiment(news_items: list, check_islamic: bool, api_key: str):
         content = str(response.content).replace("```json", "").replace("```", "").strip()
         return json.loads(content)
     except Exception:
-        return {"score": 50, "sentiment_label": "Nötr", "islamic_risk_flag": False, "risk_reason": "Parse error"}
+        return {"score": 50, "sentiment_label": "Nötr", "risk_reason": "Parse error"}
+

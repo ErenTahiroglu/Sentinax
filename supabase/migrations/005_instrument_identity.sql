@@ -2,15 +2,19 @@
 -- Sentinax Private Personal Investment Decision Engine
 -- Instrument Identity & Symbology Resolution Layer (Point-in-Time & Corporate Action Aware)
 
+-- Enable btree_gist extension for interval exclusion constraints
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
 -- ============================================================================
 -- 1. instruments (Master Instrument Table)
 -- ============================================================================
--- Ticker is NOT the primary key. Every instrument has a synthetic/stable
--- internal_instrument_id and standard identifiers (ISIN, CIK, MIC/Exchange).
+-- Ticker, company name, or provider symbol are NEVER the primary key.
+-- internal_instrument_id is a pure, immutable UUID completely independent of tickers.
 
 CREATE TABLE IF NOT EXISTS public.instruments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    internal_instrument_id VARCHAR(64) UNIQUE NOT NULL,
+    internal_instrument_id UUID UNIQUE NOT NULL DEFAULT gen_random_uuid(),
+    canonical_name VARCHAR(255) NOT NULL,
     asset_class VARCHAR(32) NOT NULL CHECK (
         asset_class IN ('equity', 'fund', 'commodity', 'fx', 'fixed_income', 'etf')
     ),
@@ -22,7 +26,6 @@ CREATE TABLE IF NOT EXISTS public.instruments (
     status VARCHAR(20) NOT NULL DEFAULT 'active' CHECK (
         status IN ('active', 'delisted', 'suspended', 'merged')
     ),
-    name VARCHAR(255),
     valid_from DATE NOT NULL DEFAULT CURRENT_DATE,
     valid_to DATE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
@@ -47,6 +50,8 @@ CREATE INDEX IF NOT EXISTS idx_instruments_status_mic
 -- ============================================================================
 -- Maps external data provider symbols (e.g. YFinance 'THYAO.IS', KAP 'THYAO',
 -- TEFAS 'TP2', or historical renames like 'FB' -> 'META') to internal instrument IDs.
+-- Uses half-open [valid_from, valid_to) interval semantics.
+-- Strict exclusion constraint ensures NO overlapping date intervals for the same (provider, provider_symbol).
 
 CREATE TABLE IF NOT EXISTS public.provider_aliases (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -57,7 +62,17 @@ CREATE TABLE IF NOT EXISTS public.provider_aliases (
     valid_to DATE,
     is_primary BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
+
+    -- Validate that valid_from < valid_to when valid_to is not null
+    CONSTRAINT chk_alias_date_order CHECK (valid_to IS NULL OR valid_from < valid_to),
+
+    -- Exclusion constraint: No overlapping intervals for the same provider + symbol
+    CONSTRAINT provider_aliases_no_overlap EXCLUDE USING gist (
+        provider WITH =,
+        provider_symbol WITH =,
+        daterange(valid_from, COALESCE(valid_to, 'infinity'::date), '[)') WITH &&
+    )
 );
 
 CREATE INDEX IF NOT EXISTS idx_provider_aliases_lookup
@@ -70,8 +85,11 @@ CREATE INDEX IF NOT EXISTS idx_provider_aliases_instrument
 -- ============================================================================
 -- 3. corporate_actions (Corporate Actions & Reference Events)
 -- ============================================================================
--- Minimal schema for symbol renames, splits, dividends, mergers, delistings,
--- and fund code changes. Enables historical time series adjustment and lookup continuity.
+-- Semantic schema with action-specific field isolation:
+--   SPLIT: split_factor > 0, cash_amount MUST BE NULL
+--   DIVIDEND: cash_amount >= 0, split_factor MUST BE NULL
+--   SYMBOL_CHANGE: old_symbol & new_symbol set, split_factor & cash_amount NULL
+--   MERGER / DELISTING / FUND_CODE_CHANGE: event-specific metadata
 
 CREATE TABLE IF NOT EXISTS public.corporate_actions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -83,13 +101,26 @@ CREATE TABLE IF NOT EXISTS public.corporate_actions (
     announced_date DATE,
     record_date DATE,
     ex_date DATE,
-    old_value VARCHAR(255),
-    new_value VARCHAR(255),
-    factor NUMERIC(18, 8) DEFAULT 1.0, -- Split factor / adjustment multiplier
-    amount NUMERIC(18, 6),             -- Dividend cash amount per share
+    
+    -- Action-specific isolated fields
+    old_symbol VARCHAR(64),
+    new_symbol VARCHAR(64),
+    split_factor NUMERIC(18, 8), -- Used ONLY for split events
+    cash_amount NUMERIC(18, 6),  -- Used ONLY for dividend events
     currency VARCHAR(10),
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
+    created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
+
+    -- Semantic validation constraints
+    CONSTRAINT chk_ca_split CHECK (
+        action_type != 'split' OR (split_factor IS NOT NULL AND split_factor > 0 AND cash_amount IS NULL)
+    ),
+    CONSTRAINT chk_ca_dividend CHECK (
+        action_type != 'dividend' OR (cash_amount IS NOT NULL AND cash_amount >= 0 AND split_factor IS NULL)
+    ),
+    CONSTRAINT chk_ca_symbol_change CHECK (
+        action_type != 'symbol_change' OR (old_symbol IS NOT NULL AND new_symbol IS NOT NULL AND split_factor IS NULL AND cash_amount IS NULL)
+    )
 );
 
 CREATE INDEX IF NOT EXISTS idx_corporate_actions_instrument_date
@@ -103,7 +134,7 @@ CREATE INDEX IF NOT EXISTS idx_corporate_actions_type_date
 -- 4. Symbology Resolver Functions (RPC)
 -- ============================================================================
 
--- A. Resolve external provider symbol to internal instrument
+-- A. Resolve external provider symbol to internal instrument using [valid_from, valid_to) range
 CREATE OR REPLACE FUNCTION public.resolve_provider_symbol_to_instrument(
     p_provider VARCHAR(64),
     p_provider_symbol VARCHAR(64),
@@ -119,14 +150,14 @@ AS $$
     WHERE pa.provider = p_provider
       AND pa.provider_symbol = p_provider_symbol
       AND pa.valid_from <= p_as_of_date
-      AND (pa.valid_to IS NULL OR pa.valid_to >= p_as_of_date)
+      AND (pa.valid_to IS NULL OR pa.valid_to > p_as_of_date)
     ORDER BY pa.is_primary DESC, pa.valid_from DESC
     LIMIT 1;
 $$;
 
--- B. Resolve internal instrument ID to provider symbol for a specific date
+-- B. Resolve internal instrument UUID to provider symbol for a specific date
 CREATE OR REPLACE FUNCTION public.resolve_instrument_to_provider_symbol(
-    p_internal_instrument_id VARCHAR(64),
+    p_internal_instrument_id UUID,
     p_provider VARCHAR(64),
     p_as_of_date DATE DEFAULT CURRENT_DATE
 )
@@ -145,7 +176,7 @@ AS $$
     WHERE i.internal_instrument_id = p_internal_instrument_id
       AND pa.provider = p_provider
       AND pa.valid_from <= p_as_of_date
-      AND (pa.valid_to IS NULL OR pa.valid_to >= p_as_of_date)
+      AND (pa.valid_to IS NULL OR pa.valid_to > p_as_of_date)
     ORDER BY pa.is_primary DESC, pa.valid_from DESC
     LIMIT 1;
 $$;

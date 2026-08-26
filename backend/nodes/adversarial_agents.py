@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 def _stringify_state_reports(state: GraphState) -> str:
     market = state.get("market_report", {})
     fund = state.get("fundamentals_report", {})
-    islam = state.get("islamic_report", {})
     news = state.get("news_report", {})
     if "klines" in market:
         del market["klines"]
@@ -19,7 +18,6 @@ def _stringify_state_reports(state: GraphState) -> str:
     comp = {
         "Market": market,
         "Fundamentals": fund,
-        "Islamic": islam,
         "News": news,
     }
     return json.dumps(comp, indent=2, ensure_ascii=False)
@@ -29,14 +27,9 @@ async def bull_researcher_node(state: GraphState) -> dict:
     reports_str = _stringify_state_reports(state)
     history = state.get("investment_debate_state", {}).get("history", [])
     
-    mode = "ISLAMIC-ONLY" if not state.get("check_financials", True) else "FULL-ANALYSIS"
-    
     prompt = f"""
     Sen 'Bull (İyimser) Araştırmacı' ajansın. 
-    [MOD]: {mode}
-    
     Görevin: {ticker} sembolü için piyasada sadece GÜÇLÜ FIRSATLARI ve BÜYÜME POTANSİYELİNİ savunmak.
-    {'NOT: Finansal veriler (RSI, Fiyat vb.) bu modda devre dışıdır. Sadece İslami uygunluk ve haber duyarlılığına odaklan.' if mode == "ISLAMIC-ONLY" else ''}
     
     [VERİ TABANIN]:
     {reports_str}
@@ -65,18 +58,14 @@ async def bear_researcher_node(state: GraphState) -> dict:
     ticker = state.get("company_of_interest", state.get("ticker"))
     reports_str = _stringify_state_reports(state)
     
-    mode = "ISLAMIC-ONLY" if not state.get("check_financials", True) else "FULL-ANALYSIS"
-    
     prompt = f"""
     Sen 'Bear (Kötümser) Araştırmacı' ajansın. 
-    [MOD]: {mode}
-    
     Görevin: {ticker} sembolündeki GİZLİ TEHLİKELERİ ve EN KÖTÜ SENARYOLARI ortaya çıkarmak.
-    {'NOT: Finansal metrikler kapalıdır. İslami risklere ve olumsuz haber başlıklarına odaklan.' if mode == "ISLAMIC-ONLY" else ''}
     
     [VERİ TABANIN]:
     {reports_str}
     """
+
     
     messages: List[BaseMessage] = [SystemMessage(content=prompt)]
     for past_turn in (state.get("bull_history", []) or []):
