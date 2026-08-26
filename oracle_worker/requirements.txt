@@ -1,0 +1,10 @@
+polars>=1.0.0
+duckdb>=1.0.0
+xgboost>=2.0.0
+supabase>=2.0.0
+curl_cffi>=0.7.0
+beautifulsoup4>=4.12.0
+python-dotenv>=1.0.0
+numpy>=1.26.0
+scikit-learn>=1.4.0
+psutil>=5.9.0

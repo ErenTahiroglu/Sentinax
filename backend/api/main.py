@@ -26,7 +26,7 @@ from backend.infrastructure.redis_cache import cache_close, cache_get, cache_set
 from backend.infrastructure.http_client import init_global_http_client, close_global_http_client
 from backend.api.websocket import register_websocket_routes, _clients
 from backend.utils.logger import setup_logging, CorrelationIdMiddleware, correlation_id_ctx
-from backend.api.routers import analysis, chat, user, admin, billing, telemetry
+from backend.api.routers import analysis, chat, user, admin, billing, telemetry, buffett
 
 def validate_critical_env():
     """Kritik ortam değişkenlerini başlatmadan önce doğrular (Fail-Fast)."""
@@ -244,12 +244,15 @@ async def global_exception_handler(request: Request, exc: Exception):
 register_websocket_routes(app)
 
 # ── Sub-Routers Include ───────────────────────────────────────────────────
-app.include_router(analysis.router)
-app.include_router(chat.router)
-app.include_router(user.router)
-app.include_router(admin.router)
-app.include_router(billing.router)
-app.include_router(telemetry.router)
+# app.include_router(analysis.router)
+# app.include_router(chat.router)
+# app.include_router(user.router)
+# app.include_router(admin.router)
+# app.include_router(billing.router)
+# app.include_router(telemetry.router)
+
+# ── Buffett Engine Router ─────────────────────────────────────────────────
+app.include_router(buffett.router)
 
 # ── Root Redirect & Static Files (Frontend) ───────────────────────────────
 @app.get("/api/health")
@@ -298,14 +301,14 @@ async def get_metrics():
 
 @app.get("/")
 def read_root():
-    return RedirectResponse(url="/ui")
+    return RedirectResponse(url="/buffett_ui")
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
 # In Monorepo, /frontend is at the root, 2 levels up from backend/api/
 frontend_path = os.path.join(os.path.dirname(os.path.dirname(base_dir)), "frontend")
+buffett_path = os.path.join(frontend_path, "buffett")
 
-
-if os.path.exists(frontend_path):
-    app.mount("/ui", StaticFiles(directory=frontend_path, html=True), name="ui")
+if os.path.exists(buffett_path):
+    app.mount("/buffett_ui", StaticFiles(directory=buffett_path, html=True), name="buffett_ui")
 else:
-    logger.warning(f"Frontend Static path not found at {frontend_path}")
+    logger.warning(f"Buffett UI Static path not found at {buffett_path}")

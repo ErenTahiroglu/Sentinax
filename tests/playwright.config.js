@@ -24,10 +24,11 @@ export default defineConfig({
       use: { ...devices['Pixel 5'] },
     },
   ],
-  // Web server configuration (optional if the server is already running)
-  // webServer: {
-  //   command: 'python -m http.server 3000',
-  //   url: 'http://localhost:3000',
-  //   reuseExistingServer: !process.env.CI,
-  // },
+  // Web server configuration
+  webServer: {
+    command: 'npm run dev --prefix ../frontend',
+    url: 'http://localhost:3000',
+    reuseExistingServer: !process.env.CI,
+    timeout: 120 * 1000,
+  },
 });

@@ -1,0 +1,25 @@
+{
+    "name": "Portföy Analiz Platformu",
+    "short_name": "Portföy Analiz",
+    "description": "AI destekli portföy analiz platformu. ABD, BIST ve TEFAS hisselerini yapay zeka ile analiz edin.",
+    "start_url": "/ui/",
+    "scope": "/ui/",
+    "display": "standalone",
+    "background_color": "#0b1120",
+    "theme_color": "#0ea5e9",
+    "orientation": "any",
+    "icons": [
+        {
+            "src": "icons/icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "any maskable"
+        },
+        {
+            "src": "icons/icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "any maskable"
+        }
+    ]
+}

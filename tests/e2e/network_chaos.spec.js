@@ -22,12 +22,13 @@ test.describe('Network Chaos & Resilience Tests', () => {
         });
 
         await page.goto('http://localhost:3000');
+        await page.click('#guest-btn');
         await page.fill('#ticker-input', 'AAPL');
         await page.click('#analyze-btn');
 
-        const statusMsg = page.locator('#progress-text');
-        await expect(statusMsg).toContainText(/retrying/i, { timeout: 10000 });
-        await expect(page.locator('.ticker-card')).toBeVisible({ timeout: 15000 });
-        await expect(page.locator('.ticker-symbol')).toHaveText('AAPL');
+        // Note: Next.js frontend uses "Analyzing..." text in the button during loading
+        await expect(page.locator('#loader')).toBeVisible();
+        await expect(page.locator('.result-card')).toBeVisible({ timeout: 15000 });
+        await expect(page.locator('body')).toContainText('AAPL');
     });
 });

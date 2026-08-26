@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="utf-8"/>
+    <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+    <title>QuantX - Dinamik Portföy Yönetici Monitörü</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet"/>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    
+    <style>
+        :root {
+            --turquoise: #00f2ff;
+        }
+
+        body {
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            background-color: var(--bg-color);
+            margin: 0;
+            font-family: 'Inter', sans-serif;
+        }
+        .navbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 1.5rem;
+            background: var(--glass-bg);
+            border-bottom: 1px solid var(--glass-border);
+            backdrop-filter: blur(12px);
+            z-index: 50;
+        }
+        .navbar-logo { display: flex; align-items: center; gap: 0.75rem; }
+        .navbar-logo h1 { color: var(--text-main); font-size: 1.1rem; font-weight: 700; margin: 0; }
+        .navbar-logo p { color: var(--turquoise); font-size: 0.7rem; font-weight: 600; margin: 0; font-family: 'JetBrains Mono', monospace; }
+        .mode-switcher { display: flex; align-items: center; gap: 0.75rem; background: rgba(0,0,0,0.2); border: 1px solid var(--glass-border); border-radius: 999px; padding: 0.4rem 1rem; }
+        .mode-label { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+        .navbar-actions { display: flex; align-items: center; gap: 1rem; }
+        .dashboard-container {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+        .sidebar-left {
+            width: 280px;
+            background: var(--sidebar-bg);
+            border-right: 1px solid var(--glass-border);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+        .main-content-dashboard {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+            background: radial-gradient(ellipse at 20% 0%, rgba(14, 165, 233, 0.04) 0%, transparent 60%), var(--bg-color);
+        }
+        .sidebar-right {
+            width: 340px;
+            background: var(--sidebar-bg);
+            border-left: 1px solid var(--glass-border);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+        ::-webkit-scrollbar {
+            width: 4px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.08);
+            border-radius: 4px;
+        }
+        .dot {
+            transition: all 0.3s ease;
+        }
+        input:checked ~ .dot {
+            transform: translateX(100%);
+            background-color: var(--turquoise);
+        }
+        .font-mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Top Navbar -->
+    <nav class="navbar">
+        <div class="navbar-logo">
+            <div style="width: 36px; height: 36px; border-radius: 8px; background: var(--gradient-primary); display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 16px rgba(14, 165, 233, 0.25);">
+                <i class="fas fa-chart-pie" style="color: white; font-size: 1.1rem;"></i>
+            </div>
+            <div>
+                <h1>QuantX</h1>
+                <p>Portfolio Orchestrator</p>
+            </div>
+        </div>
+
+        <!-- Mode Switcher -->
+        <div class="mode-switcher">
+            <span class="mode-label" id="label-beginner" style="color: var(--turquoise); cursor:pointer;" onclick="const t=document.getElementById('mode-toggle'); t.checked=false; t.dispatchEvent(new Event('change'))">Başlangıç</span>
+            <label style="display: flex; align-items: center; cursor: pointer;">
+                <div style="position: relative;">
+                    <input id="mode-toggle" type="checkbox" style="position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0;" />
+                    <div style="background: #1e293b; width: 32px; height: 16px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.06);"></div>
+                    <div class="dot" style="position: absolute; left: 2px; top: 2px; background: white; width: 12px; height: 12px; border-radius: 50%;"></div>
+                </div>
+            </label>
+            <span class="mode-label" id="label-professional" style="color: var(--text-muted); cursor:pointer;" onclick="const t=document.getElementById('mode-toggle'); t.checked=true; t.dispatchEvent(new Event('change'))">Profesyonel</span>
+        </div>
+
+        <div class="navbar-actions">
+            <button style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.9rem;"><i class="fas fa-bell"></i></button>
+            <div style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                <div style="width: 32px; height: 32px; border-radius: 50%; background: var(--primary); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.8rem; color: white;">E</div>
+                <span style="font-size: 0.8rem; font-weight: 500; color: var(--text-main);">Eren</span>
+            </div>
+        </div>
+    </nav>
+
+    <div class="dashboard-container">
+
+        <!-- Sidebar (Adaptive) -->
+        <aside class="sidebar-left">
+            
+            <!-- Beginner Sidebar Section -->
+            <div id="sidebar-beginner" style="padding: 1.5rem; display: flex; flex-direction: column; gap: 1.5rem;">
+                <div class="section-title">
+                    <i class="fas fa-sliders-h"></i> PORTFÖY ÖZETİ
+                </div>
+                <!-- Toplam Varlık Card -->
+                <div class="hero-card" style="padding: 1rem; gap: 0.5rem; flex-direction: column; align-items: flex-start;">
+                    <span style="font-size: 0.75rem; color: var(--text-muted);">Toplam Varlık</span>
+                    <div style="font-size: 1.5rem; font-weight: 800; color: var(--text-main);">$145,280</div>
+                    <div style="font-size: 0.75rem; color: var(--success);"><i class="fas fa-arrow-trend-up" style="margin-right: 4px;"></i> +8.2% (Bugün)</div>
+                </div>
+                
+                <div style="border-top: 1px solid var(--glass-border);"></div>
+                
+                <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                    <button class="btn-primary" style="padding: 0.6rem 1rem; font-size: 0.8rem;"><i class="fas fa-grip-horizontal"></i> Varlıklarım</button>
+                    <button class="btn-icon" style="padding: 0.6rem 1rem; width: 100%; justify-content: center;"><i class="fas fa-coins"></i> İşlemlerim</button>
+                </div>
+            </div>
+
+            <!-- Pro Sidebar Section -->
+            <div id="sidebar-pro" class="hidden" style="padding: 1.5rem; display: flex; flex-direction: column; gap: 1.5rem;">
+                <div class="section-title">
+                    <i class="fas fa-cog"></i> OPTIMIZATION ENGINE
+                </div>
+                <!-- Constraints Group -->
+                <div style="display: flex; flex-direction: column; gap: 1.25rem;">
+                    <!-- Max Asset Weight -->
+                    <div class="input-group">
+                        <div style="display: flex; justify-content: space-between; font-size: 0.7rem; font-weight: 700; text-transform: uppercase;">
+                            <span>Max Asset Weight</span>
+                            <span style="color: var(--turquoise); font-family: 'JetBrains Mono', monospace;">8.5%</span>
+                        </div>
+                        <input style="width: 100%; margin-top: 4px;" max="25" min="0" step="0.5" type="range" value="8.5"/>
+                    </div>
+                    <!-- Beta Target -->
+                    <div class="input-group">
+                        <div style="display: flex; justify-content: space-between; font-size: 0.7rem; font-weight: 700; text-transform: uppercase;">
+                            <span>Beta Target</span>
+                            <span style="color: var(--turquoise); font-family: 'JetBrains Mono', monospace;">1.10</span>
+                        </div>
+                        <input style="width: 100%; margin-top: 4px;" max="2" min="0" step="0.05" type="range" value="1.1"/>
+                    </div>
+                    <!-- Sector slider group -->
+                    <div style="border-top: 1px solid var(--glass-border); padding-top: 0.75rem; display: flex; flex-direction: column; gap: 0.75rem;">
+                        <span style="font-size: 0.65rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Sector Caps</span>
+                        <div class="input-group">
+                            <div style="display: flex; justify-content: space-between; font-size: 0.65rem; font-family: 'JetBrains Mono', monospace;"><span>Tech:</span> <span>35%</span></div>
+                            <input style="width: 100%;" type="range" value="35"/>
+                        </div>
+                        <div class="input-group">
+                            <div style="display: flex; justify-content: space-between; font-size: 0.65rem; font-family: 'JetBrains Mono', monospace;"><span>Fin:</span> <span>20%</span></div>
+                            <input style="width: 100%;" type="range" value="20"/>
+                        </div>
+                    </div>
+                    <!-- Volatility Target -->
+                    <div class="input-group" style="border-top: 1px solid var(--glass-border); padding-top: 0.75rem;">
+                         <div style="display: flex; justify-content: space-between; font-size: 0.7rem; font-weight: 700; text-transform: uppercase;"><span>VOL Target</span> <span style="color: var(--turquoise); font-family: 'JetBrains Mono', monospace;">12.4%</span></div>
+                         <input style="width: 100%; margin-top: 4px;" type="range" value="12"/>
+                    </div>
+                </div>
+                
+                <button class="btn-primary" style="margin-top: auto; background: #0f62fe; box-shadow: 0 4px 16px rgba(15, 98, 254, 0.3);">
+                    RUN OPTIMIZER <i class="fas fa-play" style="font-size: 0.75rem; margin-left: 4px;"></i>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Workspace -->
+        <main class="main-content-dashboard">
+
+            <!-- PRO MODE VISUALS (Radar & Simulation) -->
+            <div id="pro-visuals" class="hidden" style="display: flex; flex-direction: column; gap: 1.5rem;">
+                <!-- Comparison Section -->
+                <section class="result-card" style="display: flex; gap: 1.5rem; align-items: center; padding: 1.5rem;">
+                    <div style="flex: 1; position: relative; height: 300px; display: flex; align-items: center; justify-content: center;">
+                        <!-- Radar Placeholder SVG -->
+                        <svg class="h-full w-full max-w-sm" viewbox="0 0 400 300">
+                            <circle cx="200" cy="150" fill="none" r="100" stroke="rgba(255,255,255,0.05)" stroke-dasharray="2,4"></circle>
+                            <circle cx="200" cy="150" fill="none" r="75" stroke="rgba(255,255,255,0.05)" stroke-dasharray="2,4"></circle>
+                            <circle cx="200" cy="150" fill="none" r="50" stroke="rgba(255,255,255,0.05)" stroke-dasharray="2,4"></circle>
+                            <!-- Lines -->
+                            <g stroke="rgba(255,255,255,0.1)" stroke-width="1">
+                                <line x1="200" x2="200" y1="50" y2="250"></line>
+                                <line x1="100" x2="300" y1="150" y2="150"></line>
+                            </g>
+                            <!-- Data Shapes -->
+                            <path d="M200,80 L250,120 L270,150 L230,220 L200,210 L140,150 Z" fill="rgba(14, 165, 233, 0.15)" stroke="#0ea5e9" stroke-width="2"></path>
+                            <path d="M200,60 L240,130 L280,150 L210,230 L200,240 L110,150 Z" fill="rgba(212, 175, 55, 0.08)" stroke="#d4af37" stroke-width="2"></path>
+                        </svg>
+                        <div style="position: absolute; top: 10px; right: 10px; font-size: 0.65rem; background: rgba(0,0,0,0.4); padding: 0.5rem; border: 1px solid var(--glass-border); border-radius: 4px; font-family: 'JetBrains Mono', monospace; display: flex; flex-direction: column; gap: 4px;">
+                            <div style="display: flex; align-items: center; gap: 4px;"><span style="width: 8px; height: 8px; border-radius: 50%; background: #0ea5e9; display: inline-block;"></span> Current</div>
+                            <div style="display: flex; align-items: center; gap: 4px;"><span style="width: 8px; height: 8px; border-radius: 50%; background: #d4af37; display: inline-block;"></span> Optimum</div>
+                        </div>
+                    </div>
+
+                    <div style="width: 420px; border-left: 1px solid var(--glass-border); padding-left: 1.5rem; display: flex; flex-direction: column; gap: 1rem;">
+                        <h3 class="section-title" style="margin-bottom: 0;">Metrics Overlay</h3>
+                        <div class="metrics-grid">
+                            <div class="metric-box">
+                                <span class="metric-label">SHARPE RATIO</span>
+                                <span class="metric-value">0.56 <span style="color: var(--success); font-size: 0.65rem;">-> 0.79</span></span>
+                            </div>
+                            <div class="metric-box">
+                                <span class="metric-label">VOLATILITY</span>
+                                <span class="metric-value">15.2% <span style="color: var(--success); font-size: 0.65rem;">-> 12.8%</span></span>
+                            </div>
+                            <div class="metric-box">
+                                <span class="metric-label">EXP RETURN</span>
+                                <span class="metric-value">8.5% <span style="color: var(--success); font-size: 0.65rem;">-> 10.2%</span></span>
+                            </div>
+                            <div class="metric-box">
+                                <span class="metric-label">MAX DRAWDOWN</span>
+                                <span class="metric-value" style="color: var(--danger);">-22.4% <span style="color: var(--success); font-size: 0.65rem;">-> -18.1%</span></span>
+                            </div>
+                        </div>
+                        <button class="btn-primary" style="background: #d4af37; color: #111; box-shadow: 0 4px 16px rgba(212, 175, 55, 0.3);">Apply Rebalance</button>
+                    </div>
+                </section>
+                
+                <!-- What-if Table Simulation -->
+                <section class="result-card" style="padding: 1rem;">
+                    <h4 style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.75rem;">Simulation: What-If Scenarios</h4>
+                    <div class="table-scroll">
+                        <table class="summary-table">
+                            <thead>
+                                <tr><th>Scenario</th><th>Current P&L</th><th>Optimum P&L</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr style="border-bottom: 1px solid var(--glass-border);"><td style="color: var(--text-main); font-weight: 600;">S&P 500 Crash (-20%)</td><td style="color: var(--danger); font-family: 'JetBrains Mono', monospace;">-$45k (-18.0%)</td><td style="color: var(--danger); opacity: 0.8; font-family: 'JetBrains Mono', monospace;">-$32.8k (-13.1%)</td></tr>
+                                <tr><td style="color: var(--text-main); font-weight: 600;">Fed rate Hike (+50bps)</td><td style="color: var(--danger); font-family: 'JetBrains Mono', monospace;">-$5,000 (-2.0%)</td><td style="color: var(--danger); opacity: 0.8; font-family: 'JetBrains Mono', monospace;">-$2,500 (-1.0%)</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+
+            <!-- Dashboard Table Content -->
+            <section class="result-card" style="padding: 0; display: flex; flex-direction: column; overflow: hidden; flex: 1;">
+                <div style="background: rgba(0,0,0,0.1); padding: 1rem 1.5rem; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--glass-border);">
+                    <h2 style="font-size: 0.9rem; font-weight: 700; color: var(--text-main); margin: 0;" id="table-title">Varlıklarım ve Durum</h2>
+                    <div style="position: relative;">
+                        <input class="btn-icon" style="padding: 0.4rem 0.75rem; font-size: 0.75rem; width: 140px; background: rgba(0,0,0,0.3);" placeholder="Sembol ara..." type="text">
+                    </div>
+                </div>
+
+                <!-- Adaptive Grid Table -->
+                <div style="flex: 1; overflow-y: auto;">
+                    <table class="summary-table" style="width: 100%;">
+                        <thead>
+                            <tr>
+                                <th>Sembol</th>
+                                <th style="text-align: right;">Fiyat</th>
+                                <th style="text-align: right;">Kâr/Zarar</th>
+                                <!-- Beginner Column -->
+                                <th style="text-align: center;" class="column-beginner">İslami Uygunluk</th>
+                                <th style="text-align: center;" class="column-beginner">Arındırma %</th>
+                                <!-- Pro Columns -->
+                                <th style="text-align: right;" class="column-pro hidden">Weight (%)</th>
+                                <th style="text-align: right;" class="column-pro hidden">Sharpe</th>
+                                <th style="text-align: right;" class="column-pro hidden">Beta</th>
+                                <th style="text-align: right;" class="column-pro hidden">Vol (%)</th>
+                                <th style="text-align: right;" class="column-pro hidden">Max DD</th>
+                            </tr>
+                        </thead>
+                        <tbody id="table-body">
+                            <!-- Rows generated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+        </main>
+
+        <!-- Right Inspector Panel -->
+        <aside class="sidebar-right">
+            <div style="padding: 1rem 1.5rem; border-bottom: 1px solid var(--glass-border); display: flex; align-items: center; justify-content: space-between;">
+                <h3 style="color: var(--text-main); font-weight: 700; font-size: 0.85rem; margin: 0;">Varlık Detayı</h3>
+                <button style="background: none; border: none; color: var(--text-muted); cursor: pointer;"><i class="fas fa-times"></i></button>
+            </div>
+
+            <div style="padding: 1.5rem; display: flex; flex-direction: column; gap: 1.25rem; flex: 1;" id="inspector-content">
+                <!-- Selected Asset Overview -->
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <div id="inspect-icon" style="width: 36px; height: 36px; border-radius: 8px; background: rgba(14, 165, 233, 0.08); border: 1px solid var(--glass-border); display: flex; align-items: center; justify-content: center; color: var(--text-main); font-weight: 800; font-size: 1.1rem;">A</div>
+                    <div>
+                        <h4 id="inspect-ticker" style="color: var(--text-main); font-weight: 800; font-size: 1rem; margin: 0;">Sembol</h4>
+                        <span id="inspect-name" style="font-size: 0.7rem; color: var(--text-muted);">Şirket İsmi</span>
+                    </div>
+                </div>
+
+                <div style="border-top: 1px solid var(--glass-border);"></div>
+
+                <!-- Adaptive Inspector Area -->
+                <!-- Beginner Inspector -->
+                <div id="inspector-beginner" style="display: flex; flex-direction: column; gap: 1rem;">
+                    <div>
+                        <label class="section-title" style="margin-bottom: 4px;">Hakkında</label>
+                        <p id="inspect-desc" style="font-size: 0.75rem; color: var(--text-main); line-height: 1.5; margin: 0;">Varlık açıklaması burada listelenir.</p>
+                    </div>
+                    <div style="background: rgba(14, 165, 233, 0.04); border: 1px solid rgba(14, 165, 233, 0.1); padding: 0.75rem; border-radius: 8px;">
+                        <label style="font-size: 0.65rem; font-weight: 700; color: var(--primary); text-transform: uppercase; display: flex; align-items: center; gap: 4px;"><i class="fas fa-robot"></i> AI Yorumu</label>
+                        <p id="inspect-ai-simple" style="font-size: 0.75rem; color: var(--text-main); margin-top: 4px; margin-bottom: 0;">Bu hisse istikrarlı büyüyor ancak sektör ortalamasına göre biraz masraflı.</p>
+                    </div>
+                    <div id="inspect-shariah-box" style="background: rgba(16, 185, 129, 0.04); border: 1px solid rgba(16, 185, 129, 0.1); padding: 0.75rem; border-radius: 8px;">
+                        <label style="font-size: 0.65rem; font-weight: 700; color: var(--success); text-transform: uppercase; display: flex; align-items: center; gap: 4px;"><i class="fas fa-check-circle"></i> İslami Uygunluk</label>
+                        <p id="inspect-shariah" style="font-size: 0.75rem; color: var(--text-main); margin-top: 4px; margin-bottom: 0;">Uygundur: Katılım endeksi kriterlerini sağlar.</p>
+                    </div>
+                </div>
+
+                <!-- Pro Inspector -->
+                <div id="inspector-pro" class="hidden" style="display: flex; flex-direction: column; gap: 1.25rem;">
+                    <!-- Chart Placeholder -->
+                    <div style="background: rgba(0,0,0,0.2); border: 1px solid var(--glass-border); border-radius: 8px; aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center; position: relative;">
+                        <span style="font-size: 0.7rem; color: var(--text-muted);">[Grafik Alanı]</span>
+                    </div>
+
+                    <!-- Signal Indicators -->
+                    <div>
+                        <h4 class="section-title">Technicals (Signals)</h4>
+                        <div style="display: flex; flex-direction: column; gap: 6px; font-family: 'JetBrains Mono', monospace; font-size: 0.7rem;">
+                            <div style="display: flex; justify-content: space-between;"><span>MACD:</span> <span style="color: var(--success); font-weight: 700;">Bullish Cross</span></div>
+                            <div style="display: flex; justify-content: space-between;"><span>RSI (14):</span> <span style="color: var(--warning);">Neutral (52)</span></div>
+                            <div style="display: flex; justify-content: space-between;"><span>EMA 200:</span> <span style="color: var(--danger);">Resistance</span></div>
+                        </div>
+                    </div>
+
+                    <!-- AI Deep-dive Summary -->
+                    <div style="border-top: 1px solid var(--glass-border); padding-top: 0.75rem;">
+                        <h4 class="section-title"><i class="fas fa-brain"></i> AI Analysis</h4>
+                        <p id="inspect-ai-deep" style="font-size: 0.75rem; color: var(--text-muted); line-height: 1.5; margin: 0;">
+                            Demonstrates strong core setup backed by continuous tech upgrades. Optimal valuation sets up sustained support lines.
+                        </p>
+                    </div>
+                </div>
+
+            </div>
+        </aside>
+
+    </div>
+
+    <!-- Vanilla Javascript Logic -->
+    <script>
+        const mockAssets = [
+            { ticker: 'AAPL', name: 'Apple Inc.', price: '$175.24', pnl: '+12.4%', shariah: 'Uygun', purification: '1.2%', weight: '15.5%', sharpe: '1.85', beta: '1.20', vol: '22.1%', maxDd: '-5.5%', desc: 'Teknoloji devi, iPhone üreticisi ve servis ağ sağlayıcısı.', aiSimple: 'Güçlü kargo hacmi, ancak değerleme yüksek.', aiDeep: 'Bullish trends continuous on earnings surplus. Support remains solid with aggregated backing.' },
+            { ticker: 'THYAO', name: 'Türk Hava Yolları', price: '₺284.10', pnl: '+18.2%', shariah: 'Uygun', purification: '0.8%', weight: '12.0%', sharpe: '1.62', beta: '1.10', vol: '25.4%', maxDd: '-7.1%', desc: 'Türkiye\'nin ulusal havayolu şirketi, küresel kargo sağlayıcısı.', aiSimple: 'Havacılık sektöründe iyileşme trendi devam ediyor.', aiDeep: 'Operational updates look optimal supporting sustained valuation triggers forwards.' },
+            { ticker: 'GARAN', name: 'Garanti BBVA', price: '₺55.20', pnl: '-2.4%', shariah: 'Uygun Değil', purification: '-', weight: '8.5%', sharpe: '0.85', beta: '1.30', vol: '28.1%', maxDd: '-12.5%', desc: 'Özel sermayeli mevduat bankası, finansal servis tedarikçisi.', aiSimple: 'Faiz geliri sınırı aşıyor, finansallar baskı altında.', aiDeep: 'Banking strains continue. Volatility is higher in periodic buffers supporting risk covers.' },
+            { ticker: 'MSFT', name: 'Microsoft Corp.', price: '$390.10', pnl: '+8.9%', shariah: 'Uygun', purification: '0.5%', weight: '10.2%', sharpe: '1.75', beta: '0.95', vol: '18.5%', maxDd: '-4.2%', desc: 'Yazılım ve bulut bilgisayar servisleri lideri teknoloji firması.', aiSimple: 'Bulut büyümesi istikrarlı, sağlam bir defansif hisse.', aiDeep: 'Defensive parameters stay top rated. Periodic bounds aligned against safe yields setup.' },
+            { ticker: 'KOZAL', name: 'Koza Altın', price: '₺22.10', pnl: '+4.5%', shariah: 'Uygun', purification: '2.4%', weight: '5.4%', sharpe: '1.15', beta: '0.85', vol: '32.1%', maxDd: '-15.5%', desc: 'Altın madenciliği ve işletmeciliği yürüten maden şirketi.', aiSimple: 'Altın fiyatlarına endeksli yavaş büyüme.', aiDeep: 'Commodity backed buffer setups remain fully scalable, strictly tied weights buffer limits.' }
+        ];
+
+        let currentMode = 'beginner'; // 'beginner' | 'pro'
+
+        const tableBody = document.getElementById('table-body');
+        const modeToggle = document.getElementById('mode-toggle');
+        const labelBeginner = document.getElementById('label-beginner');
+        const labelProfessional = document.getElementById('label-professional');
+
+        // Views Elements
+        const sidebarBegin = document.getElementById('sidebar-beginner');
+        const sidebarPro = document.getElementById('sidebar-pro');
+        const proVisuals = document.getElementById('pro-visuals');
+        const inspectorBegin = document.getElementById('inspector-beginner');
+        const inspectorPro = document.getElementById('inspector-pro');
+        const tableTitle = document.getElementById('table-title');
+
+        function renderTable() {
+            tableBody.innerHTML = '';
+            mockAssets.forEach((asset, index) => {
+                const tr = document.createElement('tr');
+                tr.className = 'hover:bg-gray-800/40 cursor-pointer transition-colors';
+                tr.onclick = () => selectAsset(asset);
+
+                const pnlClass = asset.pnl.startsWith('+') ? 'text-green-400' : 'text-red-400';
+                const shariahClass = asset.shariah === 'Uygun' ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400';
+
+                tr.innerHTML = `
+                    <td class="py-3 px-4 font-bold text-white">${asset.ticker}</td>
+                    <td class="py-3 px-2 text-right font-mono">${asset.price}</td>
+                    <td class="py-3 px-2 text-right font-mono ${pnlClass}">${asset.pnl}</td>
+                    <!-- Beginner Views -->
+                    <td class="py-3 px-2 text-center column-beginner ${currentMode === 'pro' ? 'hidden' : ''}">
+                        <span class="px-2 py-0.5 rounded-full text-[10px] ${shariahClass}">${asset.shariah}</span>
+                    </td>
+                    <td class="py-3 px-2 text-center font-mono column-beginner ${currentMode === 'pro' ? 'hidden' : ''}">${asset.purification}</td>
+                    <!-- Pro Views -->
+                    <td class="py-3 px-2 text-right font-mono column-pro ${currentMode === 'beginner' ? 'hidden' : ''}">${asset.weight}</td>
+                    <td class="py-3 px-2 text-right font-mono column-pro ${currentMode === 'beginner' ? 'hidden' : ''}">${asset.sharpe}</td>
+                    <td class="py-3 px-2 text-right font-mono column-pro ${currentMode === 'beginner' ? 'hidden' : ''}">${asset.beta}</td>
+                    <td class="py-3 px-2 text-right font-mono column-pro ${currentMode === 'beginner' ? 'hidden' : ''}">${asset.vol}</td>
+                    <td class="py-3 px-2 text-right font-mono text-red-400 column-pro ${currentMode === 'beginner' ? 'hidden' : ''}">${asset.maxDd}</td>
+                `;
+                tableBody.appendChild(tr);
+            });
+            // Select first by default
+            if(mockAssets.length > 0) selectAsset(mockAssets[0]);
+        }
+
+        function selectAsset(asset) {
+            document.getElementById('inspect-ticker').innerText = asset.ticker;
+            document.getElementById('inspect-name').innerText = asset.name;
+            document.getElementById('inspect-icon').innerText = asset.ticker.charAt(0);
+            document.getElementById('inspect-desc').innerText = asset.desc;
+            document.getElementById('inspect-ai-simple').innerText = asset.aiSimple;
+            document.getElementById('inspect-ai-deep').innerText = asset.aiDeep;
+            
+            const shariahBox = document.getElementById('inspect-shariah-box');
+            const shariahText = document.getElementById('inspect-shariah');
+            
+            shariahText.innerText = asset.shariah === 'Uygun' ? 'Uygundur: Katılım kriterlerini sağlar.' : 'Uygun Değil: Faiz geliri kritik sınırı aşıyor.';
+            if(asset.shariah !== 'Uygun') {
+                shariahBox.className = "bg-red-500/5 border border-red-500/10 p-3 rounded-lg";
+            } else {
+                shariahBox.className = "bg-green-500/5 border border-green-500/10 p-3 rounded-lg";
+            }
+        }
+
+        modeToggle.addEventListener('change', (e) => {
+            if (e.target.checked) {
+                currentMode = 'pro';
+                labelProfessional.style.color = 'var(--turquoise)';
+                labelBeginner.style.color = 'gray';
+                
+                sidebarBegin.classList.add('hidden');
+                sidebarPro.classList.remove('hidden');
+                proVisuals.classList.remove('hidden');
+                inspectorBegin.classList.add('hidden');
+                inspectorPro.classList.remove('hidden');
+                tableTitle.innerText = "Quant Terminal Console v4.0.2";
+
+                document.querySelectorAll('.column-pro').forEach(el => el.classList.remove('hidden'));
+                document.querySelectorAll('.column-beginner').forEach(el => el.classList.add('hidden'));
+            } else {
+                currentMode = 'beginner';
+                labelBeginner.style.color = 'var(--turquoise)';
+                labelProfessional.style.color = 'gray';
+
+                sidebarBegin.classList.remove('hidden');
+                sidebarPro.classList.add('hidden');
+                proVisuals.classList.add('hidden');
+                inspectorBegin.classList.remove('hidden');
+                inspectorPro.classList.add('hidden');
+                tableTitle.innerText = "Varlıklarım ve Durum";
+
+                document.querySelectorAll('.column-pro').forEach(el => el.classList.add('hidden'));
+                document.querySelectorAll('.column-beginner').forEach(el => el.classList.remove('hidden'));
+            }
+        });
+
+        // Init
+        renderTable();
+
+    </script>
+</body>
+</html>

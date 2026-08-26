@@ -3,6 +3,7 @@ import os
 import httpx
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Depends, Request, Header
+from typing import Optional
 from backend.api.models import UserSettingsRequest, OnboardingProfileRequest
 from backend.infrastructure.auth import verify_jwt
 
@@ -376,7 +377,7 @@ async def get_portfolio(request: Request):
         return {"tickers": []}
 
 @router.post("/portfolio", dependencies=[Depends(verify_jwt)])
-async def save_portfolio(request: Request, x_shadow_test: str | None = Header(default=None)):
+async def save_portfolio(request: Request, x_shadow_test: Optional[str] = Header(default=None)):
     """Kullanıcının portföyünü (tickers) güvenli bir şekilde kaydeder/günceller."""
     user_id = request.state.user.get("sub")
     if not user_id: 

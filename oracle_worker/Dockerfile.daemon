@@ -1,0 +1,10 @@
+# Dockerfile.daemon
+FROM --platform=linux/arm64 python:3.12-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir psutil
+
+COPY daemon/oracle_reclamation_shield.py .
+
+CMD ["python", "oracle_reclamation_shield.py"]

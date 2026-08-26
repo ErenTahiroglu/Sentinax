@@ -1,0 +1,1330 @@
+<!DOCTYPE html>
+<html lang="tr">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Portföy Analiz Platformu — AI Destekli</title>
+    <meta name="description"
+        content="Hisselerinizi ve fonlarınızı yapay zeka ile saniyeler içinde derinlemesine analiz edin.">
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#6366f1">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="icon" href="icons/icon-192.png" type="image/png">
+    <link rel="apple-touch-icon" href="icons/icon-192.png">
+    <link rel="stylesheet" href="styles.css?v=4.1">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <!-- File Parsers -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <!-- TradingView Lightweight Charts -->
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        body:not(.professional-mode) .pro-only { display: none !important; }
+        body.professional-mode .beginner-only { display: none !important; }
+        .switch .slider:before { position: absolute; content: ""; height: 14px; width: 14px; left: 2px; bottom: 2px; background-color: white; transition: .4s; border-radius: 50%; }
+        input:checked + .slider { background-color: var(--primary) !important; }
+        input:checked + .slider:before { transform: translateX(16px); }
+
+        /* UX Enhancements */
+        @keyframes pulseGlow {
+            0% { transform: translate(-50%, -50%) scale(1); opacity: 0.05; }
+            50% { transform: translate(-50%, -50%) scale(1.08); opacity: 0.08; }
+            100% { transform: translate(-50%, -50%) scale(1); opacity: 0.05; }
+        }
+        .pulsing-glow { animation: pulseGlow 4s infinite ease-in-out; }
+        .features-grid > div { transition: transform 0.3s ease, background 0.3s ease, box-shadow 0.3s ease !important; cursor: pointer; }
+        .features-grid > div:hover { transform: translateY(-5px); background: rgba(255, 255, 255, 0.04) !important; box-shadow: 0 12px 30px rgba(99, 102, 241, 0.1); }
+
+        @keyframes bounce {
+            0%, 20%, 50%, 80%, 100% { transform: translateY(0); }
+            40% { transform: translateY(-8px); }
+            60% { transform: translateY(-4px); }
+        }
+    </style>
+</head>
+
+<body>
+    <!-- TOAST CONTAINER -->
+    <div id="toast-container"></div>
+
+    <!-- MOBILE MENU BUTTON -->
+    <button class="mobile-menu-btn" id="mobile-menu-btn" aria-label="Menüyü Aç">
+        <i class="fas fa-bars"></i>
+    </button>
+
+    <!-- Metric Detail Modal -->
+    <div id="metric-modal" class="modal-overlay hidden">
+        <div class="modal-content premium-card">
+            <button class="modal-close" id="metric-modal-close" aria-label="Kapat"><i class="fas fa-times"></i></button>
+            <div class="card-glow"></div>
+            <div class="card-inner">
+                <div class="card-head">
+                    <span class="card-icon" id="metric-detail-icon"><i class="fas fa-info-circle"></i></span>
+                    <div class="card-titles">
+                        <h4 id="metric-detail-title">Metrik Detayı</h4>
+                        <span id="metric-detail-ticker">Hisse Sembolü</span>
+                    </div>
+                </div>
+
+                <div class="metric-detail-body">
+                    <div class="detail-section">
+                        <label class="control-label">Nedir?</label>
+                        <p id="metric-static-desc" class="detail-text">Bu metrik, şirketin piyasa değerinin defter
+                            değerine oranını gösterir.</p>
+                    </div>
+
+                    <div class="detail-section ai-insight-section">
+                        <label class="control-label"><i class="fas fa-robot"></i> AI Analizi</label>
+                        <div id="metric-ai-insight" class="ai-insight-box">
+                            Yükleniyor...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- User Settings Modal -->
+    <div id="settings-modal" class="modal-overlay hidden">
+        <div class="modal-content premium-card">
+            <button class="modal-close" id="settings-modal-close" aria-label="Kapat"><i class="fas fa-times"></i></button>
+            <div class="card-glow"></div>
+            <div class="card-inner">
+                <div class="card-head">
+                    <span class="card-icon"><i class="fas fa-user-cog"></i></span>
+                    <div class="card-titles">
+                        <h4>Hesap Ayarları</h4>
+                        <span>Otonom Bildirim ve Profil Tercihleri</span>
+                    </div>
+                </div>
+
+                <div class="metric-detail-body">
+                    <div class="input-group">
+                        <label>
+                            <i class="fab fa-telegram"></i> Telegram Chat ID
+                            <span class="tooltip-icon" tabindex="0">
+                                <i class="fas fa-question-circle"></i>
+                                <span class="tooltip-text">
+                                    <strong>Telegram Chat ID Nasıl Alınır?</strong><br>
+                                    1. Telegram'da <em>@userinfobot</em> aratın.<br>
+                                    2. Bota <strong>/start</strong> mesajını gönderin.<br>
+                                    3. Size "Id: 123456789" şeklinde bir yanıt verecektir.<br>
+                                    4. O numarayı buraya yapıştırın.
+                                </span>
+                            </span>
+                        </label>
+                        <input type="text" id="telegram-chat-id-input" placeholder="Örn: 123456789">
+                        <p class="input-helper">Otonom alarmlar doğrudan seçtiğiniz Telegram hesabına iletilecektir.</p>
+                    </div>
+                    
+                    <div class="input-group">
+                        <label><i class="fas fa-shield-alt"></i> Risk Toleransı</label>
+                        <select id="risk-tolerance-select">
+                            <option value="Düşük">Düşük Risk</option>
+                            <option value="Orta" selected>Orta Risk</option>
+                            <option value="Yüksek">Yüksek Risk</option>
+                        </select>
+                    </div>
+
+                    <button class="btn btn-primary" id="save-settings-btn" style="width: 100%; margin-top: 1rem;"><i class="fas fa-save"></i> Kaydet</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Login Modal -->
+    <div id="login-modal" class="modal-overlay hidden">
+        <div class="modal-content premium-card">
+            <button class="modal-close" aria-label="Kapat" onclick="document.getElementById('login-modal').classList.add('hidden')"><i class="fas fa-times"></i></button>
+            <div class="card-glow"></div>
+            <div class="card-inner">
+                <div class="card-head">
+                    <span class="card-icon"><i class="fas fa-sign-in-alt"></i></span>
+                    <div class="card-titles">
+                        <h4>Giriş Yap</h4>
+                        <span>Devam etmek için bir oturum açın</span>
+                    </div>
+                </div>
+
+                <div class="metric-detail-body" style="display: flex; flex-direction: column; gap: 1rem; align-items: center; padding: 1.5rem 1rem;">
+                    <p style="color: var(--text-muted); font-size: 0.85rem; text-align: center; margin-bottom: 0.5rem;">Portföyünüzü kaydetmek ve gelişmiş analizlerden yararlanmak için giriş yapın.</p>
+                    <button class="btn btn-primary" onclick="window.SupabaseAuth.signInWithGoogle()" style="width: 100%; justify-content: center; gap: 10px; padding: 12px; font-weight: 700;">
+                        <i class="fab fa-google"></i> Google ile Giriş Yap
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- ONBOARDING WIZARD OVERLAY                                      -->
+    <!-- Yeni kullanıcılara ilk girişte gösterilen 3 adımlı sihirbaz   -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <div id="onboarding-wizard-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; z-index:1500; background: var(--bg-color); background-image: radial-gradient(circle at 50% 15%, var(--primary-glow) 0%, var(--bg-color) 75%); flex-direction:column; align-items:center; justify-content:center; padding:2rem; box-sizing:border-box; font-family:'Inter',sans-serif;">
+
+        <!-- Progress bar -->
+        <div style="position:absolute; top:0; left:0; width:100%; height:3px; background:rgba(255,255,255,0.06);">
+            <div id="wizard-progress-fill" style="height:100%; width:33.33%; background:linear-gradient(90deg,#6366f1,#a855f7); transition:width 0.4s ease;"></div>
+        </div>
+
+        <!-- Step meta -->
+        <p id="wizard-step-meta" style="font-size:0.72rem; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:var(--text-muted); margin-bottom:0.75rem;">Adım 1 / 3</p>
+
+        <!-- Step title -->
+        <h2 id="wizard-step-title" style="font-size:clamp(1.1rem,3.5vw,1.6rem); font-weight:800; color:var(--text-main); text-align:center; max-width:540px; line-height:1.25; letter-spacing:-0.5px; margin:0 0 2.5rem;">
+            Yatırım konusundaki durumunu en iyi hangisi anlatıyor?
+        </h2>
+
+        <!-- Card grid — populated by OnboardingWizard.js -->
+        <div id="wizard-cards-grid" class="wizard-cards-grid"></div>
+
+        <!-- Skip link -->
+        <a id="wizard-skip-link" tabindex="0" role="button" style="margin-top:2.5rem; font-size:0.78rem; color:var(--text-muted); cursor:pointer; text-decoration:none; opacity:0.6; transition:opacity 0.2s;" onmouseenter="this.style.opacity='1'" onmouseleave="this.style.opacity='0.6'" onclick="if(typeof window.skipOnboardingWizard==='function') window.skipOnboardingWizard()">
+            Şimdilik geç →
+        </a>
+    </div>
+
+    <!-- LANDING PAGE OVERLAY (Visible when Not Authenticated) -->
+
+    <div id="landing-page" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: var(--bg-color); background-image: radial-gradient(circle at 50% 10%, var(--primary-glow) 0%, var(--bg-color) 80%); z-index: 1200; overflow-y: auto; display: flex; flex-direction: column; font-family: 'Inter', sans-serif;">
+        <!-- Landing Navbar -->
+        <nav style="display: flex; justify-content: space-between; align-items: center; padding: 1.5rem 3rem; background: var(--glass-bg); backdrop-filter: blur(10px); border-bottom: 1px solid var(--glass-border);">
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <img src="logo.png" alt="Logo" style="height: 32px; filter: drop-shadow(0 0 8px rgba(99, 102, 241, 0.5));">
+                <span style="font-weight: 800; font-size: 1.25rem; color: var(--text-main); letter-spacing: -0.5px;">Portföy <span style="background: linear-gradient(135deg, #6366f1, #a855f7); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;">Analiz</span></span>
+            </div>
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <a href="https://github.com/sponsors/ErenTahiroglu" target="_blank" style="display: flex; align-items: center; gap: 8px; background: rgba(236, 72, 153, 0.1); border: 1px solid rgba(236, 72, 153, 0.3); color: var(--text-main); padding: 10px 18px; border-radius: 8px; font-weight: 600; cursor: pointer; text-decoration: none; font-size: 0.85rem; transition: all 0.2s; box-shadow: 0 0 15px rgba(236, 72, 153, 0.2);">
+                    <i class="fas fa-heart" style="color: #ec4899;"></i> <span style="font-weight: 600;">Sponsor</span>
+                </a>
+                <button id="landing-nav-login-btn" onclick="document.getElementById('login-modal').classList.remove('hidden')" style="background: var(--glass-item-hover); border: 1px solid rgba(255,255,255,0.1); color: var(--text-main); padding: 10px 24px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: all 0.2s; font-size: 0.9rem;">Giriş Yap / Kayıt Ol</button>
+            </div>
+        </nav>
+
+        <!-- Hero Section -->
+        <section style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 4rem 1rem; position: relative;">
+            <div class="pulsing-glow" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 600px; height: 600px; background: rgba(99, 102, 241, 0.06); filter: blur(100px); border-radius: 50%; z-index: -1;"></div>
+            
+            
+            <h1 style="color: var(--text-main); font-size: 3.5rem; font-weight: 800; max-width: 850px; line-height: 1.1; letter-spacing: -1px; margin-bottom: 1rem;">Varlıklarınızı <span style="background: linear-gradient(135deg, #6366f1, #a855f7, #ec4899); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;">Otonom</span> Olarak Optimize Edin</h1>
+            <p style="color: #9ca3af; font-size: 1.1rem; max-width: 600px; line-height: 1.6; margin-bottom: 2.5rem;">Sanal Trading (Paper), Monte Carlo Risk analizleri ve Kurumsal yapay zeka ajanları ile portföyünüzü akıllı kontrol edin.</p>
+            
+            <div style="display: flex; gap: 1rem; margin-bottom: 4rem;">
+                <button id="landing-action-btn" onclick="document.getElementById('login-modal').classList.remove('hidden')" style="background: linear-gradient(135deg, #6366f1, #a855f7); color: var(--text-main); padding: 14px 32px; border-radius: 10px; font-weight: 700; font-size: 1rem; border: none; cursor: pointer; box-shadow: 0 10px 30px rgba(99, 102, 241, 0.4); transition: transform 0.2s;">Giriş Yap / Kayıt Ol <i class="fas fa-sign-in-alt" style="margin-left: 8px; font-size: 0.85rem;"></i></button>
+                <button onclick="document.getElementById('landing-page').style.display='none'; document.getElementById('sidebar').style.display='flex'; document.querySelector('.main-content').style.display='block'; document.getElementById('guest-logout-btn').style.display='flex'; document.getElementById('dashboard-sponsor-btn').style.display='flex'; if(typeof window.AppState==='object') window.AppState.viewMode='beginner'; if(typeof showToast==='function') showToast('Misafir modunda temel analiz yapabilirsiniz. Profesyonel araçlar için giriş yapın.', 'info');" style="background: var(--glass-item-hover); border: 1px solid rgba(255,255,255,0.1); color: var(--text-main); padding: 14px 28px; border-radius: 10px; font-weight: 600; font-size: 1rem; cursor: pointer; transition: all 0.2s;">Misafir Olarak Dene</button>
+            </div>
+
+            <!-- Features Grid -->
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.5rem; max-width: 1000px; width: 100%; padding: 0 2rem;">
+                <div style="background: var(--glass-item); border: 1px solid var(--glass-border); border-radius: 12px; padding: 1.5rem; text-align: left; backdrop-filter: blur(5px); transition: transform 0.2s;">
+                    <div style="font-size: 1.5rem; color: #6366f1; margin-bottom: 8px;"><i class="fas fa-robot"></i></div>
+                    <h3 style="color: var(--text-main); font-size: 1.1rem; margin-bottom: 6px;">Multi-Agent CIO</h3>
+                    <p style="color: #9ca3af; font-size: 0.85rem; line-height: 1.5;">Yapay zeka ajanları piyasa trendlerini tek tek tarayarak kurumsal raporlar üretir.</p>
+                </div>
+                <div style="background: var(--glass-item); border: 1px solid var(--glass-border); border-radius: 12px; padding: 1.5rem; text-align: left; backdrop-filter: blur(5px);">
+                    <div style="font-size: 1.5rem; color: #10b981; margin-bottom: 8px;"><i class="fas fa-chart-pie"></i></div>
+                    <h3 style="color: var(--text-main); font-size: 1.1rem; margin-bottom: 6px;">Portföy Optimizasyonu</h3>
+                    <p style="color: #9ca3af; font-size: 0.85rem; line-height: 1.5;">Sharpe ve Markowitz algoritmalarıyla matematiksel olarak karlı dağılımlar hesaplar.</p>
+                </div>
+                <div style="background: var(--glass-item); border: 1px solid var(--glass-border); border-radius: 12px; padding: 1.5rem; text-align: left; backdrop-filter: blur(5px);">
+                    <div style="font-size: 1.5rem; color: #ef4444; margin-bottom: 8px;"><i class="fas fa-shield-halved"></i></div>
+                    <h3 style="color: var(--text-main); font-size: 1.1rem; margin-bottom: 6px;">Uçtan Uca Risk Motoru</h3>
+                    <p style="color: #9ca3af; font-size: 0.85rem; line-height: 1.5;">Value at Risk (VaR) ve Max Drawdown modellerini kullanarak kayıp toleransları çizer.</p>
+                </div>
+                <div style="background: var(--glass-item); border: 1px solid var(--glass-border); border-radius: 12px; padding: 1.5rem; text-align: left; backdrop-filter: blur(5px);">
+                    <div style="font-size: 1.5rem; color: #f59e0b; margin-bottom: 8px;"><i class="fas fa-receipt"></i></div>
+                    <h3 style="color: var(--text-main); font-size: 1.1rem; margin-bottom: 6px;">Sanal Paper Trading</h3>
+                    <p style="color: #9ca3af; font-size: 0.85rem; line-height: 1.5;">Hiçbir gerçek bakiye riske atmadan piyasada anlık alım/satım simülasyonları yapın.</p>
+                </div>
+            </div>
+
+            <!-- Scroll Indicator (Daha Fazlası) -->
+            <div id="landing-scroll-hint" onclick="document.getElementById('pricing-cards').scrollIntoView({ behavior: 'smooth' });" style="margin-top: 3.5rem; display: flex; flex-direction: column; align-items: center; gap: 5px; color: #9ca3af; font-size: 0.75rem; cursor: pointer; animation: bounce 2s infinite; transition: opacity 0.5s ease, transform 0.5s ease;">
+                <span style="letter-spacing: 1px; opacity: 0.6; font-weight: 700; font-size: 0.65rem;">DAHA FAZLASI</span>
+                <i class="fas fa-chevron-down" style="font-size: 0.85rem; color: #6366f1;"></i>
+            </div>
+        </section>
+
+        <!-- Scroll-to-top FAB (appears when scrolled down) -->
+        <button id="landing-scroll-top-btn" onclick="document.getElementById('landing-page').scrollTo({ top: 0, behavior: 'smooth' });" title="Yukarı Çık" style="position: fixed; bottom: 2rem; right: 2rem; z-index: 9999; width: 48px; height: 48px; border-radius: 50%; background: linear-gradient(135deg, #6366f1, #a855f7); border: none; color: white; font-size: 1.1rem; cursor: pointer; box-shadow: 0 4px 20px rgba(99, 102, 241, 0.5); display: flex; align-items: center; justify-content: center; opacity: 0; pointer-events: none; transform: translateY(20px); transition: opacity 0.4s ease, transform 0.4s ease;">
+            <i class="fas fa-arrow-up"></i>
+        </button>
+
+
+        <!-- Pricing Cards Section -->
+        <div id="pricing-cards" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem; max-width: 700px; margin: 2rem auto 3rem auto; width: 100%; padding: 0 2rem;">
+            <!-- Başlangıç Planı -->
+            <div style="background: rgba(255, 255, 255, 0.01); border: 1px solid rgba(255, 255, 255, 0.04); border-radius: 16px; padding: 2rem; text-align: center; backdrop-filter: blur(10px); transition: transform 0.3s;">
+                <div style="font-size: 0.75rem; color: #10b981; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem;">Ücretsiz Deneyim</div>
+                <h3 style="color: var(--text-main); font-size: 1.5rem; font-weight: 800; margin-bottom: 1rem;">Başlangıç</h3>
+                <div style="font-size: 1.75rem; font-weight: 800; color: var(--text-main); margin-bottom: 1.5rem;">Kullanıma Açık</div>
+                <ul style="text-align: left; list-style: none; padding: 0; margin-bottom: 2rem; font-size: 0.88rem; color: #d1d5db; display: flex; flex-direction: column; gap: 0.75rem;">
+                    <li><i class="fas fa-check-circle" style="color: #10b981; margin-right: 8px;"></i> Canlı Portföy Özeti</li>
+                    <li><i class="fas fa-check-circle" style="color: #10b981; margin-right: 8px;"></i> Varlık Dağılım Grafiği</li>
+                    <li><i class="fas fa-check-circle" style="color: #10b981; margin-right: 8px;"></i> Temel Performans Metrikleri</li>
+                    <li><i class="fas fa-times-circle" style="color: #ef4444; margin-right: 8px; opacity: 0.5;"></i> <span style="opacity: 0.5;">Gelişmiş AI Sihirbazı</span></li>
+                </ul>
+                <button onclick="const misafirBtn = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('Misafir')); if(misafirBtn) misafirBtn.click();" style="width: 100%; padding: 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.03); color: var(--text-main); font-weight: 600; cursor: pointer; transition: all 0.2s;">Hemen Dene</button>
+            </div>
+
+            <!-- Profesyonel Planı -->
+            <div style="background: linear-gradient(145deg, rgba(99, 102, 241, 0.04), rgba(168, 85, 247, 0.02)); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 16px; padding: 2rem; text-align: center; backdrop-filter: blur(10px); position: relative; overflow: hidden; transform: scale(1.02); box-shadow: 0 15px 40px rgba(99, 102, 241, 0.1);">
+                <div style="position: absolute; top: 15px; right: -30px; background: linear-gradient(135deg, #6366f1, #a855f7); color: var(--text-main); font-size: 0.6rem; font-weight: 800; padding: 4px 30px; transform: rotate(45deg);">BETA</div>
+                <div style="font-size: 0.75rem; color: #818cf8; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.5rem;">Tam Donanım</div>
+                <h3 style="color: var(--text-main); font-size: 1.5rem; font-weight: 800; margin-bottom: 1rem;">Profesyonel</h3>
+                <div style="font-size: 1.75rem; font-weight: 800; color: var(--text-main); margin-bottom: 1.5rem;">Açık <span style="font-size: 0.8rem; font-weight: 400; color: #9ca3af; text-decoration: line-through;">(Beta)</span></div>
+                <ul style="text-align: left; list-style: none; padding: 0; margin-bottom: 2rem; font-size: 0.88rem; color: #d1d5db; display: flex; flex-direction: column; gap: 0.75rem;">
+                    <li><i class="fas fa-check-circle" style="color: #6366f1; margin-right: 8px;"></i> <strong>AI Sihirbazı & CIO Raporları</strong></li>
+                    <li><i class="fas fa-check-circle" style="color: #6366f1; margin-right: 8px;"></i> Monte Carlo & VaR Risk Analizleri</li>
+                    <li><i class="fas fa-check-circle" style="color: #6366f1; margin-right: 8px;"></i> Korelasyon & Portföy Optimizasyonu</li>
+                    <li><i class="fas fa-check-circle" style="color: #6366f1; margin-right: 8px;"></i> Sanal Trading (Paper)</li>
+                </ul>
+                <button onclick="document.getElementById('landing-action-btn').click()" style="width: 100%; padding: 12px; border-radius: 8px; border: none; background: linear-gradient(135deg, #6366f1, #a855f7); color: var(--text-main); font-weight: 700; cursor: pointer; transition: transform 0.2s; box-shadow: 0 4px 15px rgba(99, 102, 241, 0.2);">Profesyonel Ol</button>
+            </div>
+        </div>
+
+        <!-- Comparison Table Section -->
+        <div style="margin-top: 2rem; max-width: 900px; width: 100%; padding: 0 2rem; margin-bottom: 4rem; align-self: center;">
+            <h2 style="color: var(--text-main); font-size: 1.75rem; font-weight: 800; margin-bottom: 1.5rem; text-align: center;">Hangi Paket Size Uygun?</h2>
+            <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 12px; overflow: hidden; backdrop-filter: blur(10px);">
+                <table style="width: 100%; border-collapse: collapse; text-align: left; color: var(--text-main); font-size: 0.9rem;">
+                    <thead>
+                        <tr style="background: rgba(255, 255, 255, 0.04); border-bottom: 1px solid rgba(255, 255, 255, 0.08);">
+                            <th style="padding: 1.25rem; font-weight: 700; width: 40%; color: #9ca3af;">Gelişmiş Özellikler</th>
+                            <th style="padding: 1.25rem; font-weight: 700; text-align: center; color: #10b981;">Başlangıç</th>
+                            <th style="padding: 1.25rem; font-weight: 700; text-align: center; color: #6366f1;">Profesyonel</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.02); transition: background 0.2s;">
+                            <td style="padding: 1rem 1.25rem; color: var(--text-main);">Canlı Portföy Özeti</td>
+                            <td style="padding: 1rem; text-align: center; color: #10b981;"><i class="fas fa-check-circle"></i></td>
+                            <td style="padding: 1rem; text-align: center; color: #10b981;"><i class="fas fa-check-circle"></i></td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.02);">
+                            <td style="padding: 1rem 1.25rem; color: var(--text-main);">Varlık Dağılım Grafiği</td>
+                            <td style="padding: 1rem; text-align: center; color: #10b981;"><i class="fas fa-check-circle"></i></td>
+                            <td style="padding: 1rem; text-align: center; color: #10b981;"><i class="fas fa-check-circle"></i></td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.02);">
+                            <td style="padding: 1rem 1.25rem; color: var(--text-main);">Temel Performans Metrikleri</td>
+                            <td style="padding: 1rem; text-align: center; color: #10b981;"><i class="fas fa-check-circle"></i></td>
+                            <td style="padding: 1rem; text-align: center; color: #10b981;"><i class="fas fa-check-circle"></i></td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.02);">
+                            <td style="padding: 1rem 1.25rem; color: var(--text-main);">Otomatik AI Sihirbazı</td>
+                            <td style="padding: 1rem; text-align: center; color: #ef4444;"><i class="fas fa-times-circle"></i></td>
+                            <td style="padding: 1rem; text-align: center; color: #10b981;"><i class="fas fa-check-circle"></i></td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.02);">
+                            <td style="padding: 1rem 1.25rem; color: var(--text-main);">Gelişmiş Risk (VaR, MaxDD)</td>
+                            <td style="padding: 1rem; text-align: center; color: #ef4444;"><i class="fas fa-times-circle"></i></td>
+                            <td style="padding: 1rem; text-align: center; color: #10b981;"><i class="fas fa-check-circle"></i></td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.02);">
+                            <td style="padding: 1rem 1.25rem; color: var(--text-main);">Monte Carlo Simülasyonu</td>
+                            <td style="padding: 1rem; text-align: center; color: #ef4444;"><i class="fas fa-times-circle"></i></td>
+                            <td style="padding: 1rem; text-align: center; color: #10b981;"><i class="fas fa-check-circle"></i></td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.02);">
+                            <td style="padding: 1rem 1.25rem; color: var(--text-main);">Korelasyon Matrisi</td>
+                            <td style="padding: 1rem; text-align: center; color: #ef4444;"><i class="fas fa-times-circle"></i></td>
+                            <td style="padding: 1rem; text-align: center; color: #10b981;"><i class="fas fa-check-circle"></i></td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 1rem 1.25rem; color: var(--text-main);">Backtest Performans Analizi</td>
+                            <td style="padding: 1rem; text-align: center; color: #ef4444;"><i class="fas fa-times-circle"></i></td>
+                            <td style="padding: 1rem; text-align: center; color: #10b981;"><i class="fas fa-check-circle"></i></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Sponsor Section (Premium Card) -->
+        <div class="sponsors-footer" style="margin-top: 4rem; text-align: center; padding: 0 1rem;">
+            <div style="background: linear-gradient(145deg, rgba(30, 41, 59, 0.4), rgba(15, 23, 42, 0.6)); border: 1px solid rgba(236, 72, 153, 0.2); border-radius: 20px; max-width: 500px; margin: 0 auto; padding: 2.5rem 1.5rem; box-shadow: 0 15px 35px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.05); backdrop-filter: blur(10px); position: relative; overflow: hidden;">
+                <!-- Decorative Glow -->
+                <div style="position: absolute; top: -50px; left: 50%; transform: translateX(-50%); width: 150px; height: 150px; background: rgba(236, 72, 153, 0.4); filter: blur(60px); z-index: 0; pointer-events: none;"></div>
+                
+                <div style="position: relative; z-index: 1;">
+                    <img src="https://github.com/ErenTahiroglu.png" alt="Eren Tahiroglu" style="width: 72px; height: 72px; border-radius: 50%; border: 2px solid rgba(236, 72, 153, 0.5); box-shadow: 0 4px 15px rgba(236, 72, 153, 0.3); margin-bottom: 1rem; padding: 2px; background: var(--bg-dark);">
+                    
+                    <h3 style="color: var(--text-main); font-size: 1.3rem; font-weight: 800; margin-bottom: 0.5rem;">Açık Kaynağa Destek Olun</h3>
+                    <p style="color: var(--text-muted); font-size: 0.9rem; line-height: 1.6; margin-bottom: 1.75rem;">
+                        Portföy Analiz Platformu'nun geliştirilmesine ve sunucu maliyetlerine katkıda bulunarak projenin büyümesine yardımcı olabilirsiniz.
+                    </p>
+                    
+                    <a href="https://github.com/sponsors/ErenTahiroglu" target="_blank" style="display: inline-flex; align-items: center; justify-content: center; gap: 8px; background: linear-gradient(135deg, #ec4899, #8b5cf6); color: #ffffff; font-weight: 700; font-size: 1rem; padding: 0.85rem 2rem; border-radius: 50px; text-decoration: none; transition: transform 0.2s, box-shadow 0.2s; box-shadow: 0 8px 25px rgba(236, 72, 153, 0.35);">
+                        <i class="fas fa-heart"></i> GitHub Üzerinden Sponsor Ol
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <footer style="padding: 1.5rem; text-align: center; border-top: 1px solid rgba(255,255,255,0.02); color: #6b7280; font-size: 0.85rem; margin-top: 2rem;">
+            © 2026 Portföy Analiz Platformu. Tüm Hakları Saklıdır.
+        </footer>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <!-- AUTH MODAL — Giriş Yap / Kayıt Ol                      -->
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <div id="login-modal" class="modal-overlay hidden" style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.75);backdrop-filter:blur(12px);z-index:2000;justify-content:center;align-items:center;display:flex;">
+        <div class="auth-modal-content glass-panel" style="position:relative;width:100%;max-width:420px;padding:2.5rem 2rem;border-radius:20px;border:1px solid var(--glass-border);box-shadow:0 24px 80px rgba(0,0,0,0.5),0 0 0 1px rgba(99,102,241,0.15);animation:slideUpFade 0.35s ease;">
+            <!-- Close -->
+            <button id="auth-modal-close" aria-label="Kapat" style="position:absolute;top:1rem;right:1rem;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:1.25rem;line-height:1;padding:4px;transition:color 0.2s;" onmouseenter="this.style.color='var(--text-main)'" onmouseleave="this.style.color='var(--text-muted)'">
+                <i class="fas fa-times"></i>
+            </button>
+
+            <!-- Logo & Title -->
+            <div style="text-align:center;margin-bottom:1.75rem;">
+                <div style="width:52px;height:52px;background:linear-gradient(135deg,#6366f1,#8b5cf6);border-radius:14px;display:flex;align-items:center;justify-content:center;margin:0 auto 1rem;box-shadow:0 8px 24px rgba(99,102,241,0.35);">
+                    <i class="fas fa-chart-line" style="color:#fff;font-size:1.4rem;"></i>
+                </div>
+                <h2 style="margin:0 0 0.25rem;font-size:1.4rem;font-weight:800;color:var(--text-main);letter-spacing:-0.5px;">Portföy Analiz</h2>
+                <p style="margin:0;font-size:0.82rem;color:var(--text-muted);">AI destekli yatırım analiz platformu</p>
+            </div>
+
+            <!-- Tab Toggle -->
+            <div id="auth-tabs" style="display:flex;background:rgba(0,0,0,0.2);border-radius:10px;padding:3px;margin-bottom:1.5rem;border:1px solid var(--glass-border);">
+                <button id="auth-tab-login" onclick="window.switchAuthTab('login')" style="flex:1;padding:0.55rem;border:none;border-radius:8px;font-size:0.85rem;font-weight:600;cursor:pointer;transition:all 0.2s;background:var(--primary);color:#fff;box-shadow:0 2px 8px rgba(99,102,241,0.3);">
+                    <i class="fas fa-sign-in-alt"></i> Giriş Yap
+                </button>
+                <button id="auth-tab-register" onclick="window.switchAuthTab('register')" style="flex:1;padding:0.55rem;border:none;border-radius:8px;font-size:0.85rem;font-weight:600;cursor:pointer;transition:all 0.2s;background:transparent;color:var(--text-muted);">
+                    <i class="fas fa-user-plus"></i> Kayıt Ol
+                </button>
+            </div>
+
+            <!-- Error Box -->
+            <div id="auth-error-box" style="display:none;padding:0.75rem 1rem;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:10px;color:#f87171;font-size:0.82rem;margin-bottom:1rem;display:flex;align-items:center;gap:8px;">
+                <i class="fas fa-exclamation-circle"></i>
+                <span id="auth-error-msg">Bir hata oluştu.</span>
+            </div>
+            <!-- Success Box -->
+            <div id="auth-success-box" style="display:none;padding:0.75rem 1rem;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:10px;color:#4ade80;font-size:0.82rem;margin-bottom:1rem;display:flex;align-items:center;gap:8px;">
+                <i class="fas fa-check-circle"></i>
+                <span id="auth-success-msg">İşlem başarılı.</span>
+            </div>
+
+            <!-- Form -->
+            <form id="auth-form" onsubmit="return false;" style="display:flex;flex-direction:column;gap:1rem;">
+                <div>
+                    <label style="display:block;font-size:0.78rem;font-weight:600;color:var(--text-muted);margin-bottom:0.4rem;text-transform:uppercase;letter-spacing:0.5px;">E-posta</label>
+                    <div style="position:relative;">
+                        <i class="fas fa-envelope" style="position:absolute;left:0.9rem;top:50%;transform:translateY(-50%);color:var(--text-muted);font-size:0.85rem;pointer-events:none;"></i>
+                        <input id="auth-email" type="email" placeholder="ornek@email.com" autocomplete="email" required
+                            style="width:100%;padding:0.7rem 0.9rem 0.7rem 2.4rem;background:rgba(0,0,0,0.25);border:1px solid var(--glass-border);border-radius:10px;color:var(--text-main);font-size:0.9rem;box-sizing:border-box;transition:border-color 0.2s,box-shadow 0.2s;outline:none;"
+                            onfocus="this.style.borderColor='rgba(99,102,241,0.6)';this.style.boxShadow='0 0 0 3px rgba(99,102,241,0.15)'"
+                            onblur="this.style.borderColor='var(--glass-border)';this.style.boxShadow='none'">
+                    </div>
+                </div>
+                <div>
+                    <label style="display:block;font-size:0.78rem;font-weight:600;color:var(--text-muted);margin-bottom:0.4rem;text-transform:uppercase;letter-spacing:0.5px;">Şifre</label>
+                    <div style="position:relative;">
+                        <i class="fas fa-lock" style="position:absolute;left:0.9rem;top:50%;transform:translateY(-50%);color:var(--text-muted);font-size:0.85rem;pointer-events:none;"></i>
+                        <input id="auth-password" type="password" placeholder="••••••••" autocomplete="current-password" minlength="6" required
+                            style="width:100%;padding:0.7rem 2.4rem 0.7rem 2.4rem;background:rgba(0,0,0,0.25);border:1px solid var(--glass-border);border-radius:10px;color:var(--text-main);font-size:0.9rem;box-sizing:border-box;transition:border-color 0.2s,box-shadow 0.2s;outline:none;"
+                            onfocus="this.style.borderColor='rgba(99,102,241,0.6)';this.style.boxShadow='0 0 0 3px rgba(99,102,241,0.15)'"
+                            onblur="this.style.borderColor='var(--glass-border)';this.style.boxShadow='none'">
+                        <button type="button" onclick="window.togglePasswordVisibility()" style="position:absolute;right:0.9rem;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-muted);cursor:pointer;padding:0;" title="Şifreyi göster/gizle">
+                            <i id="auth-pw-eye" class="fas fa-eye-slash" style="font-size:0.85rem;"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Submit Button -->
+                <button id="auth-submit-btn" type="submit"
+                    style="width:100%;padding:0.8rem;background:linear-gradient(135deg,#6366f1,#8b5cf6);border:none;border-radius:10px;color:#fff;font-size:0.95rem;font-weight:700;cursor:pointer;transition:transform 0.15s,box-shadow 0.15s;box-shadow:0 4px 16px rgba(99,102,241,0.35);letter-spacing:0.3px;"
+                    onmouseenter="this.style.transform='translateY(-1px)';this.style.boxShadow='0 8px 24px rgba(99,102,241,0.45)'"
+                    onmouseleave="this.style.transform='';this.style.boxShadow='0 4px 16px rgba(99,102,241,0.35)'">
+                    <i class="fas fa-sign-in-alt"></i> <span id="auth-submit-label">Giriş Yap</span>
+                </button>
+            </form>
+
+            <!-- Divider -->
+            <div style="display:flex;align-items:center;gap:0.75rem;margin:1.25rem 0;">
+                <div style="flex:1;height:1px;background:var(--glass-border);"></div>
+                <span style="font-size:0.75rem;color:var(--text-muted);white-space:nowrap;">veya</span>
+                <div style="flex:1;height:1px;background:var(--glass-border);"></div>
+            </div>
+
+            <!-- Google OAuth -->
+            <button id="auth-google-btn" style="width:100%;padding:0.72rem;background:rgba(255,255,255,0.04);border:1px solid var(--glass-border);border-radius:10px;color:var(--text-main);font-size:0.88rem;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px;transition:background 0.2s,border-color 0.2s;"
+                onmouseenter="this.style.background='rgba(255,255,255,0.08)';this.style.borderColor='rgba(255,255,255,0.2)'"
+                onmouseleave="this.style.background='rgba(255,255,255,0.04)';this.style.borderColor='var(--glass-border)'">
+                <svg width="18" height="18" viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+                Google ile Giriş Yap
+            </button>
+
+            <!-- Footer note -->
+            <p style="text-align:center;margin:1rem 0 0;font-size:0.75rem;color:var(--text-muted);">
+                Giriş yaparak <a href="#" style="color:var(--primary);text-decoration:none;">Kullanım Şartları</a>'nı kabul etmiş olursunuz.
+            </p>
+        </div>
+    </div>
+
+    <!-- Admin Dashboard Modal -->
+
+    <div id="admin-dashboard-modal" class="modal-overlay hidden" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.75); backdrop-filter: blur(8px); z-index: 1000; justify-content: center; align-items: center; display: flex;">
+        <div class="modal-content glass-panel" style="max-width: 900px; width: 95%; max-height: 85vh; overflow-y: auto; padding: 2rem; border: 1px solid rgba(231, 76, 60, 0.3);">
+            <div class="modal-header" style="justify-content: space-between; display: flex; align-items: center; margin-bottom: 1.5rem;">
+                <h2 style="color: #e74c3c; font-size: 1.5rem; display: flex; align-items: center; gap: 10px; margin: 0;"><i class="fas fa-user-shield"></i> Süper Yönetici Paneli (Admin)</h2>
+                <button id="admin-modal-close" class="modal-close" aria-label="Kapat" style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.25rem;"><i class="fas fa-times"></i></button>
+            </div>
+            
+            <div class="admin-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.25rem; margin-bottom: 2rem;">
+                <div class="metric-card glass-panel" style="padding: 1.5rem; border-color: rgba(255,255,255,0.05); display: flex; align-items: center; gap: 15px;">
+                    <div class="card-icon" style="background: rgba(52, 152, 219, 0.1); color: #3498db; width: 50px; height: 50px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.5rem;"><i class="fas fa-users"></i></div>
+                    <div>
+                        <h4 style="margin: 0; font-size: 0.85rem; color: var(--text-muted);">Toplam Kullanıcı</h4>
+                        <span id="admin-total-users" style="font-size: 1.5rem; font-weight: 700; color: var(--text-main);">-</span>
+                    </div>
+                </div>
+                <div class="metric-card glass-panel" style="padding: 1.5rem; border-color: rgba(255,255,255,0.05); display: flex; align-items: center; gap: 15px;">
+                    <div class="card-icon" style="background: rgba(46, 204, 113, 0.1); color: #2ecc71; width: 50px; height: 50px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.5rem;"><i class="fas fa-chart-line"></i></div>
+                    <div>
+                        <h4 style="margin: 0; font-size: 0.85rem; color: var(--text-muted);">Platform AUM ($)</h4>
+                        <span id="admin-total-aum" style="font-size: 1.5rem; font-weight: 700; color: var(--text-main);">-</span>
+                    </div>
+                </div>
+                <div class="metric-card glass-panel" style="padding: 1.5rem; border-color: rgba(255,255,255,0.05); display: flex; align-items: center; gap: 15px;">
+                    <div class="card-icon" style="background: rgba(231, 76, 60, 0.1); color: #e74c3c; width: 50px; height: 50px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.5rem;"><i class="fas fa-burn"></i></div>
+                    <div>
+                        <h4 style="margin: 0; font-size: 0.85rem; color: var(--text-muted);">24s LLM Cost</h4>
+                        <span id="admin-llm-cost" style="font-size: 1.5rem; font-weight: 700; color: #e74c3c;">-</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="dashboard-rows" style="display: grid; grid-template-columns: 1.5fr 1fr; gap: 1.5rem; margin-top: 1.5rem;">
+                <div>
+                    <h4 style="margin-bottom: 1rem; color: var(--text-main); font-size: 1rem;"><i class="fas fa-chart-area"></i> 7 Günlük LLM Maliyeti ($)</h4>
+                    <div id="admin-cost-chart" style="height: 250px; background: rgba(0,0,0,0.1); border-radius: 8px; overflow: hidden; border: 1px solid var(--glass-border);"></div>
+                </div>
+                <div>
+                    <h4 style="margin-bottom: 1rem; color: var(--text-main); font-size: 1rem;"><i class="fas fa-crown"></i> En Aktif Kullanıcılar</h4>
+                    <ul id="admin-top-users" style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px;">
+                        <li style="color: var(--text-muted); font-style: italic;">Yükleniyor...</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar glass-panel" id="sidebar">
+        <div class="sidebar-logo">
+            <img src="logo.png" alt="Logo" class="logo-img">
+            <span class="logo-text">Portföy <span class="logo-accent">Analiz</span> <span id="server-status-dot" class="status-dot dot-gray" title="Server Status"></span></span>
+        </div>
+
+        <!-- Admin Dashboard Button -->
+        <div id="admin-sidebar-section" class="sidebar-section hidden" style="border-top: 1px solid rgba(231, 76, 60, 0.15); padding: 1rem 1.25rem;">
+             <button class="btn btn-danger" id="open-admin-btn" style="width: 100%; border-radius: 8px; background: rgba(231, 76, 60, 0.1); border: 1px solid rgba(231, 76, 60, 0.4); color: #e74c3c; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; transition: all 0.2s;"><i class="fas fa-user-shield"></i> Yönetici Paneli</button>
+        </div>
+
+        <div class="sidebar-section">
+            <h3 class="section-title"><i class="fas fa-sliders-h"></i> <span data-i18n="sidebar.settings">ANALİZ
+                    AYARLARI</span></h3>
+
+            <label class="toggle-row">
+                <div class="toggle-info">
+                    <span class="toggle-label" data-i18n="sidebar.compliance">Uygunluk Taraması</span>
+                    <span class="toggle-desc" data-i18n="sidebar.compliance.desc">İslami uygunluk analizi</span>
+                </div>
+                <input type="checkbox" id="check-islamic-toggle" class="toggle-input">
+                <span class="toggle-slider"></span>
+            </label>
+
+            <label class="toggle-row">
+                <div class="toggle-info">
+                    <span class="toggle-label" data-i18n="sidebar.financial">Finansal Analiz</span>
+                    <span class="toggle-desc" data-i18n="sidebar.financial.desc">Getiri & performans</span>
+                </div>
+                <input type="checkbox" id="check-financials-toggle" class="toggle-input" checked>
+                <span class="toggle-slider"></span>
+            </label>
+
+            <label class="toggle-row">
+                <div class="toggle-info">
+                    <span class="toggle-label" data-i18n="sidebar.ai">AI Yorumları</span>
+                    <span class="toggle-desc" data-i18n="sidebar.ai.desc">Gemini ile akıllı analiz</span>
+                </div>
+                <input type="checkbox" id="use-ai-toggle" class="toggle-input" checked>
+                <span class="toggle-slider"></span>
+            </label>
+        </div>
+
+        <!-- AI Settings (conditional control via JS) -->
+        <div class="sidebar-section" id="ai-settings">
+            <div class="input-group" id="gemini-key-group">
+                <label><i class="fas fa-key"></i> <span data-i18n="sidebar.apiKey">AI API Anahtarı (Gemini / Groq)</span></label>
+                <div style="position:relative; display:flex; align-items:center;">
+                    <input type="password" id="api-key" placeholder="API Key girin..."
+                        style="flex:1; padding-right:30px;">
+                    <i class="fas fa-check-circle hidden" id="api-key-saved-icon"
+                        style="color:var(--success); position:absolute; right:10px; font-size:1.1rem; transition:opacity 0.3s;"></i>
+                </div>
+            </div>
+            <div class="input-group" id="gemini-model-group">
+                <label><i class="fas fa-globe"></i> <span data-i18n="sidebar.model">Model Seçimi</span></label>
+                <select id="model-select">
+                    <optgroup label="Google Gemini">
+                        <option value="gemini-2.5-flash" selected>Gemini 2.5 Flash</option>
+                        <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
+                    </optgroup>
+                    <optgroup label="Groq (Hızlı & Açık Kaynak)">
+                        <option value="llama-3.3-70b-versatile">Llama 3.3 70B</option>
+                        <option value="llama-3.1-8b-instant">Llama 3.1 8B</option>
+                        <option value="mixtral-8x7b-32768">Mixtral 8x7B</option>
+                    </optgroup>
+                </select>
+            </div>
+            <p class="ai-note" id="ai-note" data-i18n="sidebar.aiNote">⚠ Pro modeller için faturalandırma açık
+                olmalıdır.</p>
+        </div>
+
+        <!-- External API Settings (Always Visible) -->
+        <div class="sidebar-section">
+            <div class="input-group">
+                <label><i class="fas fa-satellite-dish"></i> <span data-i18n="sidebar.avKey">Alpha Vantage API</span>
+                    <span class="badge-optional">●</span></label>
+                <div style="position:relative; display:flex; align-items:center;">
+                    <input type="password" id="av-api-key" placeholder="Opsiyonel..."
+                        style="flex:1; padding-right:30px;">
+                    <i class="fas fa-check-circle hidden" id="av-key-saved-icon"
+                        style="color:var(--success); position:absolute; right:10px; font-size:1.1rem; transition:opacity 0.3s;"></i>
+                </div>
+            </div>
+        </div>
+
+        <!-- Advanced Settings (PV Features) -->
+        <div class="sidebar-section pro-only" id="advanced-settings-section">
+            <h3 class="section-title" style="cursor:pointer;" onclick="document.getElementById('advanced-settings-body').classList.toggle('hidden')">
+                <i class="fas fa-cogs"></i> <span data-i18n="sidebar.advanced">GELİŞMİŞ AYARLAR (PV)</span> <i class="fas fa-chevron-down" style="font-size:0.75rem; float:right; margin-top:4px;"></i>
+            </h3>
+            <div id="advanced-settings-body" class="hidden" style="margin-top:0.75rem;">
+                <!-- Professional Mode Toggle -->
+                <label class="toggle-row" style="margin-bottom:1rem;">
+                    <div class="toggle-info">
+                        <span class="toggle-label" data-i18n="sidebar.profMode">Profesyonel Mod</span>
+                        <span class="toggle-desc" data-i18n="sidebar.profModeDesc" style="font-size:0.65rem;">Kompakt veri görünümü</span>
+                    </div>
+                    <input type="checkbox" id="prof-mode-toggle" class="toggle-input">
+                    <span class="toggle-slider"></span>
+                </label>
+                
+                <div class="input-group">
+                    <label><i class="fas fa-wallet"></i> <span data-i18n="sidebar.initBalance">Başlangıç Bakiyesi (₺/$)</span></label>
+                    <input type="number" id="sim-initial-balance" value="10000">
+                </div>
+                <div class="input-group">
+                    <label><i class="fas fa-hand-holding-usd"></i> <span data-i18n="sidebar.monthlyCont">Aylık Katkı Payı</span></label>
+                    <input type="number" id="sim-monthly-contribution" value="0">
+                </div>
+                <div class="input-group">
+                    <label><i class="fas fa-sync-alt"></i> <span data-i18n="sidebar.rebalance">Yeniden Dengeleme</span></label>
+                    <select id="sim-rebalance-freq">
+                        <option value="none" selected data-i18n="sidebar.rebalance.none">Yok (Buy & Hold)</option>
+                        <option value="monthly" data-i18n="sidebar.rebalance.monthly">Aylık</option>
+                        <option value="quarterly" data-i18n="sidebar.rebalance.quarterly">Çeyreklik</option>
+                        <option value="yearly" data-i18n="sidebar.rebalance.yearly">Yıllık</option>
+                    </select>
+                </div>
+
+                <!-- NEW: Dynamic Transaction Costs -->
+                <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.05);">
+                    <h4 style="font-size: 0.75rem; color: var(--text-main); margin-bottom: 1rem; text-transform: uppercase;"><i class="fas fa-percentage"></i> İşlem Maliyetleri</h4>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                        <div class="input-group">
+                            <label style="font-size:0.65rem;">Komisyon (%)</label>
+                            <input type="number" id="settings-commission-rate" step="0.01" value="0.2" min="0" max="50" style="font-size:0.8rem; padding:6px;">
+                        </div>
+                        <div class="input-group">
+                            <label style="font-size:0.65rem;">Kayma (%)</label>
+                            <input type="number" id="settings-slippage-rate" step="0.01" value="0.1" min="0" max="50" style="font-size:0.8rem; padding:6px;">
+                        </div>
+                    </div>
+                </div>
+                <p style="font-size:0.65rem; color:var(--text-muted); margin-top:0.75rem; line-height:1.3; background:rgba(255,255,255,0.05); padding:6px; border-radius:4px;"><i class="fas fa-info-circle"></i> <span data-i18n="sidebar.pvNote">PV simülasyonları geçmiş 5 yıla dayalıdır. Rakamlar nominaldir.</span></p>
+            </div>
+        </div>
+
+        <!-- Watchlist -->
+        <div class="sidebar-section">
+            <h3 class="section-title"><i class="fas fa-bookmark"></i> <span data-i18n="sidebar.watchlist">KAYITLI
+                    PORTFÖYLER</span></h3>
+            <div id="watchlist-container"></div>
+            <button class="btn-secondary" id="save-portfolio-btn">
+                <i class="fas fa-plus-circle"></i> <span data-i18n="sidebar.savePortfolio">Portföy Kaydet</span>
+            </button>
+        </div>
+
+        <!-- Quick Start -->
+        <div class="sidebar-section info-card">
+            <h4 data-i18n="sidebar.quickStart">⚡ Hızlı Başlangıç</h4>
+            <p data-i18n="sidebar.quickStartDesc">ABD (NYSE/NASDAQ) ve Türkiye (BIST/TEFAS) hisselerini & fonlarını aynı
+                anda analiz edebilirsiniz.</p>
+            <div class="market-badges">
+                <span class="market-badge">🇺🇸 ABD</span>
+                <span class="market-badge">🇹🇷 BIST</span>
+                <span class="market-badge">📊 TEFAS</span>
+                <span class="market-badge">🤖 AI</span>
+            </div>
+        </div>
+
+        <!-- Theme & Language toggles at bottom -->
+        <div class="sidebar-footer">
+            <button class="footer-btn" id="theme-toggle-btn" title="Tema Değiştir" aria-label="Tema Değiştir">
+                <i class="fas fa-moon" id="theme-icon"></i> <span data-i18n="theme.toggle">Tema</span>
+            </button>
+            <button class="footer-btn" id="lang-toggle-btn" onclick="toggleLanguage()">
+                <i class="fas fa-language"></i> <span>EN</span>
+            </button>
+        </div>
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <main class="main-content">
+        <div class="top-bar" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+            <span class="top-badge" data-i18n="header.badge">AI Destekli Analiz</span>
+            
+            <!-- Mode Switcher -->
+            <div class="mode-switcher" style="margin-left:auto; margin-right: 15px; display:flex; align-items:center; gap:8px; background:rgba(0,0,0,0.2); border:1px solid var(--glass-border); padding:5px 12px; border-radius:20px; z-index:10;">
+                <span style="font-size:0.75rem; color:var(--text-muted); cursor:pointer;" id="lbl-beginner" onclick="const t=document.getElementById('ui-mode-toggle'); t.checked=false; t.dispatchEvent(new Event('change'))">Başlangıç</span>
+                <label class="switch" style="position:relative; display:inline-block; width:34px; height:18px; margin:0;">
+                    <input type="checkbox" id="ui-mode-toggle" style="position:absolute; opacity:0; width:0; height:0;">
+                    <span class="slider round" style="position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0; background-color:#333; transition:.4s; border-radius:34px;"></span>
+                </label>
+                <span style="font-size:0.75rem; color:var(--primary); cursor:pointer;" id="lbl-pro" onclick="const t=document.getElementById('ui-mode-toggle'); t.checked=true; t.dispatchEvent(new Event('change'))">Profesyonel</span>
+            </div>
+            
+            <div class="auth-controls" id="auth-controls" style="margin-left:auto; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
+                <!-- Otonom Uyarı Zili (Phase 4) -->
+                <div class="notification-container" id="notification-container" style="position:relative; display:none; margin-right:15px; cursor:pointer;">
+                    <i class="fas fa-bell" style="font-size:1.2rem; color:var(--text-main);" onclick="toggleNotifications()"></i>
+                    <span id="notification-badge" class="badge-optional" style="position:absolute; top:-5px; right:-8px; background:var(--danger); color:white; font-size:0.65rem; padding:2px 5px; border-radius:10px; display:none;">0</span>
+                    
+                    <!-- Açılır Menü -->
+                    <div id="notification-dropdown" class="glass-panel hidden" style="position:absolute; top:35px; right:0; width:300px; max-height:400px; overflow-y:auto; z-index:100; padding:10px; display:flex; flex-direction:column; gap:8px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--glass-border); padding-bottom:8px; margin-bottom:5px;">
+                            <h4 style="margin:0; font-size:0.9rem;"><i class="fas fa-exclamation-triangle" style="color:var(--danger);"></i> Otonom Piyasa Uyarıları</h4>
+                            <span id="mark-read-btn" onclick="markAllAlertsRead()" style="font-size:0.75rem; color:var(--primary); cursor:pointer;">Tümünü Okundu Tıklayın</span>
+                        </div>
+                        <div id="notification-list" style="font-size:0.82rem; color:var(--text-muted);">Temiz.</div>
+                    </div>
+                </div>
+
+                <button class="btn btn-secondary" id="user-settings-btn" title="Hesap Ayarları" style="margin-right:15px; padding:0.5rem 0.85rem; font-size:0.82rem; border-radius:6px; display:flex; align-items:center; gap:6px; background:rgba(255,255,255,0.05); border:1px solid var(--glass-border); color:var(--text-main); cursor:pointer; display:none;">
+                    <i class="fas fa-cog"></i>
+                </button>
+
+                <!-- Sponsor Button next to Geri Don -->
+                <a href="https://github.com/sponsors/ErenTahiroglu" target="_blank" id="dashboard-sponsor-btn" style="display: flex; align-items: center; gap: 6px; background: rgba(236, 72, 153, 0.1); border: 1px solid rgba(236, 72, 153, 0.3); color: var(--text-main); padding: 0.5rem 0.85rem; border-radius: 6px; font-size: 0.82rem; font-weight: 600; cursor: pointer; text-decoration: none; transition: all 0.2s; margin-right: 12px; height: 32px; box-sizing: border-box;">
+                    <i class="fas fa-heart" style="color: #ec4899;"></i> <span>Sponsor</span>
+                </a>
+
+                <!-- Guest Logout Button -->
+                <button class="btn btn-secondary" id="guest-logout-btn" onclick="document.getElementById('landing-page').style.display='flex'; document.getElementById('sidebar').style.display='none'; document.querySelector('.main-content').style.display='none'; this.style.display='none'; document.getElementById('dashboard-sponsor-btn').style.display='none';" style="margin-right:12px; padding:0.5rem 0.85rem; font-size:0.82rem; border-radius:6px; display:flex; align-items:center; gap:6px; background:rgba(239, 68, 68, 0.1); border:1px solid rgba(239, 68, 68, 0.3); color:#f87171; cursor:pointer; display:none;">
+                    <i class="fas fa-arrow-left"></i> <span>Geri Dön</span>
+                </button>
+
+                <button class="btn btn-secondary" id="google-login-btn" style="padding:0.5rem 0.85rem; font-size:0.82rem; border-radius:6px; display:flex; align-items:center; gap:6px; background:rgba(255,255,255,0.05); border:1px solid var(--glass-border); color:var(--text-main); cursor:pointer;">
+                    <i class="fab fa-google"></i> <span id="auth-btn-text">Giriş Yap</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Radar & Signals Ticker (Phase 4) -->
+        <div id="radar-signal-widget" class="radar-signal-box hidden pro-only" style="margin-top: 1rem; margin-bottom: 1.25rem; padding: 0.75rem 1.25rem; background: rgba(255,255,255,0.01); border: 1px solid var(--glass-border); border-radius: 12px; display: flex; align-items: center; gap: 10px; overflow-x: auto; white-space: nowrap;">
+            <div style="font-weight: 700; font-size: 0.82rem; color: var(--primary); display: flex; align-items: center; gap: 5px; flex-shrink: 0; padding-right: 10px; border-right: 1px solid var(--glass-border);">
+                <i class="fas fa-satellite-dish"></i> <span style="letter-spacing:1px;">RADAR</span>
+            </div>
+            <div id="signal-items-container" style="display: flex; gap: 12px; font-size: 0.82rem; color: var(--text-muted); align-items: center;">
+                <span>Sinyaller yükleniyor...</span>
+            </div>
+        </div>
+
+        <!-- Live Equity Curve (Dashboard Header) -->
+        <div id="equity-curve-widget" class="glass-panel hidden" style="margin-top: 1rem; margin-bottom: 2rem; padding: 1.25rem; border-radius: 12px; background: rgba(255,255,255,0.01); border: 1px solid var(--glass-border);">
+            <h4 style="margin-bottom: 0.75rem; font-size: 0.9rem; color: var(--text-main); display: flex; align-items: center; gap: 8px;"><i class="fas fa-chart-line" style="color:var(--success);"></i> Portföy Gelişimi (Özsermaye)</h4>
+            <div id="equity-chart-container" style="height: 200px; border-radius: 8px; overflow: hidden; background: rgba(0,0,0,0.1); border: 1px solid var(--glass-border);"></div>
+        </div>
+
+        <h1 class="main-title" data-i18n="header.title">Portföy Analiz Platformu</h1>
+        <p class="main-subtitle" data-i18n="header.subtitle">Hisselerinizi ve fonlarınızı yapay zeka ile saniyeler
+            içinde derinlemesine analiz edin.</p>
+
+        <!-- INPUT TABS NAV -->
+        <div class="tabs-nav" style="display:flex; gap:0.5rem; margin-bottom:1rem;">
+            <button class="tab-btn active" data-target="ticker-card"
+                style="padding:0.6rem 1rem; border-radius:8px; border:1px solid var(--primary); background:var(--primary-glow); color:var(--text-main); font-weight:600; cursor:pointer;"><i
+                    class="fas fa-keyboard"></i> <span data-i18n="tab.manual">Manuel Giriş</span></button>
+            <button class="tab-btn" data-target="file-card"
+                style="padding:0.6rem 1rem; border-radius:8px; border:1px solid var(--glass-border); background:var(--card-bg); color:var(--text-muted); font-weight:600; cursor:pointer;"><i
+                    class="fas fa-file-upload"></i> <span data-i18n="tab.file">Dosya Yükle</span></button>
+            <button class="tab-btn pro-only" data-target="wizard-card"
+                style="padding:0.6rem 1rem; border-radius:8px; border:1px solid var(--glass-border); background:var(--card-bg); color:var(--text-muted); font-weight:600; cursor:pointer;"><i
+                    class="fas fa-magic"></i> <span data-i18n="tab.wizard">AI Sihirbazı</span></button>
+        </div>
+
+        <!-- INPUT AREA -->
+        <div class="input-tabs-container glass-panel" style="border-radius:var(--radius); padding:1.5rem;">
+
+            <!-- Ticker Input -->
+            <div class="tab-content active" id="ticker-card">
+                <h3 style="margin-bottom:0.75rem; font-size:0.85rem; font-weight:700;"><i class="fas fa-globe-americas"
+                        style="color:var(--primary)"></i> <span data-i18n="input.tickers">Hisse/ETF Sembolleri</span>
+                </h3>
+                <div style="position:relative">
+                    <textarea id="ticker-input" rows="4" data-i18n="input.tickerPlaceholder"
+                        placeholder="Örnek: AAPL, MSFT, TSLA veya THYAO, AKB, KCHOL..."
+                        style="width:100%; padding:0.75rem; background:rgba(14,165,233,0.03); border:1px solid var(--glass-border); border-radius:8px; color:var(--text-main); font-family:monospace; resize:vertical;"></textarea>
+                    <div class="autocomplete-dropdown hidden" id="autocomplete-dropdown"></div>
+                </div>
+                <p class="input-helper"><span data-i18n="input.tickerHelper">Virgülle veya boşlukla ayırarak
+                        girebilirsiniz.</span> <strong data-i18n="input.tickerHelperBold">ABD ve Türkiye (BIST/TEFAS)
+                        hisse/fonları aynı anda analiz edilebilir.</strong></p>
+            </div>
+
+            <!-- File Upload -->
+            <div class="tab-content hidden" id="file-card">
+                <h3 style="margin-bottom:0.75rem; font-size:0.85rem; font-weight:700;"><i class="fas fa-file-alt"
+                        style="color:var(--primary)"></i> <span data-i18n="input.file">Dosya Yükle</span></h3>
+                <p class="file-formats" data-i18n="input.fileFormats"
+                    style="font-size:0.7rem; color:var(--text-muted); margin-bottom:0.75rem;">Desteklenen formatlar:
+                    .txt, .csv, .xlsx, .docx</p>
+                <div class="file-drop-area" id="file-drop-area">
+                    <i class="fas fa-cloud-upload-alt"></i>
+                    <p><span data-i18n="input.fileDrop">Sürükle bırak veya</span> <strong
+                            data-i18n="input.fileBrowse">göz at</strong></p>
+                </div>
+                <input type="file" id="file-input" accept=".txt,.csv,.xlsx,.xls,.docx" hidden>
+                <div class="file-name-display hidden" id="file-name-display">
+                    <span id="selected-file-name"></span>
+                    <button id="remove-file-btn"
+                        style="background:none;border:none;color:var(--text-muted);cursor:pointer;"><i
+                            class="fas fa-times"></i></button>
+                </div>
+            </div>
+
+            <!-- AI Wizard content moved to results section -->
+        </div>
+
+        <!-- ANALYZE BUTTON -->
+        <div style="width: 100%; margin-top: 1rem;">
+            <button class="btn-primary" id="analyze-btn">
+                <i class="fas fa-rocket"></i> <span data-i18n="btn.analyze">Portföyü Analiz Et</span>
+            </button>
+        </div>
+
+        <!-- LOADER -->
+        <div class="loader hidden" id="loader">
+            <div class="spinner"></div>
+            <p data-i18n="loader.text">Analiz ediliyor...</p>
+        </div>
+
+        <!-- PROGRESS BAR & SKELETON LOADER -->
+        <div class="progress-container hidden" id="progress-container" style="margin-top:2rem;">
+            <div class="progress-bar" style="margin-bottom: 2rem;">
+                <div class="progress-fill" id="progress-fill"></div>
+            </div>
+            <p class="progress-text" id="progress-text" data-i18n="progress.preparing"
+                style="margin-bottom: 2rem; font-size:1rem;">Hazırlanıyor...</p>
+
+            <!-- Skeleton UI shown while loading -->
+            <div class="hero-cards-grid" style="pointer-events: none;">
+                <div class="hero-card skeleton" style="height: 100px;"></div>
+                <div class="hero-card skeleton" style="height: 100px;"></div>
+                <div class="hero-card skeleton" style="height: 100px;"></div>
+            </div>
+            <div
+                style="display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; pointer-events: none;">
+                <div class="result-card skeleton" style="height: 400px; border-radius: var(--radius);"></div>
+                <div class="result-card skeleton" style="height: 400px; border-radius: var(--radius);"></div>
+            </div>
+        </div>
+
+        <!-- RESULTS SECTION -->
+        <section id="results" class="hidden">
+            <!-- Results toolbar -->
+            <div class="results-toolbar">
+                <h2 data-i18n="results.title"><i class="fas fa-chart-pie"></i> Analiz Sonuçları</h2>
+                <div class="toolbar-actions">
+                    <button class="btn-icon" id="share-btn" title="Paylaş"><i class="fas fa-share-alt"></i> <span
+                            data-i18n="btn.share">Paylaş</span></button>
+                    <button class="btn-icon" id="compare-btn" title="Karşılaştır"><i class="fas fa-columns"></i> <span
+                            data-i18n="btn.compare">Karşılaştır</span></button>
+
+                    <div class="dropdown">
+                        <button class="btn-icon" title="Dışa Aktar" data-i18n="btn.export">
+                            <i class="fas fa-download"></i> Dışa Aktar <i class="fas fa-chevron-down"
+                                style="font-size:0.6rem; margin-left:4px;"></i>
+                        </button>
+                        <div class="dropdown-content">
+                            <div class="dropdown-item" id="export-excel-btn"><i class="fas fa-file-excel"
+                                    style="color: #10b981;"></i> Excel (.xlsx)</div>
+                            <div class="dropdown-item" id="export-pdf-btn"><i class="fas fa-file-pdf"
+                                    style="color: #f43f5e;"></i> PDF Raporu</div>
+                            <div class="dropdown-item" id="export-docx-btn"><i class="fas fa-file-word"
+                                    style="color: #0ea5e9;"></i> Word Dosyası</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Hero Cards (Overall Summary) -->
+            <x-hero-cards id="hero-cards"></x-hero-cards>
+
+
+            <!-- Heatmap (Treemap) -->
+            <div id="portfolio-heatmap-wrap" class="hidden" style="margin-bottom:2rem;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <h3 data-i18n="results.heatmap"><i class="fas fa-th-large"></i> Dinamik Isı Haritası</h3>
+                    <select id="heatmap-filter" style="padding:0.4rem; border-radius:4px; font-size:0.8rem; border:1px solid var(--glass-border); background:var(--card-bg); color:var(--text-main);">
+                        <option value="change" selected>Günlük Değişim</option>
+                        <option value="pe">F/K (P/E) Oranı</option>
+                        <option value="div">Temettü Verimi</option>
+                    </select>
+                </div>
+                <div id="portfolio-heatmap" class="heatmap-container" style="margin-top:0.5rem;"></div>
+            </div>
+
+            <!-- Scenario Simulations -->
+            <div id="scenarios-wrap" class="hidden pro-only" style="margin-bottom:2rem;">
+                <div class="section-header">
+                    <h3 data-i18n="results.scenarios"><i class="fas fa-flask"></i> Senaryo & Stres Testleri</h3>
+                    <p class="section-desc">Portföyünüzün piyasa şoklarına dayanıklılığını ve gelecek hedeflerinizi test
+                        edin.</p>
+                </div>
+                <div class="scenarios-grid">
+                    <!-- Stress Test Card -->
+                    <div class="scenario-card premium-card">
+                        <div class="card-glow"></div>
+                        <div class="card-inner">
+                            <div class="card-head">
+                                <span class="card-icon"><i class="fas fa-bolt"></i></span>
+                                <div class="card-titles">
+                                    <h4>Piyasa Stres Testi</h4>
+                                    <span>Beklenen şok tepki analizi</span>
+                                </div>
+                            </div>
+
+                            <div class="shock-gauge-wrap">
+                                <div class="shock-gauge-bg"></div>
+                                <div class="shock-gauge-fill" id="shock-gauge-fill"></div>
+                                <div class="shock-gauge-center">
+                                    <span id="scenario-stress-result-val">-%0.0</span>
+                                    <small id="scenario-stress-name">2008 Krizi</small>
+                                </div>
+                            </div>
+
+                            <div class="stress-controls-modern">
+                                <div class="control-label">Senaryo Seçin:</div>
+                                <div class="scenario-buttons">
+                                    <button class="scen-btn active" id="btn-scenario-2008">2008 Krizi
+                                        <small>-%50</small></button>
+                                    <button class="scen-btn" id="btn-scenario-covid">Covid-19
+                                        <small>-%33</small></button>
+                                    <button class="scen-btn" id="btn-scenario-tech">Tech Crash
+                                        <small>-%40</small></button>
+                                </div>
+                            </div>
+
+                            <div class="beta-indicator">
+                                <span>Portföy Beta Değeri:</span>
+                                <strong id="portfolio-beta-val">1.00</strong>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Portfolio Optimization Card -->
+                    <div class="scenario-card premium-card" style="grid-column: 1 / -1; margin-bottom: 2rem;" id="optimization-card">
+                        <div class="card-glow"></div>
+                        <div class="card-inner">
+                            <div class="card-head" style="display:flex; align-items:center;">
+                                <div style="display:flex; align-items:center; gap:10px;">
+                                    <span class="card-icon"><i class="fas fa-balance-scale"></i></span>
+                                    <div class="card-titles">
+                                        <h4>Varlık Dağılım Optimizasyonu</h4>
+                                        <span>Monte Carlo Simülasyonu ile Risk/Getiri Dengesi</span>
+                                    </div>
+                                </div>
+                                <button class="btn btn-primary" id="btn-optimize-portfolio" style="margin-left:auto; width:auto; padding:0.5rem 1rem; font-size:0.8rem; border-radius:8px;">
+                                    <i class="fas fa-magic"></i> Optimize Et
+                                </button>
+                            </div>
+
+                            <div class="optimization-content hidden" id="optimization-content" style="margin-top: 1.5rem;">
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem;">
+                                     <div style="height: 280px; position:relative;">
+                                          <canvas id="opt-comparison-chart"></canvas>
+                                     </div>
+                                     <div class="ai-insight-box" id="opt-ai-suggestion" style="display:flex; flex-direction:column; justify-content:center; padding:1.5rem; background:rgba(14, 165, 233, 0.05); border-radius:8px; border:1px solid var(--glass-border);">
+                                          <label style="color:var(--primary); font-weight:700; margin-bottom:0.5rem;"><i class="fas fa-robot"></i> AI Rebalance Önerisi</label>
+                                          <p style="font-size:0.85rem; color:var(--text-main); line-height:1.6;" id="opt-ai-text">Veriler optimize edilirken bekleyin...</p>
+                                     </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Risk & Stress Test Card -->
+                    <div class="scenario-card premium-card" style="grid-column: 1 / -1; margin-bottom: 2rem;" id="risk-analysis-card">
+                        <div class="card-glow"></div>
+                        <div class="card-inner">
+                            <div class="card-head" style="display:flex; align-items:center;">
+                                <div style="display:flex; align-items:center; gap:10px;">
+                                    <span class="card-icon"><i class="fas fa-shield-alt"></i></span>
+                                    <div class="card-titles">
+                                        <h4>Risk & Stres Testi Analizi</h4>
+                                        <span>Riske Maruz Değer (VaR) ve Maksimum Kayıp Tahminleri</span>
+                                    </div>
+                                </div>
+                                <button class="btn btn-primary" id="btn-run-risk-analysis" style="margin-left:auto; width:auto; padding:0.5rem 1rem; font-size:0.8rem; border-radius:8px;">
+                                    <i class="fas fa-search-dollar"></i> Riski Hesapla
+                                </button>
+                            </div>
+
+                            <div class="risk-content hidden" id="risk-content" style="margin-top: 1.5rem;">
+                                <div class="risk-metrics-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+                                    <div class="metric-box risk-box" id="box-var" style="background:rgba(255,255,255,0.02); padding:1rem; border-radius:8px; border:1px solid var(--glass-border);">
+                                        <div class="metric-label" style="font-size:0.75rem; color:var(--text-muted);">Günlük VaR (%95) <i class="fas fa-info-circle" title="Normal şartlar altında 1 günde yaşanabilecek maksimum tahmini kayıp oranı" style="font-size:0.65rem;"></i></div>
+                                        <div class="metric-value" id="risk-var-val" style="font-size:1.5rem; font-weight:700; margin-top:0.3rem;">-%0.0</div>
+                                        <div class="risk-indicator-bar" style="height:4px; background:rgba(0,0,0,0.1); border-radius:2px; margin-top:0.5rem; overflow:hidden;"><div id="bar-var" style="height:100%; width:0%; border-radius:2px;"></div></div>
+                                    </div>
+                                    <div class="metric-box risk-box" id="box-maxdd" style="background:rgba(255,255,255,0.02); padding:1rem; border-radius:8px; border:1px solid var(--glass-border);">
+                                        <div class="metric-label" style="font-size:0.75rem; color:var(--text-muted);">Maksimum Düşüş (MaxDD)</div>
+                                        <div class="metric-value" id="risk-maxdd-val" style="font-size:1.5rem; font-weight:700; margin-top:0.3rem;">-%0.0</div>
+                                        <div class="risk-indicator-bar" style="height:4px; background:rgba(0,0,0,0.1); border-radius:2px; margin-top:0.5rem; overflow:hidden;"><div id="bar-maxdd" style="height:100%; width:0%; border-radius:2px;"></div></div>
+                                    </div>
+                                    <div class="metric-box risk-box" style="background:rgba(255,255,255,0.02); padding:1rem; border-radius:8px; border:1px solid var(--glass-border);">
+                                        <div class="metric-label" style="font-size:0.75rem; color:var(--text-muted);">Portföy Betası</div>
+                                        <div class="metric-value" id="risk-beta-val" style="font-size:1.5rem; font-weight:700; margin-top:0.3rem;">1.00</div>
+                                    </div>
+                                    <div class="metric-box risk-box" style="background:rgba(255,255,255,0.02); padding:1rem; border-radius:8px; border:1px solid var(--glass-border);">
+                                        <div class="metric-label" style="font-size:0.75rem; color:var(--text-muted);">-%20 Piyasa Şoku Etkisi</div>
+                                        <div class="metric-value" id="risk-stress-val" style="font-size:1.5rem; font-weight:700; margin-top:0.3rem;">-%0.0</div>
+                                    </div>
+                                </div>
+                                
+                                <div class="ai-insight-box alert-box" id="risk-ai-suggestion" style="padding:1.2rem; background:rgba(239, 68, 68, 0.05); border-radius:8px; border:1px solid rgba(239,68,68,0.2); display:none; margin-top:1rem;">
+                                    <label style="color:var(--danger); font-weight:700; display:flex; align-items:center; gap:5px; margin-bottom:0.5rem;"><i class="fas fa-exclamation-triangle"></i> AI Risk Müfettişi Uyarısı</label>
+                                    <p style="font-size:0.85rem; color:var(--text-main); line-height:1.6;" id="risk-ai-text">Yükleniyor...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Paper Trading Execution Logs Card -->
+                    <div class="scenario-card premium-card" style="grid-column: 1 / -1; margin-bottom: 2rem;" id="paper-trades-card">
+                        <div class="card-glow"></div>
+                        <div class="card-inner">
+                            <div class="card-head" style="display:flex; align-items:center;">
+                                <div style="display:flex; align-items:center; gap:10px;">
+                                    <span class="card-icon"><i class="fas fa-file-invoice-dollar"></i></span>
+                                    <div class="card-titles">
+                                        <h4>Sanal İşlem Geçmişi (Execution Logs)</h4>
+                                        <span>Dengeleme (Rebalance) Sonrası Oluşturulan Sanal Emirler</span>
+                                    </div>
+                                </div>
+                                <button class="btn btn-outline" id="btn-refresh-trades" style="margin-left:auto; width:auto; padding:0.4rem 0.8rem; font-size:0.75rem; border-radius:8px; background:rgba(255,255,255,0.05);">
+                                    <i class="fas fa-sync-alt"></i> Yenile
+                                </button>
+                            </div>
+
+                            <div class="trades-content" style="margin-top: 1.2rem; max-height: 250px; overflow-y: auto;">
+                                <table class="trading-table" style="width:100%; border-collapse: collapse; font-size:0.85rem; text-align:left;">
+                                    <thead>
+                                        <tr style="border-bottom: 1px solid var(--glass-border); color:var(--text-muted); font-size:0.75rem;">
+                                            <th style="padding: 0.8rem;">Tarih</th>
+                                            <th style="padding: 0.8rem;">Varlık</th>
+                                            <th style="padding: 0.8rem;">Tip</th>
+                                            <th style="padding: 0.8rem;">Hedef Ağırlık</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="paper-trades-tbody">
+                                        <tr><td colspan="4" style="text-align:center; padding:1.5rem; color:var(--text-muted);">Henüz işlem yapılmadı veya yükleniyor...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- AI Wizard Card (Moved from Input) -->
+                    <div class="scenario-card premium-card pro-only" id="wizard-card" style="grid-column: 1 / -1; margin-bottom: 1.5rem; position:relative; overflow:hidden; border: 1px solid rgba(139, 92, 246, 0.3); background: linear-gradient(135deg, rgba(139,92,246,0.05), rgba(2,132,199,0.05)); padding:1.5rem;">
+                        <div style="position:absolute; top:-50px; right:-50px; width:150px; height:150px; background:radial-gradient(circle, rgba(139,92,246,0.3) 0%, transparent 70%); filter:blur(20px); pointer-events:none;"></div>
+                        <h3 style="margin-bottom:0.75rem; font-size:0.85rem; font-weight:700;"><i class="fas fa-magic" style="color:#a78bfa"></i> AI Portföy Sihirbazı</h3>
+                        <textarea id="wizard-input" rows="3" class="input" placeholder="Örnek: 'Temettü verimi yüksek 5 BIST hissesi' veya 'Teknoloji ağırlıklı agresif ABD portföyü'" style="width:100%; padding:0.75rem; background:rgba(0,0,0,0.2); border:1px solid var(--glass-border); border-radius:8px; color:var(--text-main); font-family:inherit; resize:vertical;"></textarea>
+                        <div class="wizard-chips" style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-top:0.75rem;">
+                            <button class="chip-btn" onclick="document.getElementById('wizard-input').value=this.innerText" style="background:rgba(139,92,246,0.1); border:1px solid rgba(139,92,246,0.3); padding:0.4rem 0.8rem; border-radius:1rem; color:var(--text-main); font-size:0.75rem; cursor:pointer; transition:all 0.2s;">Temettü verimi yüksek 5 BIST hissesi</button>
+                            <button class="chip-btn" onclick="document.getElementById('wizard-input').value=this.innerText" style="background:rgba(139,92,246,0.1); border:1px solid rgba(139,92,246,0.3); padding:0.4rem 0.8rem; border-radius:1rem; color:var(--text-main); font-size:0.75rem; cursor:pointer; transition:all 0.2s;">Teknoloji ağırlıklı agresif ABD portföyü</button>
+                            <button class="chip-btn" onclick="document.getElementById('wizard-input').value=this.innerText" style="background:rgba(139,92,246,0.1); border:1px solid rgba(139,92,246,0.3); padding:0.4rem 0.8rem; border-radius:1rem; color:var(--text-main); font-size:0.75rem; cursor:pointer; transition:all 0.2s;">Enflasyona karşı koruyan defansif fonlar</button>
+                        </div>
+                        <button class="btn btn-primary" id="btn-run-wizard" style="width:100%; margin-top:1rem; padding:0.85rem; background:linear-gradient(135deg, #7c3aed, #0284c7); border:none; border-radius:8px; color:white; font-weight:700; cursor:pointer; box-shadow:0 0 15px rgba(124, 58, 237, 0.4);"><i class="fas fa-wand-magic-sparkles"></i> Sihirbazı Çalıştır</button>
+                        <p class="input-helper" style="margin-top:0.75rem; font-size:0.72rem; color:var(--text-muted);">Yapay zeka asistanı isteklerinize göre en uygun portföyü tasarlar.</p>
+                    </div>
+
+                    <!-- Backtest & Simulation Card -->
+                    <div class="scenario-card premium-card pro-only" style="grid-column: 1 / -1;">
+                        <div class="card-glow"></div>
+                        <div class="card-inner">
+                            <div class="card-head">
+                                <span class="card-icon"><i class="fas fa-chart-line"></i></span>
+                                <div class="card-titles">
+                                    <h4>Gelişmiş Backtest Simülasyonu</h4>
+                                    <span>Tarihsel getiri ve DCA (Aylık Alım) projeksiyonu</span>
+                                </div>
+                            </div>
+
+                            <div id="bt-chart-container" style="height: 350px; margin-top: 1.5rem; border-radius: 8px; overflow: hidden; background: rgba(0,0,0,0.1); border: 1px solid var(--glass-border);"></div>
+
+                            <div class="backtest-metrics-grid" id="bt-metrics-container" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 1rem; margin-top: 1.5rem;">
+                                <div class="metric-box no-modal">
+                                    <div class="metric-label">Son Bakiye</div>
+                                    <div class="metric-value" id="bt-final-balance">-</div>
+                                </div>
+                                <div class="metric-box no-modal">
+                                    <div class="metric-label">CAGR (Yıllık Getiri)</div>
+                                    <div class="metric-value" id="bt-cagr">-</div>
+                                </div>
+                                <div class="metric-box no-modal">
+                                    <div class="metric-label">Max Drawdown</div>
+                                    <div class="metric-value" id="bt-max-dd" style="color: var(--danger);">-</div>
+                                </div>
+                                <div class="metric-box no-modal">
+                                    <div class="metric-label">Sharpe Oranı</div>
+                                    <div class="metric-value" id="bt-sharpe">-</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Dividend FI/RE Card -->
+                    <div class="scenario-card premium-card pro-only">
+                        <div class="card-glow"></div>
+                        <div class="card-inner">
+                            <div class="card-head">
+                                <span class="card-icon"><i class="fas fa-piggy-bank"></i></span>
+                                <div class="card-titles">
+                                    <h4>Temettü Emekliliği</h4>
+                                    <span>FI/RE Hedef Hesaplayıcı</span>
+                                </div>
+                            </div>
+
+                            <div class="fire-inputs">
+                                <div class="fire-input-group">
+                                    <label>Aylık Ekleme</label>
+                                    <div class="input-with-icon">
+                                        <i class="fas fa-coins"></i>
+                                        <input type="number" id="div-monthly-add" value="5000">
+                                    </div>
+                                </div>
+                                <div class="fire-input-group">
+                                    <label>Aylık Hedef Gelir</label>
+                                    <div class="input-with-icon">
+                                        <i class="fas fa-bullseye"></i>
+                                        <input type="number" id="div-target-income" value="17002">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="fire-result-display">
+                                <div class="fire-stat">
+                                    <span class="fire-stat-label">Hedef Süre</span>
+                                    <span class="fire-stat-val" id="fire-years">-</span>
+                                    <span class="fire-stat-unit">Yıl</span>
+                                </div>
+                                <div class="fire-divider"></div>
+                                <div class="fire-stat">
+                                    <span class="fire-stat-label">Hedef Sermaye</span>
+                                    <span class="fire-stat-val" id="fire-capital">-</span>
+                                    <span class="fire-stat-unit">₺</span>
+                                </div>
+                            </div>
+
+                            <div class="yield-info">
+                                <span>Portföy Verimi:</span>
+                                <strong id="avg-div-yield-val">%0.00</strong>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- PV Simulation & Drawdown -->
+            <div id="pv-simulation-wrap" class="hidden pro-only" style="margin-bottom:2rem;">
+                <div class="section-header">
+                    <h3 data-i18n="results.pvSim"><i class="fas fa-history"></i> Portföy Simülasyonu (PV Risk Analizi)</h3>
+                    <p class="section-desc" data-i18n="results.pvSimDesc">Son 5 yıllık geçmiş performansa dayalı risk ve getiri analizi.</p>
+                </div>
+                
+                <div class="extras-grid" style="margin-bottom:1rem;">
+                    <!-- PV Stats -->
+                    <div class="extra-card" style="display:flex; flex-direction:column; justify-content:center;">
+                        <h4 style="margin-bottom:1rem; padding-bottom:0.5rem; border-bottom:1px solid var(--glass-border);"><i class="fas fa-chart-line"></i> Performans & Risk Metrikleri</h4>
+                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1rem;">
+                            <div class="fire-stat"><span class="fire-stat-label">Bileşik Getiri (CAGR)</span><span class="fire-stat-val" id="pv-cagr">-</span></div>
+                            <div class="fire-stat"><span class="fire-stat-label">Son Bakiye</span><span class="fire-stat-val" id="pv-balance">-</span></div>
+                            <div class="fire-stat"><span class="fire-stat-label">Max Drawdown</span><span class="fire-stat-val" id="pv-maxdd" style="color:var(--danger)">-</span></div>
+                            <div class="fire-stat"><span class="fire-stat-label">Sortino Oranı</span><span class="fire-stat-val" id="pv-sortino">-</span></div>
+                            <div class="fire-stat"><span class="fire-stat-label">Calmar Oranı</span><span class="fire-stat-val" id="pv-calmar">-</span></div>
+                            <div class="fire-stat"><span class="fire-stat-label">Sharpe Oranı</span><span class="fire-stat-val" id="pv-sharpe">-</span></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Fama-French Factor Regression -->
+                    <div class="extra-card" id="pv-factor-card">
+                        <h4 style="margin-bottom:1rem; padding-bottom:0.5rem; border-bottom:1px solid var(--glass-border);"><i class="fas fa-microscope"></i> Faktör Analizi (ABD Pazarı)</h4>
+                        <div id="pv-factor-content" style="font-size:0.85rem; line-height:1.5;">
+                            <!-- JS fills warning or stats -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Drawdown Chart -->
+                <div class="extra-card">
+                    <h4 style="margin-bottom:1rem;"><i class="fas fa-water"></i> Maksimum Düşüş (Drawdown) Grafiği</h4>
+                    <div class="chart-container"><canvas id="drawdown-chart"></canvas></div>
+                </div>
+            </div>
+
+            <!-- Optimization -->
+            <div id="optimization-wrap" class="hidden pro-only" style="margin-bottom:2rem;">
+                <h3 data-i18n="results.optimization"><i class="fas fa-balance-scale"></i> Portföy Optimizasyonu</h3>
+                <div id="opt-bars"
+                    style="background:var(--card-bg); border:1px solid var(--card-border); border-radius:var(--radius); padding:1.5rem;">
+                </div>
+            </div>
+
+            <!-- Summary Table (Reactive Component) -->
+            <x-analysis-table id="summary-table-root"></x-analysis-table>
+
+            <!-- Portfolio Extras: Sector + Correlation + Monte Carlo -->
+            <div class="extras-grid" id="extras-grid">
+                <!-- Sector Distribution -->
+                <div class="extra-card hidden" id="sector-card">
+                    <h3><i class="fas fa-chart-pie"></i> <span data-i18n="results.sectors">Sektör Dağılımı</span></h3>
+                    <div class="chart-container"><canvas id="sector-chart"></canvas></div>
+                </div>
+                <!-- Correlation Matrix -->
+                <div class="extra-card hidden pro-only" id="correlation-card">
+                    <h3><i class="fas fa-th"></i> <span data-i18n="results.correlation">Korelasyon Matrisi</span></h3>
+                    <div id="correlation-content"></div>
+                </div>
+                <!-- Monte Carlo -->
+                <div class="extra-card hidden pro-only" id="monte-carlo-card">
+                    <h3><i class="fas fa-random"></i> <span data-i18n="monte.title">Monte Carlo Simülasyonu (1
+                            Yıl)</span></h3>
+                    <div class="chart-container"><canvas id="monte-carlo-chart"></canvas></div>
+                </div>
+            </div>
+
+            <!-- Comparison View -->
+            <div class="comparison-view hidden" id="comparison-view">
+                <h3 data-i18n="results.comparison"><i class="fas fa-columns"></i> Karşılaştırma</h3>
+                <div id="comparison-content"></div>
+            </div>
+
+            <!-- Individual Result Cards (Reactive Component) -->
+            <x-analysis-grid id="results-grid"></x-analysis-grid>
+
+        </section>
+    </main>
+
+    <!-- Floating AI Copilot Widget -->
+    <div id="ai-copilot-widget" class="copilot-widget hidden">
+        <div class="copilot-header">
+            <span><i class="fas fa-robot"></i> Portföy Asistanı (Copilot)</span>
+            <button id="copilot-close-btn" class="modal-close" aria-label="Copilot Kapat"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="copilot-body" id="copilot-body">
+            <div class="copilot-msg ai-msg">
+                Merhaba! Ben analiz edilen portföyünüzün hakimi olan yapay zeka asistanınızım. Portföyünüzle ilgili en riskli hisseleri, getiri beklentilerini veya genel dağılımı bana sorabilirsiniz. Size nasıl yardımcı olabilirim? 
+            </div>
+            <!-- Dynamic Messages -->
+        </div>
+        <div class="copilot-footer">
+            <input type="text" id="copilot-input" placeholder="Portföyünüz hakkında bir şey sorun..." autocomplete="off">
+            <button id="copilot-send-btn" aria-label="Mesaj Gönder"><i class="fas fa-paper-plane"></i></button>
+        </div>
+    </div>
+    <button id="copilot-fab" class="copilot-fab hidden" title="AI Asistanı Aç">
+        <i class="fas fa-comment-dots"></i>
+    </button>
+
+    <!-- Modular Scripts Array -->
+    <script type="module" src="js/core/config.js?v=11.1"></script>
+    <script type="module" src="js/core/i18n.js?v=11.1"></script>
+    <script type="module" src="js/utils.js?v=11.1"></script>
+    <script type="module" src="js/db.js?v=11.1"></script>
+    <script type="module" src="js/core/state.js?v=11.1"></script>
+    <script type="module" src="js/network/api.js?v=11.1"></script>
+    <script type="module" src="js/components/ProgressBar.js?v=11.1"></script>
+    <!-- TradingView Lightweight Charts -->
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <script type="module" src="js/charts.js?v=11.1"></script>
+    <!-- Supabase Auth / DB Client -->
+    <script type="module" src="js/network/supabaseClient.js?v=11.1"></script>
+    <!-- Main Orchestrator -->
+    <script type="module" src="js/components/AnalysisComponents.js?v=11.1"></script>
+    <script type="module" src="js/app.js?v=11.1"></script>
+    <script>
+        // ── Landing Page Scroll Behaviours ────────────────────────────────
+        (function() {
+            var landing = document.getElementById('landing-page');
+            if (!landing) return;
+
+            var scrollHint = document.getElementById('landing-scroll-hint');
+            var scrollTopBtn = document.getElementById('landing-scroll-top-btn');
+            var landingNav = landing.querySelector('nav');
+
+            landing.addEventListener('scroll', function() {
+                var scrollY = landing.scrollTop;
+
+                // Nav: fade out as user scrolls down, fade in as they scroll back up
+                if (landingNav) {
+                    var navOpacity = Math.max(0, 1 - scrollY / 100);
+                    landingNav.style.opacity = navOpacity;
+                }
+
+                // Daha Fazlası hint: hide when scrolled past 80px, restore at top
+                if (scrollHint) {
+                    if (scrollY > 80) {
+                        scrollHint.style.opacity = '0';
+                        scrollHint.style.pointerEvents = 'none';
+                        scrollHint.style.transform = 'translateY(10px)';
+                    } else {
+                        scrollHint.style.opacity = '1';
+                        scrollHint.style.pointerEvents = 'auto';
+                        scrollHint.style.transform = 'translateY(0)';
+                    }
+                }
+
+                // Scroll-to-top FAB: appear after 200px scroll
+                if (scrollTopBtn) {
+                    if (scrollY > 200) {
+                        scrollTopBtn.style.opacity = '1';
+                        scrollTopBtn.style.pointerEvents = 'auto';
+                        scrollTopBtn.style.transform = 'translateY(0)';
+                    } else {
+                        scrollTopBtn.style.opacity = '0';
+                        scrollTopBtn.style.pointerEvents = 'none';
+                        scrollTopBtn.style.transform = 'translateY(20px)';
+                    }
+                }
+            }, { passive: true });
+        })();
+    </script>
+</body>
+
+</html>

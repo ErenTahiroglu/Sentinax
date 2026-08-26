@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  ml-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.ml
+    platform: linux/arm64
+    env_file: .env
+    volumes:
+      - duckdb_spill:/tmp/duckdb_spill
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+    restart: unless-stopped
+    networks:
+      - sentinax-internal
+
+  reclamation-shield:
+    build:
+      context: .
+      dockerfile: Dockerfile.daemon
+    platform: linux/arm64
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+    # Low priority CPU shares (standard is 1024)
+    cpu_shares: 128
+    restart: always
+    networks:
+      - sentinax-internal
+
+volumes:
+  duckdb_spill:
+
+networks:
+  sentinax-internal:
+    driver: bridge

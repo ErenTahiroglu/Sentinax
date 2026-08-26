@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Buffett Portfolio Dashboard | Sentinax</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <header class="app-header">
+        <div class="logo-container">
+            <h1 class="logo-text">Sentinax <span class="highlight">Buffett Engine</span></h1>
+        </div>
+        <nav class="top-nav">
+            <button id="btn-dashboard" class="nav-btn active">Dashboard</button>
+            <button id="btn-history" class="nav-btn">Snapshot History</button>
+        </nav>
+    </header>
+
+    <main id="main-content">
+        <!-- Dashboard View -->
+        <section id="view-dashboard" class="view-section active">
+            <div class="dashboard-header">
+                <h2>Top 10 Value Stocks</h2>
+                <p>Selected based on Warren Buffett's investment criteria.</p>
+            </div>
+            
+            <div id="portfolio-grid" class="portfolio-grid">
+                <!-- Cards injected here via JS -->
+            </div>
+        </section>
+
+        <!-- History View -->
+        <section id="view-history" class="view-section">
+            <div class="dashboard-header">
+                <h2>Portfolio Changes</h2>
+                <p>Audit trail of added and removed stocks.</p>
+            </div>
+            <div id="history-list" class="history-list">
+                <!-- History items injected here via JS -->
+            </div>
+        </section>
+    </main>
+
+    <!-- Detail Drawer Overlay -->
+    <div id="drawer-overlay" class="drawer-overlay hidden"></div>
+    
+    <!-- Detail Drawer -->
+    <aside id="detail-drawer" class="detail-drawer hidden">
+        <button id="close-drawer" class="close-btn">&times;</button>
+        <div id="drawer-content" class="drawer-content">
+            <!-- Content injected via JS -->
+        </div>
+    </aside>
+
+    <script src="js/api.js"></script>
+    <script src="js/ui.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

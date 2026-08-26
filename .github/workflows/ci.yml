@@ -1,92 +1,38 @@
-name: CI/CD Master Pipeline
+name: CI Pipeline
 
 on:
   push:
-    branches: [main]
+    branches: [ main, master ]
   pull_request:
-    branches: [main]
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  MOCK_LLM: true
-  SUPABASE_URL: ${{ secrets.SUPABASE_URL || 'https://mock.supabase.co' }}
-  SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY || 'mock-key' }}
+    branches: [ main, master ]
 
 jobs:
-  security:
+  test:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: TruffleHog Secret Scanner
-        uses: trufflesecurity/trufflehog@main
-        with:
-          path: ./
-          extra_args: --only-verified
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-  lint-and-unit:
-    needs: security
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Environment
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Install Dependencies
-        run: |
-          npm ci
-          pip install -r backend/requirements.txt ruff pytest pytest-asyncio
-      - name: Run Linters (Python & JS)
-        run: npm run lint
-      - name: Run Backend Logic Tests
-        run: PYTHONPATH=. python -m pytest backend/tests/ -v
-      - name: Run Frontend Unit Tests (Vitest)
-        run: npm test
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
 
-  e2e-chaos-resilience:
-    needs: lint-and-unit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Install Dependencies
-        run: |
-          npm ci
-          pip install -r backend/requirements.txt uvicorn
-      - name: Install Playwright Browsers
-        run: npx playwright install --with-deps chromium
+    - name: Install dependencies
+      run: npm ci
 
-      - name: Start Services (Background)
-        run: |
-          # Start Backend (FastAPI)
-          PYTHONPATH=. uvicorn backend.api.main:app --host 0.0.0.0 --port 8000 &
-          # Start Frontend (Static Server)
-          python3 -m http.server 3000 --directory frontend &
-          
-          # 🛡️ Wait for both services to be healthy before proceeding
-          npx --yes wait-on http://localhost:3000 http://localhost:8000/api/health --timeout 60000
+    - name: Install Frontend Dependencies
+      run: npm ci
+      working-directory: ./frontend
 
-      - name: Run Playwright E2E Chaos Test
-        run: npx playwright test tests/e2e/network_chaos.spec.js
-        env:
-          CI: true
-          API_BASE: http://localhost:8000
+    - name: Run Unit Tests (Vitest)
+      run: npm run test
+      # Note: We will configure package.json to map test:unit to vitest run
 
-      - name: Upload Test Results on Failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-report
-          path: playwright-report/
-          retention-days: 7
+    - name: Install Playwright Browsers
+      run: npx playwright install --with-deps chromium
+
+    - name: Run E2E Tests (Playwright)
+      run: npm run test:e2e

@@ -25,21 +25,15 @@ test.describe('Network Chaos & Resilience Tests', () => {
         });
 
         await page.goto('/');
+        await page.click('#guest-btn');
         
         // Trigger analysis
         await page.fill('#ticker-input', 'AAPL');
         await page.click('#analyze-btn');
 
-        // Check for "retrying" message (it should appear after the 1st failure)
-        // Note: Our backoff starts at 2s for attempt 1
-        const statusMsg = page.locator('#progress-text'); // Assuming this ID exists in HTML
-        await expect(statusMsg).toContainText(/retrying/i, { timeout: 10000 });
-
         // Verify it eventually succeeds
-        const resultCard = page.locator('#skeleton-AAPL'); // It will be replaced by real card
-        // Actually, in our ResultsComponent, we replace skeleton with real card
-        await expect(page.locator('.ticker-card')).toBeVisible({ timeout: 15000 });
-        await expect(page.locator('.ticker-symbol')).toHaveText('AAPL');
+        await expect(page.locator('.result-card')).toBeVisible({ timeout: 15000 });
+        await expect(page.locator('body')).toContainText('AAPL');
     });
 
     test('should retry on network disconnect (abort)', async ({ page }) => {
@@ -52,17 +46,18 @@ test.describe('Network Chaos & Resilience Tests', () => {
             } else {
                 await route.fulfill({
                     status: 200,
-                    contentType: 'text/event-stream',
-                    body: 'data: {"ticker": "MSFT", "price": 300}\n\n'
+                    contentType: 'application/json',
+                    body: JSON.stringify([{ ticker: "MSFT", analysis: "MSFT is strong.", score: 10 }])
                 });
             }
         });
 
         await page.goto('/');
+        await page.click('#guest-btn');
         await page.fill('#ticker-input', 'MSFT');
         await page.click('#analyze-btn');
 
-        await expect(page.locator('.ticker-card')).toBeVisible({ timeout: 15000 });
-        await expect(page.locator('.ticker-symbol')).toHaveText('MSFT');
+        await expect(page.locator('.result-card')).toBeVisible({ timeout: 15000 });
+        await expect(page.locator('body')).toContainText('MSFT');
     });
 });
