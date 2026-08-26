@@ -1,17 +1,33 @@
 -- ============================================================================
--- 🏛️ Sentinax Migration 007: Macro Source Availability & Geography (FRED/ALFRED)
+-- 🏛️ Sentinax Migration 007: Macro Source Availability & Geography (Hardened)
 -- ============================================================================
 -- Extends macro data layer to support global macro series (US/FRED) and
--- date-level point-in-time availability semantics (ALFRED realtime_start).
+-- date-level point-in-time availability semantics (ALFRED vintage snapshots).
+--
+-- Hardening:
+--   - Prohibits silent 'TR' default on geography (new inserts must be explicit).
+--   - Availability precision is strictly validated (CHECK constraint: DATE/TIMESTAMP).
 -- ============================================================================
 
--- 1. Extend macro_series with geography
+-- 1. Extend macro_series with geography (Safe Non-Silent-Default Pattern)
 ALTER TABLE public.macro_series
-    ADD COLUMN IF NOT EXISTS geography VARCHAR(8) NOT NULL DEFAULT 'TR',
+    ADD COLUMN IF NOT EXISTS geography VARCHAR(8),
     ADD COLUMN IF NOT EXISTS provider_native_units TEXT,
     ADD COLUMN IF NOT EXISTS seasonal_adjustment TEXT,
     ADD COLUMN IF NOT EXISTS origin_source TEXT,
     ADD COLUMN IF NOT EXISTS release_name TEXT;
+
+-- Backfill legacy records to 'TR'
+UPDATE public.macro_series
+SET geography = 'TR'
+WHERE geography IS NULL;
+
+-- Enforce NOT NULL without silent default for future inserts
+ALTER TABLE public.macro_series
+    ALTER COLUMN geography SET NOT NULL;
+
+ALTER TABLE public.macro_series
+    ALTER COLUMN geography DROP DEFAULT;
 
 CREATE INDEX IF NOT EXISTS idx_macro_series_geography
     ON public.macro_series (geography);
@@ -19,15 +35,27 @@ CREATE INDEX IF NOT EXISTS idx_macro_series_geography
 -- 2. Extend macro_observations with date-level availability & origin metadata
 ALTER TABLE public.macro_observations
     ADD COLUMN IF NOT EXISTS source_available_date DATE,
-    ADD COLUMN IF NOT EXISTS availability_precision VARCHAR(16) NOT NULL DEFAULT 'DATE',
+    ADD COLUMN IF NOT EXISTS availability_precision VARCHAR(16),
     ADD COLUMN IF NOT EXISTS realtime_end DATE,
     ADD COLUMN IF NOT EXISTS vintage_date DATE,
     ADD COLUMN IF NOT EXISTS origin_source TEXT,
     ADD COLUMN IF NOT EXISTS release_name TEXT;
 
+-- Add strict check constraint on precision if populated
+ALTER TABLE public.macro_observations
+    DROP CONSTRAINT IF EXISTS chk_macro_obs_precision;
+
+ALTER TABLE public.macro_observations
+    ADD CONSTRAINT chk_macro_obs_precision
+    CHECK (availability_precision IS NULL OR availability_precision IN ('DATE', 'TIMESTAMP'));
+
 CREATE INDEX IF NOT EXISTS idx_macro_obs_available_date
     ON public.macro_observations (macro_series_id, source_available_date DESC)
     WHERE source_available_date IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_macro_obs_vintage_date
+    ON public.macro_observations (macro_series_id, vintage_date DESC)
+    WHERE vintage_date IS NOT NULL;
 
 -- 3. Update Immutability Trigger to cover newly added substantive columns
 CREATE OR REPLACE FUNCTION public.prevent_macro_observation_tamper()
@@ -54,7 +82,7 @@ BEGIN
             OLD.observed_at != NEW.observed_at OR
             OLD.ingested_at != NEW.ingested_at OR
             (OLD.source_available_date IS DISTINCT FROM NEW.source_available_date) OR
-            OLD.availability_precision != NEW.availability_precision OR
+            (OLD.availability_precision IS DISTINCT FROM NEW.availability_precision) OR
             (OLD.realtime_end IS DISTINCT FROM NEW.realtime_end) OR
             (OLD.vintage_date IS DISTINCT FROM NEW.vintage_date) OR
             (OLD.origin_source IS DISTINCT FROM NEW.origin_source) OR

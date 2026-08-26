@@ -91,6 +91,7 @@ class OrchestrationResult:
     missing_inputs: List[str] = field(default_factory=list)
     provenance: Optional[ProviderProvenance] = None
     raw_payload: Any = None
+    source_metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_available(self) -> bool:
@@ -118,6 +119,7 @@ class OrchestrationResult:
             "missing_inputs": list(self.missing_inputs),
             "provenance": self.provenance.to_dict() if self.provenance else None,
             "raw_payload": self.raw_payload,
+            "source_metadata": self.source_metadata,
         }
 
     @classmethod
@@ -143,6 +145,7 @@ class OrchestrationResult:
             missing_inputs=list(data.get("missing_inputs", [])),
             provenance=ProviderProvenance.from_dict(data["provenance"]) if data.get("provenance") else None,
             raw_payload=data.get("raw_payload"),
+            source_metadata=data.get("source_metadata", {}),
         )
 
     def to_normalized_observation(
@@ -176,6 +179,64 @@ class OrchestrationResult:
             missing_inputs=self.missing_inputs,
             warnings=self.warnings,
             source_refs=[self.provenance.to_source_ref()] if self.provenance else [],
+        )
+
+    def to_macro_observation(
+        self,
+        series_key: str,
+        unit: Any,
+        frequency: Any,
+        snapshot_id: Optional[UUID] = None,
+        supersedes_record_id: Optional[UUID] = None,
+    ) -> Optional[Any]:
+        """
+        Maps macro orchestration result to MacroObservationRecord.
+        Preserves vintage_date, source_available_date, and origin source metadata.
+        """
+        from backend.engine.private.macro.models import MacroObservationRecord
+
+        if not self.is_available or self.effective_date is None:
+            return None
+
+        val = self.data.get("value")
+        if val is None and self.data:
+            vals = [v for v in self.data.values() if isinstance(v, (int, float))]
+            if len(vals) == 1:
+                val = float(vals[0])
+
+        src_meta = self.source_metadata or {}
+        prov_meta = self.provenance.metadata if self.provenance else {}
+
+        vintage_d = src_meta.get("vintage_date") or prov_meta.get("vintage_date")
+        if isinstance(vintage_d, str):
+            vintage_d = date.fromisoformat(vintage_d)
+
+        src_avail_d = src_meta.get("source_available_date") or prov_meta.get("source_available_date")
+        if isinstance(src_avail_d, str):
+            src_avail_d = date.fromisoformat(src_avail_d)
+
+        return MacroObservationRecord(
+            series_key=series_key,
+            effective_date=self.effective_date,
+            value=val,
+            unit=unit,
+            frequency=frequency,
+            data_status=self.status,
+            confidence_level=self.confidence.level,
+            source_tier=self.provenance.source_quality if self.provenance else SourceTier.TIER_1_REGULATORY,
+            retrieved_at=self.retrieved_at or datetime.now(timezone.utc),
+            published_at=self.published_at,
+            observed_at=self.observed_at or self.retrieved_at or datetime.now(timezone.utc),
+            source_available_date=src_avail_d,
+            availability_precision=src_meta.get("availability_precision") or prov_meta.get("availability_precision") or "DATE",
+            vintage_date=vintage_d,
+            origin_source=src_meta.get("origin_source") or prov_meta.get("origin_source"),
+            release_name=src_meta.get("release_name") or prov_meta.get("release_name"),
+            snapshot_id=snapshot_id,
+            supersedes_record_id=supersedes_record_id,
+            warnings=list(self.warnings),
+            source_ref=self.provenance.to_source_ref() if self.provenance else None,
+            raw_payload=self.raw_payload,
         )
 
     def to_raw_snapshot(
@@ -448,6 +509,7 @@ class ProviderOrchestrator:
                 missing_inputs=all_missing,
                 provenance=provenance,
                 raw_payload=response.raw,
+                source_metadata=getattr(response, "source_metadata", {}),
             )
 
             # Save in stale cache store & live Redis cache

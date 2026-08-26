@@ -27,6 +27,7 @@ import sys
 # Ensure repository root is on sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from backend.engine.private.domain import AsOfMode
 from backend.engine.private.provider_contract import FetchContext
 from backend.engine.private.providers.fred_alfred import FREDALFREDProvider
 
@@ -59,7 +60,7 @@ async def test_vintage_series(provider: FREDALFREDProvider, symbol: str, as_of: 
         observation_type="MACRO_US",
         provider_symbol=symbol,
         as_of_time=as_of,
-        as_of_mode="SOURCE_AS_OF",
+        as_of_mode=AsOfMode.SOURCE_AS_OF,
     )
     try:
         response = await provider.fetch(ctx)

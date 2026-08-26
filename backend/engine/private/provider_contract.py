@@ -52,6 +52,19 @@ class FetchContext:
     request_parameters: Dict[str, Any] = field(default_factory=dict)
     force_refresh: bool = False
 
+    def __post_init__(self) -> None:
+        if isinstance(self.as_of_mode, str):
+            val = self.as_of_mode.strip()
+            try:
+                self.as_of_mode = AsOfMode(val.lower())
+            except ValueError:
+                try:
+                    self.as_of_mode = AsOfMode[val.upper()]
+                except KeyError:
+                    raise ValueError(f"Invalid as_of_mode: '{self.as_of_mode}'. Must be AsOfMode.SYSTEM_AS_OF or AsOfMode.SOURCE_AS_OF.")
+        elif not isinstance(self.as_of_mode, AsOfMode):
+            raise ValueError(f"as_of_mode must be an instance of AsOfMode, got {type(self.as_of_mode).__name__}")
+
     @property
     def is_historical(self) -> bool:
         """True if this request targets a specific point in time in the past."""
@@ -152,6 +165,7 @@ class ProviderResponse:
     warnings: List[str] = field(default_factory=list)
     canonical_instrument_id: Optional[UUID] = None
     provider_symbol: Optional[str] = None
+    source_metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.observed_at is None:
@@ -186,6 +200,7 @@ class ProviderProvenance:
     canonical_instrument_id: Optional[UUID] = None
     provider_symbol: Optional[str] = None
     effective_date: Optional[date] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -197,6 +212,7 @@ class ProviderProvenance:
             "canonical_instrument_id": str(self.canonical_instrument_id) if self.canonical_instrument_id else None,
             "provider_symbol": self.provider_symbol,
             "effective_date": self.effective_date.isoformat() if self.effective_date else None,
+            "metadata": self.metadata,
         }
 
     @classmethod
@@ -210,6 +226,7 @@ class ProviderProvenance:
             canonical_instrument_id=UUID(data["canonical_instrument_id"]) if data.get("canonical_instrument_id") else None,
             provider_symbol=data.get("provider_symbol"),
             effective_date=date.fromisoformat(data["effective_date"]) if data.get("effective_date") else None,
+            metadata=data.get("metadata", {}),
         )
 
     def to_source_ref(self) -> str:

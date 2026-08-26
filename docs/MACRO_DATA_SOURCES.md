@@ -1,6 +1,6 @@
 # Global & Turkey Macroeconomic Data Layer
 
-**Version:** 2.0 (Global Hardened)  
+**Version:** 2.1 (PIT Semantic & Provenance Hardened)  
 **Effective Date:** 26 August 2026  
 **Scope:** Macroeconomic data sources, Point-in-Time (PIT) vintage semantics, authentication, contract verification, and canonical registry for Sentinax Private Engine.
 
@@ -17,33 +17,57 @@
 
 ---
 
-## 2. FRED / ALFRED Unified Adapter (United States)
+## 2. Point-in-Time (PIT) Timestamp & Date Taxonomy
+
+To eliminate lookahead contamination and semantic confusion, Sentinax strictly separates these date/time concepts:
+
+1. **Effective / Observation Date (`effective_date`):**
+   - The economic period the measurement applies to (e.g. `2023-01-01` for Q1 2023 GDP, `2024-04-01` for April CPI).
+2. **Requested Vintage Snapshot Date (`vintage_date`):**
+   - The as-of date requested from ALFRED (`vintage_dates=YYYY-MM-DD`). Represents "what was known on this calendar date".
+3. **FRED Real-Time Period (`realtime_start` / `realtime_end`):**
+   - The observation's validity window in the FRED database for the given query. In live current queries, even 1990 data carries `realtime_start = Today`.
+   - *CRITICAL INVARIANT:* `realtime_start` is **NOT** the date when data first became public knowledge.
+4. **Actual Source Availability Date (`source_available_date`):**
+   - The proven date when the observation/revision became public knowledge. If unproven, remains `None` (missing != fabricated).
+5. **Release Calendar Date (`release_name` / calendar context):**
+   - The statistical agency's planned announcement date. Does not guarantee exact release time or same-day ALFRED availability.
+6. **Retrieval Time (`retrieved_at`):**
+   - Wall-clock UTC timestamp when Sentinax executed the HTTP request.
+7. **Ingestion Time (`ingested_at` / `observed_at`):**
+   - Wall-clock UTC timestamp when Sentinax recorded the observation in local PIT storage (`SYSTEM_AS_OF` boundary).
+
+---
+
+## 3. FRED / ALFRED Unified Adapter (United States)
 
 ### A. Architectural Concept
-- **Unified Engine:** St. Louis Fed FRED (Current) and ALFRED (Vintage Point-in-Time) operate on the **same underlying API (Version 1)**. Rather than creating duplicate adapters, `FREDALFREDProvider` provides a single unified interface supporting both `CURRENT` observations and `SOURCE_VINTAGE` historical revisions.
+- **Unified Engine:** St. Louis Fed FRED (Current) and ALFRED (Vintage Point-in-Time) operate on the **same underlying API (Version 1)**. `FREDALFREDProvider` provides a single unified interface supporting both `CURRENT` observations and `SOURCE_VINTAGE` historical revisions.
 - **Base Endpoint:** `https://api.stlouisfed.org/fred/`
 - **Security:** `api_key` is passed as a query parameter as required by official FRED API v1 specifications.
   - *Invariant:* The API key is stripped from cache keys, logs, raw snapshots, diagnostics, and exceptions.
 
-### B. Execution Modes
+### B. Execution Modes & Query Bounding
 1. **Current Mode (FRED):**
-   - Fetches latest available observations from `series/observations` with `units=lin` (enforces raw linear levels; server-side aggregations/transformations are strictly avoided).
+   - Fetches latest single observation with `sort_order=desc`, `limit=1`, `output_type=1`, `units=lin`.
+   - Prevents fetching 100,000 unbounded historical rows on live refresh.
 2. **Vintage Mode (ALFRED):**
-   - Point-in-Time requests with `as_of_mode == "SOURCE_AS_OF"` pass `vintage_dates=YYYY-MM-DD(as_of_time)`.
-   - Returns the exact revision that was public knowledge on the requested date. Future revisions are strictly prevented from leaking into historical queries.
+   - Point-in-Time requests with `as_of_mode == AsOfMode.SOURCE_AS_OF`.
+   - Passes `vintage_dates=YYYY-MM-DD(snapshot_date)` with `sort_order=desc`, `limit=1`.
 3. **SYSTEM_AS_OF Historical Guard:**
-   - Historical queries with `as_of_mode == "SYSTEM_AS_OF"` are rejected at the external provider boundary with a clear diagnostic (`"Historical SYSTEM_AS_OF requires local PIT storage"`).
+   - Historical queries with `as_of_mode == AsOfMode.SYSTEM_AS_OF` are rejected at the external provider boundary with a clear diagnostic (`"Historical SYSTEM_AS_OF requires local PIT storage"`).
+4. **Fail-Closed Historical Handling:**
+   - Any unknown or unhandled `AsOfMode` fails closed immediately.
 
-### C. Origin-Source Distinction & Provenance
-FRED is the delivery aggregator; the originating statistical authorities are distinct:
+### C. Same-Day Lookahead Policy
+- Because FRED/ALFRED vintage precision is **DATE-level**, an intraday query at 09:30 AM could leak an afternoon revision into backtests.
+- *Conservative Default:* If `as_of_time` is intraday, Sentinax queries `vintage_dates = as_of_date - 1 calendar day` (prior-day knowledge snapshot) unless exact same-day vintage is explicitly requested.
+
+### D. Origin-Source Distinction & Provenance
+FRED is the delivery aggregator; originating statistical authorities are preserved in `ProviderProvenance.metadata`:
 - `CPIAUCSL`, `CPILFESL`, `UNRATE` -> **U.S. Bureau of Labor Statistics (BLS)**
 - `GDPC1` -> **U.S. Bureau of Economic Analysis (BEA)**
 - `INDPRO`, `DFF` -> **Board of Governors of the Federal Reserve System**
-
-### D. Availability & Lookahead Semantics
-- `realtime_start` provides **DATE-level precision** (e.g. `2024-05-15`).
-- *Conservative Rule:* Date-only availability cannot guarantee intraday timing. An observation is safe for backtesting if `source_available_date < as_of_date`. If exact `published_at` timestamp is known, `published_at <= as_of_time` is used.
-- *Missing Marker:* FRED missing marker `"."` is strictly normalized to `None`. Zero values (`0.0`, `0`) are preserved.
 
 ### E. Verified Initial US Registry
 1. `US_CPI_HEADLINE_INDEX` (`CPIAUCSL`): Headline Consumer Price Index (Index 1982-1984=100, SA).
@@ -53,11 +77,11 @@ FRED is the delivery aggregator; the originating statistical authorities are dis
 5. `US_INDUSTRIAL_PRODUCTION` (`INDPRO`): Industrial Production Index (Index 2017=100, SA).
 6. `US_EFFECTIVE_FED_FUNDS_RATE` (`DFF`): Effective Federal Funds Rate (Percent, NSA).
 
-*(Note: U.S. Treasury yield curve series such as DGS10/DGS2 are intentionally excluded from this phase and will be added in a dedicated official Treasury layer).*
+*(Note: U.S. Treasury yield curve series such as DGS10/DGS2 are intentionally excluded from this phase).*
 
 ---
 
-## 3. Turkey Official Macroeconomic Sources
+## 4. Turkey Official Macroeconomic Sources
 
 ### A. TCMB EVDS
 - **EVDS3 Transition:** TCMB opened EVDS3 Beta on **26 January 2026**. EVDS2 remains fully active and supported.
