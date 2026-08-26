@@ -130,7 +130,37 @@ class SourceTier(Enum):
     TIER_5_PROXY = "tier_5"         # Best-available proxy — lowest confidence
 
 
+class ProviderAccessStatus(Enum):
+    """
+    Production feasibility and operational reliability status of a provider.
+    Distinct from SourceTier (authority) and DataConfidenceLevel (data quality).
+
+    GREEN:  Official API / robust production access with stable SLA.
+    YELLOW: Scraping-based, free tier, aggressive rate-limit, or degraded SLA.
+    RED:    Down, blocked, revoked credentials, or decommissioned.
+    """
+    GREEN = "green"
+    YELLOW = "yellow"
+    RED = "red"
+
+
+class DataCriticality(Enum):
+    """
+    Contextual importance of a data field within a specific calculation or request.
+    Evaluated per-request; never causes global system panic.
+
+    OPTIONAL:  Missing field results in PARTIAL analysis with minor confidence penalty.
+    IMPORTANT: Missing field results in DEGRADED analysis with notable confidence penalty.
+    CRITICAL:  Missing field renders this specific computation UNAVAILABLE, while allowing
+               independent sibling computations to proceed.
+    """
+    OPTIONAL = "optional"
+    IMPORTANT = "important"
+    CRITICAL = "critical"
+
+
 class AsOfMode(Enum):
+
     """
     Point-in-Time (PIT) query semantics modes.
 

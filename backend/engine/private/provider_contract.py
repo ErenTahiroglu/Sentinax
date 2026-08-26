@@ -1,66 +1,91 @@
 """
 backend/engine/private/provider_contract.py
 =============================================
-Minimal contract (Protocol + response dataclass) that ALL future data providers
-must implement. No actual providers are written here.
+Common provider protocol, execution context, and diagnostic audit models.
 
-Design references (conceptual only — no code or dependencies borrowed):
-    - OpenBB Platform: provider_name, provenance metadata per response
-    - LEAN Engine: instrument ID stability, corporate-action separation
-    - Freqtrade: historical/live separation, lookahead-bias protection
-
-Requirements for any compliant provider:
-    1. fetch()      — returns raw response + metadata (ProviderResponse)
-    2. normalize()  — maps raw to a canonical dict keyed by field name
-    3. validate()   — returns a list of warnings (never raises for missing data)
-    4. provenance() — returns a ProviderProvenance for audit trail
-
-Point-in-time rule:
-    effective_date MUST reflect when the data was true, not when it was fetched.
-    A quarterly earnings filing from 2024-Q3 has effective_date = last day of Q3,
-    regardless of when the filing was retrieved.
-
-No external dependencies — pure Python stdlib only.
+Core Principles:
+    - Provider Framework is strictly decoupled from specific external data vendors.
+    - FetchContext cleanly separates canonical UUID from provider-native symbol.
+    - Historical requests are explicitly separated from latest/live requests.
+    - Providers are ONLY responsible for their own fetch/normalize/validate/provenance.
+    - Provider NEVER selects fallback or knows about sibling providers.
+    - Async execution model natively integrates with FastAPI and httpx.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
-from typing import Any, Optional, Protocol, runtime_checkable
+from datetime import date, datetime, timezone
+from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 from uuid import UUID
 
-from backend.engine.private.domain import DataStatus, SourceTier
+from backend.engine.private.domain import (
+    AsOfMode,
+    DataStatus,
+    ProviderAccessStatus,
+    SourceTier,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Provider Response
+# 1. Fetch Context
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class FetchContext:
+    """
+    Context for a data fetch request.
+
+    Separates the canonical instrument identity from the provider-native symbol.
+    Historical requests (`as_of_time` is set) are explicitly flagged to prevent
+    stale/latest cache collisions.
+    """
+    observation_type: str
+    canonical_instrument_id: Optional[UUID] = None
+    provider_symbol: Optional[str] = None
+    as_of_time: Optional[datetime] = None
+    as_of_mode: AsOfMode = AsOfMode.SYSTEM_AS_OF
+    effective_date: Optional[date] = None
+    request_parameters: Dict[str, Any] = field(default_factory=dict)
+    force_refresh: bool = False
+
+    @property
+    def is_historical(self) -> bool:
+        """True if this request targets a specific point in time in the past."""
+        return self.as_of_time is not None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. Provider Attempt Diagnostics
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class ProviderAttempt:
+    """
+    Diagnostic record of an individual provider fetch attempt.
+    Preserves audit trail of why a provider failed before fallback was triggered.
+    """
+    provider_name: str
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    success: bool = False
+    failure_type: Optional[str] = None  # e.g. 'TIMEOUT', 'HTTP_ERROR', 'SCHEMA_MISMATCH', 'CIRCUIT_OPEN', 'UNAVAILABLE'
+    message: Optional[str] = None
+    latency_ms: float = 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. Provider Response
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class ProviderResponse:
     """
-    The canonical output of any data provider's fetch() call.
+    Canonical output of any data provider's fetch() call.
 
     All fields are point-in-time safe:
-        retrieved_at   — when the API call was made (wall-clock UTC)
+        retrieved_at   — when the fetch call occurred (wall-clock UTC)
         published_at   — when the source published the data (if known)
-        effective_date — the date the data was economically true
-
-    Design rule: A provider MUST NOT infer effective_date from retrieved_at.
-    If effective_date is unknown, set it to None and add a warning.
-
-    Attributes:
-        provider_name:           Unique, stable identifier for the provider.
-        source_quality:          SourceTier classification of this provider.
-        retrieved_at:            UTC datetime of the fetch call.
-        published_at:            UTC datetime the source published this data. May be None.
-        effective_date:          The economic effective date of the data. May be None.
-        status:                  Whether the fetch succeeded and data is usable.
-        raw:                     The unmodified raw payload from the provider.
-        warnings:                Non-fatal issues encountered during the fetch.
-        canonical_instrument_id: The canonical Sentinax instrument UUID (if known/resolved).
-        provider_symbol:         The provider-native symbol/query identifier used.
+        effective_date — the calendar date the economic truth applies to
     """
     provider_name: str
     source_quality: SourceTier
@@ -69,7 +94,7 @@ class ProviderResponse:
     effective_date: Optional[date]
     status: DataStatus
     raw: Any
-    warnings: list[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
     canonical_instrument_id: Optional[UUID] = None
     provider_symbol: Optional[str] = None
 
@@ -79,27 +104,24 @@ class ProviderResponse:
         return self.status not in (DataStatus.UNAVAILABLE,)
 
     def to_source_ref(self) -> str:
-        """Generate a compact source reference string for DataResult.source_refs."""
+        """Generates a compact, unambiguous source reference string."""
         eff = self.effective_date.isoformat() if self.effective_date else "unknown-date"
         identifier = self.provider_symbol or (str(self.canonical_instrument_id) if self.canonical_instrument_id else "unspecified")
         return f"{self.provider_name}:{identifier}@{eff}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Provider Provenance
+# 4. Provider Provenance
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class ProviderProvenance:
     """
     Audit trail for a data point: which provider, which version, which endpoint.
-
-    Used by the Private Engine to reconstruct the data lineage for any
-    computed result. Stored alongside the result for audit purposes.
     """
     provider_name: str
-    provider_version: str               # Semantic version of the provider module
-    endpoint: str                       # API endpoint or method name used
+    provider_version: str               # Semantic version of provider module
+    endpoint: str                       # API endpoint / method identifier
     retrieved_at: datetime
     source_quality: SourceTier
     canonical_instrument_id: Optional[UUID] = None
@@ -108,7 +130,7 @@ class ProviderProvenance:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Provider Protocol
+# 5. Data Provider Protocol (Async Contract)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @runtime_checkable
@@ -116,23 +138,38 @@ class DataProviderContract(Protocol):
     """
     Structural interface that every data provider must satisfy.
 
-    Implementing classes do NOT need to inherit from this Protocol.
-    Python's structural subtyping (duck typing) handles conformance checks.
-    Use isinstance(provider, DataProviderContract) for runtime checks.
+    Methods:
+        fetch(context) → ProviderResponse
+            Retrieve raw data for the given context.
+            Must NEVER raise for missing data — return status=UNAVAILABLE instead.
+            Must NEVER fabricate data if the instrument or field is unknown.
+
+        normalize(raw) → dict[str, Any]
+            Map the raw payload to a canonical field dict.
+            Unknown fields may be omitted; absent fields must NOT be set to 0.
+
+        validate(normalized) → list[str]
+            Check the normalized dict for anomalies/schema violations.
+            Returns a list of warning strings. Empty list = clean.
+            NEVER raises — all non-fatal issues are returned as warnings.
+
+        provenance(response) → ProviderProvenance
+            Return the audit trail for a given ProviderResponse.
     """
     provider_name: str
     source_quality: SourceTier
+    access_status: ProviderAccessStatus
 
-    def fetch(self, symbol: str, canonical_instrument_id: Optional[UUID] = None) -> ProviderResponse:
-        """Retrieve raw data. Never raises for missing data."""
+    async def fetch(self, context: FetchContext) -> ProviderResponse:
+        """Retrieve raw data asynchronously. Never raises for missing data."""
         ...
 
-    def normalize(self, raw: Any) -> dict[str, Any]:
+    def normalize(self, raw: Any) -> Dict[str, Any]:
         """Map raw payload to canonical field dict. No fabrication."""
         ...
 
-    def validate(self, normalized: dict[str, Any]) -> list[str]:
-        """Return warnings for anomalies. Never raises."""
+    def validate(self, normalized: Dict[str, Any]) -> List[str]:
+        """Return warnings for anomalies/schema deviations. Never raises."""
         ...
 
     def provenance(self, response: ProviderResponse) -> ProviderProvenance:
