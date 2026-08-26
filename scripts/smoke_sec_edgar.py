@@ -53,7 +53,10 @@ async def main() -> None:
     # 1. Test Submissions
     print("\n1. Fetching Submissions metadata and recent filings...")
     try:
-        meta, filings, snap_sub = await sub_provider.fetch_submissions(test_cik)
+        res = await sub_provider.fetch_submissions(test_cik)
+        meta = res.metadata
+        filings = res.filings
+        snap_sub = res.main_snapshot
         print(f"   ✅ Entity Name: {meta.entity_name}")
         print(f"   ✅ SIC: {meta.sic} ({meta.sic_description})")
         print(f"   ✅ Tickers: {meta.tickers}")

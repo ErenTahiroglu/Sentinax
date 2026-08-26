@@ -1,24 +1,26 @@
 """
 backend/engine/private/sec/client.py
 ======================================
-Official SEC EDGAR Fair-Access HTTP Client & Rate Limiter.
+Official SEC EDGAR Fair-Access HTTP Client & Process-Wide Rate Limiter.
 
-Core Principles:
+Core Hardening Invariants:
     - SEC official guideline: TOTAL <= 10 requests / second regardless of machines.
-    - Sentinax safety limit: Conservative local limiter <= 8 req/s (SEC_MAX_REQUESTS_PER_SECOND = 8).
-    - Requires declared User-Agent string (e.g. "Sentinax <admin@example.com>").
-    - Missing User-Agent raises ProviderConfigurationError on fetch without crashing the application on startup.
-    - Strict typed error mapping for HTTP status codes (403, 404, 429, 5xx, timeouts, schema errors).
-    - Transparent gzip/deflate decompression and json payload validation.
+    - Sentinax safety limit: Conservative local limiter <= 8 req/s (DEFAULT_SENTINAX_SAFETY_RPS = 8.0).
+    - Serialized leaky pacing: min_interval = 1.0 / rps (burst capacity = 1) prevents initial multi-request bursts.
+    - Process-wide singleton rate limiter shared across all SECEdgarClient instances, submissions, and facts.
+    - Invalid RPS (<=0, NaN, Inf) is strictly rejected.
+    - Missing User-Agent raises ProviderConfigurationError on fetch without crashing application boot.
+    - Typed error mapping for 403 (Permission/Block), 404, 429 (Rate Limit), 5xx, timeouts, and schema errors.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import httpx
 
@@ -36,57 +38,81 @@ from backend.infrastructure.http_client import get_http_client
 logger = logging.getLogger(__name__)
 
 # SEC Fair Access Invariants
-SEC_OFFICIAL_MAX_RPS = 10
+SEC_OFFICIAL_MAX_RPS = 10.0
 DEFAULT_SENTINAX_SAFETY_RPS = 8.0
 
 
 class SECRateLimiter:
     """
-    Async token-bucket rate limiter enforcing SEC fair access guidelines.
-    Guarantees request rate does not exceed configured rate per second.
+    Async leaky pacing rate limiter enforcing serialized request spacing.
+    Guarantees that consecutive requests are spaced by at least (1.0 / max_rps) seconds (burst capacity = 1).
     """
-    def __init__(self, max_rps: float = DEFAULT_SENTINAX_SAFETY_RPS) -> None:
+    def __init__(
+        self,
+        max_rps: float = DEFAULT_SENTINAX_SAFETY_RPS,
+        time_func: Optional[Callable[[], float]] = None,
+        sleep_func: Optional[Callable[[float], Any]] = None,
+    ) -> None:
+        if math.isnan(max_rps) or math.isinf(max_rps) or max_rps <= 0:
+            raise ValueError(f"Invalid max_rps: {max_rps}. Must be a positive finite number.")
+
         if max_rps > SEC_OFFICIAL_MAX_RPS:
             logger.warning(
                 f"Configured RPS {max_rps} exceeds official SEC limit of {SEC_OFFICIAL_MAX_RPS}. "
                 f"Clamping to {SEC_OFFICIAL_MAX_RPS} req/s."
             )
             max_rps = float(SEC_OFFICIAL_MAX_RPS)
-        self.rate = max_rps
-        self.capacity = max_rps
-        self.tokens = max_rps
-        self.last_update = time.monotonic()
+
+        self.rate = float(max_rps)
+        self.min_interval = 1.0 / self.rate
+        self._time_func = time_func or time.monotonic
+        self._sleep_func = sleep_func or asyncio.sleep
+        self.last_request_time: float = 0.0
         self._lock = asyncio.Lock()
 
     async def acquire(self) -> None:
         async with self._lock:
-            now = time.monotonic()
-            elapsed = now - self.last_update
-            self.last_update = now
-            self.tokens = min(self.capacity, self.tokens + elapsed * self.rate)
-
-            if self.tokens < 1.0:
-                needed = 1.0 - self.tokens
-                sleep_time = needed / self.rate
-                await asyncio.sleep(sleep_time)
-                self.tokens = 0.0
-                self.last_update = time.monotonic()
+            now = self._time_func()
+            time_since_last = now - self.last_request_time
+            if time_since_last < self.min_interval:
+                sleep_needed = self.min_interval - time_since_last
+                await self._sleep_func(sleep_needed)
+                self.last_request_time = self._time_func()
             else:
-                self.tokens -= 1.0
+                self.last_request_time = now
+
+
+# Process-wide shared singleton rate limiter instance
+_SHARED_SEC_LIMITER: Optional[SECRateLimiter] = None
+
+
+def get_shared_sec_rate_limiter(max_rps: float = DEFAULT_SENTINAX_SAFETY_RPS) -> SECRateLimiter:
+    global _SHARED_SEC_LIMITER
+    if _SHARED_SEC_LIMITER is None:
+        _SHARED_SEC_LIMITER = SECRateLimiter(max_rps=max_rps)
+    return _SHARED_SEC_LIMITER
+
+
+def reset_shared_sec_rate_limiter(limiter: Optional[SECRateLimiter] = None) -> None:
+    """Utility for tests to inject custom mock timing limiters."""
+    global _SHARED_SEC_LIMITER
+    _SHARED_SEC_LIMITER = limiter
 
 
 class SECEdgarClient:
     """
     HTTP client for official SEC EDGAR data APIs (data.sec.gov).
+    Uses the process-wide shared rate limiter by default.
     """
     def __init__(
         self,
         user_agent: Optional[str] = None,
         max_rps: float = DEFAULT_SENTINAX_SAFETY_RPS,
         http_client: Optional[httpx.AsyncClient] = None,
+        rate_limiter: Optional[SECRateLimiter] = None,
     ) -> None:
         self._custom_user_agent = user_agent
-        self.rate_limiter = SECRateLimiter(max_rps=max_rps)
+        self.rate_limiter = rate_limiter or get_shared_sec_rate_limiter(max_rps=max_rps)
         self._http_client = http_client
 
     def get_user_agent(self) -> str:
@@ -109,7 +135,7 @@ class SECEdgarClient:
         timeout: float = 15.0,
     ) -> Dict[str, Any]:
         """
-        Executes a rate-limited, authorized GET request to SEC EDGAR and parses JSON response.
+        Executes a serialized rate-limited GET request to SEC EDGAR and parses JSON response.
         """
         user_agent = self.get_user_agent()
         await self.rate_limiter.acquire()
@@ -131,7 +157,7 @@ class SECEdgarClient:
         # Status Code Error Handling
         if resp.status_code in (401, 403):
             raise ProviderPermissionError(
-                f"SEC EDGAR access blocked (HTTP {resp.status_code}). Ensure declared User-Agent is valid.",
+                f"SEC EDGAR access blocked (HTTP {resp.status_code}). Fair-access or user-agent policy restriction.",
                 provider_name="SEC_EDGAR",
             )
         if resp.status_code == 404:

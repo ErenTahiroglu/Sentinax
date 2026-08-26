@@ -3,24 +3,22 @@ backend/engine/private/sec/company_facts.py
 ============================================
 SEC EDGAR CompanyFacts Ingestion & Hierarchical Raw XBRL Fact Extractor.
 
-Official Endpoint:
-    - Base URL: https://data.sec.gov/api/xbrl/companyfacts/CIK##########.json
-
-Core Principles:
-    - Traverses standard taxonomies (us-gaap, dei, ifrs-full, srt) without premature financial interpretation.
-    - Accurately classifies PeriodType into DURATION (start + end) vs INSTANT (end only).
-    - Preserves all accession-scoped facts; amendments and restatements are NEVER overwritten.
-    - Numerical precision is preserved (float/Decimal); genuine 0.0 is preserved; missing values are None.
-    - Unit strings (USD, shares, pure, USD/shares) are preserved verbatim.
-    - Lineage to filing accession number (accn) is strictly maintained.
-    - CompanyFacts provides current SEC aggregated state; external historical PIT reconstruction is rejected.
+Core Hardening Invariants:
+    - Numerical values parsed into exact `Decimal` representation; floats are avoided.
+    - Genuine zero is preserved as Decimal("0"); missing values remain None.
+    - Classification: DURATION (both start and end present) vs INSTANT (end only).
+    - Missing end dates or start without end are rejected as schema-invalid.
+    - No fake "UNKNOWN_ACCN" accession numbers; missing accession remains None.
+    - Standard public taxonomies (us-gaap, dei, ifrs-full, srt) preserved verbatim.
+    - Amendments and restatements are preserved without overwriting.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date, datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from uuid import UUID
 
@@ -47,6 +45,38 @@ logger = logging.getLogger(__name__)
 STANDARD_TAXONOMIES = {"us-gaap", "dei", "ifrs-full", "srt"}
 
 
+def parse_sec_decimal(val_raw: Any) -> Optional[Decimal]:
+    """
+    Safely parses an XBRL numerical value into an exact Decimal.
+    Rejects booleans, NaN, and Infinity.
+    """
+    if val_raw is None:
+        return None
+
+    # In Python, bool is a subclass of int (True == 1), guard against booleans
+    if isinstance(val_raw, bool):
+        return None
+
+    if isinstance(val_raw, (float, int)):
+        if isinstance(val_raw, float) and (math.isnan(val_raw) or math.isinf(val_raw)):
+            return None
+        return Decimal(str(val_raw))
+
+    if isinstance(val_raw, str):
+        s = val_raw.strip()
+        if not s or s.lower() in ("null", "none", "nan", "inf", "-inf", "infinity", "-infinity"):
+            return None
+        try:
+            d = Decimal(s)
+            if d.is_nan() or d.is_infinite():
+                return None
+            return d
+        except InvalidOperation:
+            return None
+
+    return None
+
+
 class SECCompanyFactsParser:
     """
     Parses and flattens hierarchical SEC CompanyFacts JSON into SECRawFactRecord instances.
@@ -58,6 +88,7 @@ class SECCompanyFactsParser:
         payload: Dict[str, Any],
         instrument_id: Optional[UUID] = None,
         snapshot_id: Optional[UUID] = None,
+        retrieved_at: Optional[datetime] = None,
     ) -> List[SECRawFactRecord]:
         raw_cik = payload.get("cik")
         if raw_cik is None:
@@ -68,7 +99,7 @@ class SECCompanyFactsParser:
         if not facts_root or not isinstance(facts_root, dict):
             return []
 
-        retrieved_at = datetime.now(timezone.utc)
+        t_retrieved = retrieved_at or datetime.now(timezone.utc)
         records: List[SECRawFactRecord] = []
         seen_fingerprints: Set[Tuple[Any, ...]] = set()
 
@@ -94,22 +125,21 @@ class SECCompanyFactsParser:
                         if not isinstance(entry, dict):
                             continue
 
-                        # Extract raw value
+                        # Extract exact Decimal value
                         val_raw = entry.get("val")
-                        val_parsed: Optional[float] = None
-                        if val_raw is not None:
-                            try:
-                                val_parsed = float(val_raw)
-                            except (ValueError, TypeError):
-                                val_parsed = None
+                        val_parsed = parse_sec_decimal(val_raw)
 
-                        # Extract accession number
+                        # Extract accession number (no fake UNKNOWN_ACCN)
                         accn = entry.get("accn")
-                        accn_str = str(accn).strip() if accn else "UNKNOWN_ACCN"
+                        accn_str = str(accn).strip() if accn and str(accn).strip() else None
 
-                        # Extract dates and determine PeriodType
+                        # Extract dates and validate PeriodType
                         end_d = parse_sec_date(entry.get("end"))
                         start_d = parse_sec_date(entry.get("start"))
+
+                        if end_d is None:
+                            # Fact lacks an end date; schema-invalid
+                            continue
 
                         if start_d is not None:
                             period_type = PeriodType.DURATION
@@ -134,7 +164,7 @@ class SECCompanyFactsParser:
                             form,
                             filed_d.isoformat() if filed_d else None,
                             frame,
-                            val_parsed,
+                            str(val_parsed) if val_parsed is not None else None,
                         )
                         if fingerprint in seen_fingerprints:
                             continue
@@ -159,7 +189,7 @@ class SECCompanyFactsParser:
                             frame=str(frame).strip() if frame else None,
                             instrument_id=instrument_id,
                             snapshot_id=snapshot_id,
-                            retrieved_at=retrieved_at,
+                            retrieved_at=t_retrieved,
                             raw_fact=entry,
                         )
                         records.append(rec)
@@ -172,7 +202,7 @@ class SECCompanyFactsProvider:
     Provider service for SEC EDGAR CompanyFacts ingestion.
     """
     provider_name: str = "SEC_COMPANY_FACTS"
-    provider_version: str = "1.0.0"
+    provider_version: str = "1.1.0"
     source_quality: SourceTier = SourceTier.TIER_1_REGULATORY
     access_status: ProviderAccessStatus = ProviderAccessStatus.GREEN
 
@@ -214,6 +244,7 @@ class SECCompanyFactsProvider:
             payload,
             instrument_id=instrument_id,
             snapshot_id=snapshot.id,
+            retrieved_at=retrieved_at,
         )
 
         return facts, snapshot

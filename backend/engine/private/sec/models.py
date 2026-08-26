@@ -3,13 +3,13 @@ backend/engine/private/sec/models.py
 ======================================
 Canonical Domain Models, Enums, and URL Builders for SEC EDGAR Filing & XBRL Data Backbone.
 
-Core Principles:
-    - `accession_number` is preserved in official hyphenated format (e.g. "0000320193-24-000123").
-    - `acceptance_datetime` is the official point-in-time knowledge boundary (distinct from filing/report dates).
-    - `is_amendment` is derived deterministically from form suffix ("/A").
-    - Raw XBRL facts preserve standard taxonomy concepts without premature metric mapping.
-    - `PeriodType` separates duration facts (start + end) from instant facts (end only).
-    - Numerical precision is preserved as Decimal or float; missing values are None (never zero).
+Core Hardening Principles:
+    - `accession_number` is preserved in official hyphenated format without requiring issuer CIK prefix match.
+    - `acceptance_datetime` is strictly the SEC acceptance event timestamp; NOT guaranteed public availability.
+    - `public_available_at` remains None unless explicitly observed/proven.
+    - Numerical facts use `Decimal` for exact representation; zero is preserved as Decimal("0"); missing is None.
+    - `PeriodType` enforces DURATION (start + end) vs INSTANT (end only); missing dates are rejected.
+    - `SECFactFilingLinkRecord` provides append-only asynchronous fact-filing linkage.
 """
 
 from __future__ import annotations
@@ -28,6 +28,12 @@ class PeriodType(Enum):
     """Distinguishes duration facts from instant balance-sheet facts."""
     INSTANT = "instant"
     DURATION = "duration"
+
+
+class SECResource(Enum):
+    """Explicit resource routing for SEC EDGAR providers."""
+    SUBMISSIONS = "submissions"
+    COMPANY_FACTS = "company_facts"
 
 
 @dataclass
@@ -68,7 +74,11 @@ class SECFilingRecord:
     filing_date: Optional[date] = None
     report_date: Optional[date] = None
     acceptance_datetime: Optional[datetime] = None
+    acceptance_raw: Optional[str] = None
     acceptance_precision: Optional[str] = None
+    acceptance_timezone_semantics: Optional[str] = None
+    public_available_at: Optional[datetime] = None
+    public_availability_basis: Optional[str] = None
     act: Optional[str] = None
     file_number: Optional[str] = None
     film_number: Optional[str] = None
@@ -102,7 +112,11 @@ class SECFilingRecord:
             "filing_date": self.filing_date.isoformat() if self.filing_date else None,
             "report_date": self.report_date.isoformat() if self.report_date else None,
             "acceptance_datetime": self.acceptance_datetime.isoformat() if self.acceptance_datetime else None,
+            "acceptance_raw": self.acceptance_raw,
             "acceptance_precision": self.acceptance_precision,
+            "acceptance_timezone_semantics": self.acceptance_timezone_semantics,
+            "public_available_at": self.public_available_at.isoformat() if self.public_available_at else None,
+            "public_availability_basis": self.public_availability_basis,
             "act": self.act,
             "file_number": self.file_number,
             "film_number": self.film_number,
@@ -127,12 +141,12 @@ class SECRawFactRecord:
     Preserves original standard taxonomy tags without premature metric interpretation.
     """
     cik: str
-    accession_number: str
     taxonomy: str
     concept: str
     unit: str
     period_type: PeriodType
-    value: Optional[Union[float, Decimal]] = None
+    accession_number: Optional[str] = None
+    value: Optional[Decimal] = None
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     label: Optional[str] = None
@@ -154,6 +168,8 @@ class SECRawFactRecord:
         self.cik = normalize_cik(self.cik)
         if isinstance(self.period_type, str):
             self.period_type = PeriodType(self.period_type)
+        if self.accession_number:
+            self.accession_number = self.accession_number.strip()
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -167,7 +183,7 @@ class SECRawFactRecord:
             "label": self.label,
             "description": self.description,
             "unit": self.unit,
-            "value": float(self.value) if isinstance(self.value, (float, Decimal)) else self.value,
+            "value": str(self.value) if self.value is not None else None,
             "start_date": self.start_date.isoformat() if self.start_date else None,
             "end_date": self.end_date.isoformat() if self.end_date else None,
             "period_type": self.period_type.value,
@@ -181,6 +197,25 @@ class SECRawFactRecord:
             "raw_fact": self.raw_fact,
             "created_at": self.created_at.isoformat(),
         }
+
+
+@dataclass
+class SECFactFilingLinkRecord:
+    """
+    Append-only lineage record linking a raw XBRL fact to its corresponding SEC filing.
+    """
+    fact_id: UUID
+    filing_id: UUID
+    accession_number: str
+    cik: str
+    resolution_method: str = "ACCESSION_MATCH"
+    resolved_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    id: UUID = field(default_factory=uuid4)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def __post_init__(self) -> None:
+        self.cik = normalize_cik(self.cik)
+        self.accession_number = self.accession_number.strip()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -212,7 +247,8 @@ def build_archive_url(
 ) -> str:
     """
     Builds the official SEC EDGAR Archives URL for a filing or specific document.
-    Format: https://www.sec.gov/Archives/edgar/data/{numeric_cik}/{accession_no_hyphens}/{primary_document}
+    Note: Path CIK is the subject issuer's CIK unpadded; accession folder has hyphens removed.
+    Accession prefix may be a third-party submitting agent's CIK.
     """
     path_cik = format_cik_for_path(cik)
     accn_no_hyphens = accession_number.replace("-", "").strip()
