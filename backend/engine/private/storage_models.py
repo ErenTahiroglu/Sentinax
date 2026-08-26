@@ -139,18 +139,18 @@ class NormalizedObservationRecord:
     Python representation of a `normalized_observations` record.
     Enforces strict point-in-time semantics.
     """
-    snapshot_id: UUID
-    instrument_id: UUID
-    asset_class: AssetClass
-    instrument_type: InstrumentType
-    observation_type: str
-    observation_data: Dict[str, Any]
-    data_status: DataStatus
-    confidence_level: DataConfidenceLevel
-    source_tier: SourceTier
-    effective_date: date
-    observed_at: datetime
-    currency: Currency
+    snapshot_id: Optional[UUID] = None
+    instrument_id: Optional[UUID] = None
+    asset_class: Optional[AssetClass] = None
+    instrument_type: Optional[InstrumentType] = None
+    observation_type: str = ""
+    observation_data: Dict[str, Any] = field(default_factory=dict)
+    data_status: DataStatus = DataStatus.COMPLETE
+    confidence_level: DataConfidenceLevel = DataConfidenceLevel.HIGH
+    source_tier: SourceTier = SourceTier.TIER_1_REGULATORY
+    effective_date: Optional[date] = None
+    observed_at: Optional[datetime] = None
+    currency: Optional[Currency] = None
     published_at: Optional[datetime] = None
 
     ingested_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -167,20 +167,20 @@ class NormalizedObservationRecord:
     def to_record_dict(self) -> Dict[str, Any]:
         return {
             "id": str(self.id),
-            "snapshot_id": str(self.snapshot_id),
-            "instrument_id": str(self.instrument_id),
-            "asset_class": self.asset_class.value,
-            "instrument_type": self.instrument_type.value,
+            "snapshot_id": str(self.snapshot_id) if self.snapshot_id else None,
+            "instrument_id": str(self.instrument_id) if self.instrument_id else None,
+            "asset_class": self.asset_class.value if self.asset_class else None,
+            "instrument_type": self.instrument_type.value if self.instrument_type else None,
             "observation_type": self.observation_type,
 
             "observation_data": self.observation_data,
             "data_status": self.data_status.value,
             "confidence_level": self.confidence_level.value,
             "source_tier": self.source_tier.value,
-            "currency": self.currency.value,
-            "effective_date": self.effective_date.isoformat(),
+            "currency": self.currency.value if self.currency else None,
+            "effective_date": self.effective_date.isoformat() if self.effective_date else None,
             "published_at": self.published_at.isoformat() if self.published_at else None,
-            "observed_at": self.observed_at.isoformat(),
+            "observed_at": self.observed_at.isoformat() if self.observed_at else None,
             "ingested_at": self.ingested_at.isoformat(),
             "revised_at": self.revised_at.isoformat() if self.revised_at else None,
             "supersedes_record_id": str(self.supersedes_record_id) if self.supersedes_record_id else None,

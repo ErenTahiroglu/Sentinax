@@ -6,8 +6,9 @@ Explainable Data Confidence Assessment Model.
 Core Principles:
     - Data Confidence is NOT an investment recommendation score.
     - Evaluates 4 distinct dimensions: freshness, source_quality, coverage, consistency.
-    - calculation_coverage tracks the proportion of required inputs available for a specific formula.
-    - Categorical level (HIGH, MEDIUM, LOW, NONE) is derived without false precision.
+    - calculation_coverage tracks proportion of inputs strictly required for calculation (ignores irrelevant optional display fields).
+    - Lookahead protection: future-dated data relative to as-of boundary receives 0.0 freshness and NONE confidence.
+    - FreshnessBasis configurable (EFFECTIVE_DATE, PUBLISHED_AT, OBSERVED_AT, RETRIEVED_AT).
     - Every degradation includes human-readable explanatory reasons.
 """
 
@@ -21,8 +22,18 @@ from backend.engine.private.domain import (
     DataConfidenceLevel,
     DataCriticality,
     DataStatus,
+    FreshnessBasis,
     SourceTier,
 )
+
+
+@dataclass
+class DataConflict:
+    """Structured representation of discrepancy across data sources."""
+    severity: str  # 'LOW', 'MEDIUM', 'HIGH'
+    conflicting_providers: List[str]
+    field_discrepancies: Dict[str, Any]
+    reason: str
 
 
 @dataclass
@@ -35,7 +46,7 @@ class DataConfidence:
     source_quality: float       # 0.0 to 1.0: Derived from SourceTier authority
     coverage: float             # 0.0 to 1.0: Proportion of required/optional fields populated
     consistency: float          # 0.0 to 1.0: Absence of anomalies or cross-provider conflicts
-    calculation_coverage: float # 0.0 to 1.0: Proportion of inputs available for a specific formula
+    calculation_coverage: float # 0.0 to 1.0: Proportion of inputs available strictly for the calculation
     reasons: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -48,6 +59,18 @@ class DataConfidence:
             "calculation_coverage": round(self.calculation_coverage, 3),
             "reasons": list(self.reasons),
         }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> DataConfidence:
+        return cls(
+            level=DataConfidenceLevel(data["level"]),
+            freshness=data.get("freshness", 0.0),
+            source_quality=data.get("source_quality", 0.0),
+            coverage=data.get("coverage", 0.0),
+            consistency=data.get("consistency", 1.0),
+            calculation_coverage=data.get("calculation_coverage", 0.0),
+            reasons=list(data.get("reasons", [])),
+        )
 
     @classmethod
     def unavailable(cls, reasons: Optional[List[str]] = None) -> DataConfidence:
@@ -83,21 +106,26 @@ class ConfidenceAssessmentService:
         source_tier: SourceTier,
         data_status: DataStatus,
         effective_date: Optional[date],
+        published_at: Optional[datetime],
+        observed_at: Optional[datetime],
         retrieved_at: Optional[datetime],
         as_of_time: Optional[datetime],
         required_fields: List[str],
         optional_fields: List[str],
         present_fields: List[str],
+        calculation_fields: Optional[List[str]] = None,
         field_criticality: Optional[Dict[str, DataCriticality]] = None,
+        freshness_basis: FreshnessBasis = FreshnessBasis.EFFECTIVE_DATE,
         warnings: Optional[List[str]] = None,
+        conflicts: Optional[List[DataConflict]] = None,
         is_fallback: bool = False,
         is_proxy: bool = False,
         max_staleness_days: int = 3,
-        discrepancy_penalty: float = 0.0,
     ) -> DataConfidence:
         reasons: List[str] = []
         warnings = warnings or []
         crit_map = field_criticality or {}
+        is_lookahead_violation = False
 
         # 1. Source Quality Component (0.0 to 1.0)
         source_quality_score = cls.TIER_WEIGHTS.get(source_tier, 0.5)
@@ -119,56 +147,79 @@ class ConfidenceAssessmentService:
         total_fields_count = len(req_set) + len(opt_set)
         if total_fields_count == 0:
             coverage_score = 1.0
-            calc_cov = 1.0
         else:
             # Required fields weight 70%, optional fields weight 30%
             req_cov = 1.0 if not req_set else (len(req_set & pres_set) / len(req_set))
             opt_cov = 1.0 if not opt_set else (len(opt_set & pres_set) / len(opt_set))
             coverage_score = (req_cov * 0.7) + (opt_cov * 0.3)
-            calc_cov = len(pres_set & (req_set | opt_set)) / total_fields_count
+
+        # Calculation coverage specifically evaluates required calculation inputs (Directive 10)
+        calc_target_fields = set(calculation_fields) if calculation_fields is not None else req_set
+        if not calc_target_fields:
+            calc_cov = 1.0
+        else:
+            calc_cov = len(calc_target_fields & pres_set) / len(calc_target_fields)
 
         if missing_req:
             reasons.append(f"Missing required fields: {', '.join(sorted(missing_req))}.")
         if missing_opt:
             reasons.append(f"Missing optional fields: {len(missing_opt)}/{len(opt_set)} omitted.")
 
-        # 3. Freshness Component (0.0 to 1.0)
+        # 3. Freshness Component (0.0 to 1.0) & Lookahead Protection (Directive 1 & 2)
         ref_time = as_of_time or datetime.now(timezone.utc)
         freshness_score = 1.0
 
-        if effective_date:
-            ref_date = ref_time.date() if isinstance(ref_time, datetime) else ref_time
-            age_days = (ref_date - effective_date).days
-            if age_days < 0:
-                age_days = 0 # Lookahead protection handled elsewhere
+        # Determine reference timestamp based on configured FreshnessBasis
+        if freshness_basis == FreshnessBasis.PUBLISHED_AT:
+            eval_dt = published_at or observed_at or retrieved_at
+            eval_date = eval_dt.date() if eval_dt else effective_date
+        elif freshness_basis == FreshnessBasis.OBSERVED_AT:
+            eval_dt = observed_at or retrieved_at
+            eval_date = eval_dt.date() if eval_dt else effective_date
+        elif freshness_basis == FreshnessBasis.RETRIEVED_AT:
+            eval_dt = retrieved_at
+            eval_date = eval_dt.date() if eval_dt else effective_date
+        else: # EFFECTIVE_DATE
+            eval_date = effective_date
+            eval_dt = None
 
-            if age_days == 0:
+        if eval_date:
+            ref_date = ref_time.date() if isinstance(ref_time, datetime) else ref_time
+            age_days = (ref_date - eval_date).days
+
+            # Lookahead check: observation is in future relative to as_of boundary!
+            if age_days < 0:
+                is_lookahead_violation = True
+                freshness_score = 0.0
+                reasons.append(f"Observation occurs after requested as-of boundary (future data lookahead: {eval_date} > {ref_date}).")
+            elif age_days == 0:
                 freshness_score = 1.0
             elif age_days <= max_staleness_days:
                 freshness_score = max(0.5, 1.0 - (age_days * (0.5 / max_staleness_days)))
                 if age_days > 1:
-                    reasons.append(f"Data is {age_days} days old.")
+                    reasons.append(f"Data is {age_days} days old based on {freshness_basis.value}.")
             else:
                 freshness_score = max(0.1, 0.5 - ((age_days - max_staleness_days) * 0.05))
                 reasons.append(f"Data is stale ({age_days} days old, max acceptable: {max_staleness_days} days).")
         elif data_status == DataStatus.UNAVAILABLE:
             freshness_score = 0.0
-            reasons.append("No effective date present.")
+            reasons.append("No effective date/timestamp present.")
 
         # 4. Consistency Component (0.0 to 1.0)
-        consistency_score = max(0.0, 1.0 - discrepancy_penalty)
+        consistency_score = 1.0
+        if conflicts:
+            for c in conflicts:
+                pen = 0.4 if c.severity == "HIGH" else 0.2
+                consistency_score = max(0.1, consistency_score - pen)
+                reasons.append(f"Conflict ({c.severity}): {c.reason}")
+
         if warnings:
-            # Deduct for warnings
             warning_penalty = min(0.4, len(warnings) * 0.1)
             consistency_score = max(0.1, consistency_score - warning_penalty)
             for w in warnings:
                 reasons.append(f"Warning: {w}")
 
-        if discrepancy_penalty > 0:
-            reasons.append(f"Cross-source discrepancy detected (penalty: {round(discrepancy_penalty, 2)}).")
-
         # 5. Composite Score & Categorical Level Derivation
-        # Weights: Source Quality (30%), Coverage (30%), Freshness (25%), Consistency (15%)
         composite = (
             (source_quality_score * 0.30)
             + (coverage_score * 0.30)
@@ -176,18 +227,17 @@ class ConfidenceAssessmentService:
             + (consistency_score * 0.15)
         )
 
-        # Critical missing fields immediately cap confidence
         has_critical_missing = any(
             crit_map.get(f) == DataCriticality.CRITICAL for f in missing_req
         )
 
-        if data_status == DataStatus.UNAVAILABLE or has_critical_missing:
+        if data_status == DataStatus.UNAVAILABLE or has_critical_missing or is_lookahead_violation:
             level = DataConfidenceLevel.NONE
             if has_critical_missing:
                 reasons.append("Critical calculation input is missing.")
-        elif data_status == DataStatus.STALE or composite < 0.40:
+        elif data_status == DataStatus.STALE or freshness_score <= 0.3 or composite < 0.40:
             level = DataConfidenceLevel.LOW
-        elif data_status == DataStatus.PARTIAL or data_status == DataStatus.DEGRADED or composite < 0.75:
+        elif data_status == DataStatus.PARTIAL or data_status == DataStatus.DEGRADED or freshness_score < 0.6 or composite < 0.75:
             level = DataConfidenceLevel.MEDIUM
         else:
             level = DataConfidenceLevel.HIGH

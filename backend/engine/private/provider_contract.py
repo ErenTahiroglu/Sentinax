@@ -7,6 +7,7 @@ Core Principles:
     - Provider Framework is strictly decoupled from specific external data vendors.
     - FetchContext cleanly separates canonical UUID from provider-native symbol.
     - Historical requests are explicitly separated from latest/live requests.
+    - Cache keys deterministically incorporate all material parameters while stripping secrets.
     - Providers are ONLY responsible for their own fetch/normalize/validate/provenance.
     - Provider NEVER selects fallback or knows about sibling providers.
     - Async execution model natively integrates with FastAPI and httpx.
@@ -14,6 +15,8 @@ Core Principles:
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
@@ -54,6 +57,32 @@ class FetchContext:
         """True if this request targets a specific point in time in the past."""
         return self.as_of_time is not None
 
+    def generate_cache_key(self) -> str:
+        """
+        Generates a collision-resistant deterministic cache key.
+        Strips sensitive credential keys (e.g. api_key, token, password, secret).
+        """
+        # Filter sensitive fields from request_parameters
+        sanitized_params = {}
+        sensitive_substrings = {"key", "token", "secret", "password", "auth", "credential"}
+        for k, v in sorted(self.request_parameters.items()):
+            if not any(sub in k.lower() for sub in sensitive_substrings):
+                sanitized_params[k] = v
+
+        params_json = json.dumps(sanitized_params, sort_keys=True, default=str)
+        params_hash = hashlib.sha256(params_json.encode("utf-8")).hexdigest()[:16]
+
+        inst_part = str(self.canonical_instrument_id) if self.canonical_instrument_id else "none"
+        sym_part = self.provider_symbol or "none"
+        eff_part = self.effective_date.isoformat() if self.effective_date else "latest"
+        
+        if self.is_historical and self.as_of_time:
+            pit_part = f"asof_{self.as_of_mode.value}_{self.as_of_time.isoformat()}"
+        else:
+            pit_part = "live"
+
+        return f"pit:{self.observation_type}:{inst_part}:{sym_part}:{eff_part}:{pit_part}:{params_hash}"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. Provider Attempt Diagnostics
@@ -63,14 +92,38 @@ class FetchContext:
 class ProviderAttempt:
     """
     Diagnostic record of an individual provider fetch attempt.
-    Preserves audit trail of why a provider failed before fallback was triggered.
+    Preserves audit trail of why a provider failed and retry count before fallback was triggered.
     """
     provider_name: str
+    attempt_number: int = 1
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     success: bool = False
-    failure_type: Optional[str] = None  # e.g. 'TIMEOUT', 'HTTP_ERROR', 'SCHEMA_MISMATCH', 'CIRCUIT_OPEN', 'UNAVAILABLE'
+    failure_type: Optional[str] = None  # e.g. 'TIMEOUT', 'RATE_LIMIT', 'AUTH_ERROR', 'SCHEMA_MISMATCH', 'LOOKAHEAD_REJECTED'
     message: Optional[str] = None
     latency_ms: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "provider_name": self.provider_name,
+            "attempt_number": self.attempt_number,
+            "timestamp": self.timestamp.isoformat(),
+            "success": self.success,
+            "failure_type": self.failure_type,
+            "message": self.message,
+            "latency_ms": round(self.latency_ms, 2),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> ProviderAttempt:
+        return cls(
+            provider_name=data["provider_name"],
+            attempt_number=data.get("attempt_number", 1),
+            timestamp=datetime.fromisoformat(data["timestamp"]) if isinstance(data["timestamp"], str) else data["timestamp"],
+            success=data["success"],
+            failure_type=data.get("failure_type"),
+            message=data.get("message"),
+            latency_ms=data.get("latency_ms", 0.0),
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -83,8 +136,9 @@ class ProviderResponse:
     Canonical output of any data provider's fetch() call.
 
     All fields are point-in-time safe:
-        retrieved_at   — when the fetch call occurred (wall-clock UTC)
-        published_at   — when the source published the data (if known)
+        retrieved_at   — when the network fetch completed (wall-clock UTC)
+        observed_at    — when Sentinax captured the observation fact
+        published_at   — when the source officially published the data (if known)
         effective_date — the calendar date the economic truth applies to
     """
     provider_name: str
@@ -94,9 +148,14 @@ class ProviderResponse:
     effective_date: Optional[date]
     status: DataStatus
     raw: Any
+    observed_at: Optional[datetime] = None
     warnings: List[str] = field(default_factory=list)
     canonical_instrument_id: Optional[UUID] = None
     provider_symbol: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.observed_at is None:
+            self.observed_at = self.retrieved_at
 
     @property
     def is_usable(self) -> bool:
@@ -127,6 +186,36 @@ class ProviderProvenance:
     canonical_instrument_id: Optional[UUID] = None
     provider_symbol: Optional[str] = None
     effective_date: Optional[date] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "provider_name": self.provider_name,
+            "provider_version": self.provider_version,
+            "endpoint": self.endpoint,
+            "retrieved_at": self.retrieved_at.isoformat(),
+            "source_quality": self.source_quality.value,
+            "canonical_instrument_id": str(self.canonical_instrument_id) if self.canonical_instrument_id else None,
+            "provider_symbol": self.provider_symbol,
+            "effective_date": self.effective_date.isoformat() if self.effective_date else None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> ProviderProvenance:
+        return cls(
+            provider_name=data["provider_name"],
+            provider_version=data["provider_version"],
+            endpoint=data["endpoint"],
+            retrieved_at=datetime.fromisoformat(data["retrieved_at"]) if isinstance(data["retrieved_at"], str) else data["retrieved_at"],
+            source_quality=SourceTier(data["source_quality"]),
+            canonical_instrument_id=UUID(data["canonical_instrument_id"]) if data.get("canonical_instrument_id") else None,
+            provider_symbol=data.get("provider_symbol"),
+            effective_date=date.fromisoformat(data["effective_date"]) if data.get("effective_date") else None,
+        )
+
+    def to_source_ref(self) -> str:
+        eff = self.effective_date.isoformat() if self.effective_date else "unknown-date"
+        identifier = self.provider_symbol or (str(self.canonical_instrument_id) if self.canonical_instrument_id else "unspecified")
+        return f"{self.provider_name}:{identifier}@{eff}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

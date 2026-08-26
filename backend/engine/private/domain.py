@@ -159,6 +159,21 @@ class DataCriticality(Enum):
     CRITICAL = "critical"
 
 
+class FreshnessBasis(Enum):
+    """
+    Specifies which timestamp basis to evaluate for data freshness and staleness.
+
+    EFFECTIVE_DATE: Use the economic effective calendar date (e.g. daily EOD close, fund NAV).
+    PUBLISHED_AT:   Use the official release/filing timestamp (e.g. quarterly financial statement, macro CPI).
+    OBSERVED_AT:    Use the timestamp when Sentinax first observed/scraped the fact.
+    RETRIEVED_AT:   Use the network fetch timestamp.
+    """
+    EFFECTIVE_DATE = "effective_date"
+    PUBLISHED_AT = "published_at"
+    OBSERVED_AT = "observed_at"
+    RETRIEVED_AT = "retrieved_at"
+
+
 class AsOfMode(Enum):
 
     """

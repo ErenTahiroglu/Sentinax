@@ -7,10 +7,12 @@ Core Principles:
     - Sits strictly above individual data providers.
     - Resolves data requests by evaluating declarative SourcePolicy chains.
     - Enforces full graceful degradation across all failure modes.
-    - Tracks complete diagnostic attempt history (no silent failures).
+    - Tracks complete diagnostic attempt history including retry counts (no silent failures).
     - Ensures Missing Data ≠ Zero.
-    - Prevents stale data from masquerading as COMPLETE.
-    - Reuses infrastructure caching (Redis / in-memory fallback).
+    - Prevents stale data from masquerading as COMPLETE (stale is opt-in).
+    - Enforces lookahead protection on historical requests (future data rejected).
+    - Reuses infrastructure caching (Redis / in-memory fallback) with full provenance preservation.
+    - Never fabricates random UUIDs for missing raw snapshot foreign keys.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from backend.engine.private.confidence import (
     ConfidenceAssessmentService,
@@ -35,6 +37,17 @@ from backend.engine.private.domain import (
     InstrumentType,
     ProviderAccessStatus,
     SourceTier,
+)
+from backend.engine.private.exceptions import (
+    NonRetryableProviderError,
+    ProviderAuthenticationError,
+    ProviderInvalidSymbolError,
+    ProviderLookaheadError,
+    ProviderPermissionError,
+    ProviderRateLimitError,
+    ProviderSchemaError,
+    ProviderTimeoutError,
+    TransientProviderError,
 )
 from backend.engine.private.policy import RetryPolicy, SourcePolicy
 from backend.engine.private.provider_contract import (
@@ -83,6 +96,55 @@ class OrchestrationResult:
     def is_available(self) -> bool:
         return self.status != DataStatus.UNAVAILABLE
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes full result preserving lineage and diagnostic history."""
+        return {
+            "observation_type": self.observation_type,
+            "status": self.status.value,
+            "confidence": self.confidence.to_dict(),
+            "data": self.data,
+            "selected_provider": self.selected_provider,
+            "fallback_used": self.fallback_used,
+            "is_stale_fallback": self.is_stale_fallback,
+            "is_proxy": self.is_proxy,
+            "effective_date": self.effective_date.isoformat() if self.effective_date else None,
+            "published_at": self.published_at.isoformat() if self.published_at else None,
+            "observed_at": self.observed_at.isoformat() if self.observed_at else None,
+            "retrieved_at": self.retrieved_at.isoformat() if self.retrieved_at else None,
+            "canonical_instrument_id": str(self.canonical_instrument_id) if self.canonical_instrument_id else None,
+            "provider_symbol": self.provider_symbol,
+            "attempts": [a.to_dict() for a in self.attempts],
+            "warnings": list(self.warnings),
+            "missing_inputs": list(self.missing_inputs),
+            "provenance": self.provenance.to_dict() if self.provenance else None,
+            "raw_payload": self.raw_payload,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> OrchestrationResult:
+        """Reconstitutes result from cache."""
+        return cls(
+            observation_type=data["observation_type"],
+            status=DataStatus(data["status"]),
+            confidence=DataConfidence.from_dict(data["confidence"]),
+            data=data.get("data", {}),
+            selected_provider=data.get("selected_provider"),
+            fallback_used=data.get("fallback_used", False),
+            is_stale_fallback=data.get("is_stale_fallback", False),
+            is_proxy=data.get("is_proxy", False),
+            effective_date=date.fromisoformat(data["effective_date"]) if data.get("effective_date") else None,
+            published_at=datetime.fromisoformat(data["published_at"]) if data.get("published_at") else None,
+            observed_at=datetime.fromisoformat(data["observed_at"]) if data.get("observed_at") else None,
+            retrieved_at=datetime.fromisoformat(data["retrieved_at"]) if data.get("retrieved_at") else None,
+            canonical_instrument_id=UUID(data["canonical_instrument_id"]) if data.get("canonical_instrument_id") else None,
+            provider_symbol=data.get("provider_symbol"),
+            attempts=[ProviderAttempt.from_dict(a) for a in data.get("attempts", [])],
+            warnings=list(data.get("warnings", [])),
+            missing_inputs=list(data.get("missing_inputs", [])),
+            provenance=ProviderProvenance.from_dict(data["provenance"]) if data.get("provenance") else None,
+            raw_payload=data.get("raw_payload"),
+        )
+
     def to_normalized_observation(
         self,
         asset_class: AssetClass,
@@ -91,14 +153,14 @@ class OrchestrationResult:
         snapshot_id: Optional[UUID] = None,
     ) -> Optional[NormalizedObservationRecord]:
         """
-        Maps the orchestration result to a canonical storage record.
-        Returns None if data is UNAVAILABLE or missing required identity/effective_date.
+        Maps orchestration result to canonical storage record.
+        Strict rule: If snapshot_id is not provided, leaves snapshot_id as None (NO random UUID fabrication).
         """
         if not self.is_available or self.canonical_instrument_id is None or self.effective_date is None:
             return None
 
         return NormalizedObservationRecord(
-            snapshot_id=snapshot_id or uuid4(),
+            snapshot_id=snapshot_id,  # Hardened: None if not persisted yet
             instrument_id=self.canonical_instrument_id,
             asset_class=asset_class,
             instrument_type=instrument_type,
@@ -110,10 +172,10 @@ class OrchestrationResult:
             currency=currency,
             effective_date=self.effective_date,
             published_at=self.published_at,
-            observed_at=self.observed_at or datetime.now(timezone.utc),
+            observed_at=self.observed_at or self.retrieved_at or datetime.now(timezone.utc),
             missing_inputs=self.missing_inputs,
             warnings=self.warnings,
-            source_refs=[self.provenance.to_source_ref()] if hasattr(self.provenance, "to_source_ref") else [],
+            source_refs=[self.provenance.to_source_ref()] if self.provenance else [],
         )
 
     def to_raw_snapshot(
@@ -163,16 +225,25 @@ class ProviderOrchestrator:
         attempts: List[ProviderAttempt] = []
         warnings: List[str] = []
 
-        cache_key = f"pit:{context.observation_type}:{context.canonical_instrument_id or context.provider_symbol}"
-        if context.is_historical:
-            cache_key += f":asof_{context.as_of_time.isoformat() if context.as_of_time else ''}"
+        cache_key = context.generate_cache_key()
 
-        # 1. Check live memory cache (if not forced refresh and not historical)
+        # 1. Fresh Cache Check (Bypassed if force_refresh=True or is_historical=True)
         if not context.force_refresh and not context.is_historical:
             cached_data = cache_get(cache_key)
             if cached_data and isinstance(cached_data, dict):
-                # Valid fresh cached result
-                pass
+                try:
+                    reconstituted = OrchestrationResult.from_dict(cached_data)
+                    # Check that cached observation is still fresh under policy
+                    if policy.staleness_policy.is_acceptable(
+                        effective_date=reconstituted.effective_date,
+                        published_at=reconstituted.published_at,
+                        observed_at=reconstituted.observed_at,
+                        retrieved_at=reconstituted.retrieved_at,
+                        as_of_time=context.as_of_time,
+                    ):
+                        return reconstituted
+                except Exception as e:
+                    logger.warning(f"Failed to deserialize cached orchestration result: {e}")
 
         # 2. Iterate through ordered provider fallback chain
         for idx, provider_name in enumerate(policy.ordered_provider_names):
@@ -184,6 +255,7 @@ class ProviderOrchestrator:
                 attempts.append(
                     ProviderAttempt(
                         provider_name=provider_name,
+                        attempt_number=1,
                         success=False,
                         failure_type="UNREGISTERED",
                         message=f"Provider '{provider_name}' is not registered in orchestrator.",
@@ -197,6 +269,7 @@ class ProviderOrchestrator:
                 attempts.append(
                     ProviderAttempt(
                         provider_name=provider_name,
+                        attempt_number=1,
                         success=False,
                         failure_type="PROXY_DISALLOWED",
                         message="Proxy provider disallowed by policy for this observation.",
@@ -209,6 +282,7 @@ class ProviderOrchestrator:
                 attempts.append(
                     ProviderAttempt(
                         provider_name=provider_name,
+                        attempt_number=1,
                         success=False,
                         failure_type="TIER_BELOW_MINIMUM",
                         message=f"Source tier {provider.source_quality.value} is below required {policy.minimum_source_tier.value}.",
@@ -221,6 +295,7 @@ class ProviderOrchestrator:
                 attempts.append(
                     ProviderAttempt(
                         provider_name=provider_name,
+                        attempt_number=1,
                         success=False,
                         failure_type="PROVIDER_RED",
                         message=f"Provider '{provider_name}' operational status is RED (down/blocked).",
@@ -236,6 +311,34 @@ class ProviderOrchestrator:
             if response is None or not response.is_usable:
                 continue
 
+            # Guard: Lookahead Check for Historical Requests (Directive 1)
+            if context.is_historical and context.as_of_time:
+                as_of_d = context.as_of_time.date()
+                if response.effective_date and response.effective_date > as_of_d:
+                    attempts.append(
+                        ProviderAttempt(
+                            provider_name=provider_name,
+                            attempt_number=1,
+                            success=False,
+                            failure_type="LOOKAHEAD_REJECTED",
+                            message=f"Effective date {response.effective_date} is after requested as_of date {as_of_d}.",
+                            latency_ms=t_elapsed_ms,
+                        )
+                    )
+                    continue
+                if response.published_at and response.published_at > context.as_of_time:
+                    attempts.append(
+                        ProviderAttempt(
+                            provider_name=provider_name,
+                            attempt_number=1,
+                            success=False,
+                            failure_type="LOOKAHEAD_REJECTED",
+                            message=f"Published timestamp {response.published_at} is after requested as_of {context.as_of_time}.",
+                            latency_ms=t_elapsed_ms,
+                        )
+                    )
+                    continue
+
             # 4. Normalize & Validate
             try:
                 normalized = provider.normalize(response.raw)
@@ -245,6 +348,7 @@ class ProviderOrchestrator:
                 attempts.append(
                     ProviderAttempt(
                         provider_name=provider_name,
+                        attempt_number=1,
                         success=False,
                         failure_type="SCHEMA_MISMATCH",
                         message=f"Normalization failed: {str(e)}",
@@ -264,11 +368,11 @@ class ProviderOrchestrator:
                 policy.field_criticality.get(f) == DataCriticality.CRITICAL for f in missing_req
             )
 
-            # If critical field is missing on non-final provider, we may attempt next fallback
             if has_critical_missing and idx < len(policy.ordered_provider_names) - 1:
                 attempts.append(
                     ProviderAttempt(
                         provider_name=provider_name,
+                        attempt_number=1,
                         success=False,
                         failure_type="CRITICAL_FIELD_MISSING",
                         message=f"Critical fields missing: {missing_req}. Attempting fallback.",
@@ -291,17 +395,21 @@ class ProviderOrchestrator:
 
             all_warnings = warnings + response.warnings + val_warnings
 
-            # 6. Assess Explainable Confidence
+            # 6. Assess Explainable Confidence (with FreshnessBasis & calculation_fields)
             confidence = ConfidenceAssessmentService.assess(
                 source_tier=provider.source_quality,
                 data_status=status,
                 effective_date=response.effective_date,
+                published_at=response.published_at,
+                observed_at=response.observed_at,
                 retrieved_at=response.retrieved_at,
                 as_of_time=context.as_of_time,
                 required_fields=policy.required_fields,
                 optional_fields=policy.optional_fields,
                 present_fields=present_fields,
+                calculation_fields=policy.calculation_fields,
                 field_criticality=policy.field_criticality,
+                freshness_basis=policy.freshness_basis,
                 warnings=all_warnings,
                 is_fallback=is_fallback,
                 is_proxy=is_proxy,
@@ -312,6 +420,7 @@ class ProviderOrchestrator:
             attempts.append(
                 ProviderAttempt(
                     provider_name=provider_name,
+                    attempt_number=1,
                     success=True,
                     latency_ms=t_elapsed_ms,
                 )
@@ -330,7 +439,7 @@ class ProviderOrchestrator:
                 is_proxy=is_proxy,
                 effective_date=response.effective_date,
                 published_at=response.published_at,
-                observed_at=now_utc,
+                observed_at=response.observed_at or now_utc,
                 retrieved_at=response.retrieved_at,
                 canonical_instrument_id=context.canonical_instrument_id,
                 provider_symbol=context.provider_symbol,
@@ -341,30 +450,39 @@ class ProviderOrchestrator:
                 raw_payload=response.raw,
             )
 
-            # Save in stale cache store for future fallback
+            # Save in stale cache store & live Redis cache
             if status != DataStatus.UNAVAILABLE:
                 self._stale_cache_store[cache_key] = result
                 if not context.is_historical:
-                    cache_set(cache_key, normalized, ttl=policy.max_staleness_seconds)
+                    cache_set(cache_key, result.to_dict(), ttl=policy.max_staleness_seconds)
 
             return result
 
-        # 7. All providers in chain failed — Check acceptable stale cache
+        # 7. All providers in chain failed — Check acceptable stale cache (Only if allow_stale=True)
         if policy.allow_stale and cache_key in self._stale_cache_store:
             cached_res = self._stale_cache_store[cache_key]
-            if policy.staleness_policy.is_acceptable(cached_res.effective_date, context.as_of_time):
-                # Assess confidence with stale penalty
+            if policy.staleness_policy.is_acceptable(
+                effective_date=cached_res.effective_date,
+                published_at=cached_res.published_at,
+                observed_at=cached_res.observed_at,
+                retrieved_at=cached_res.retrieved_at,
+                as_of_time=context.as_of_time,
+            ):
                 stale_warnings = list(cached_res.warnings) + ["All live providers failed; using acceptable stale cached data."]
                 stale_conf = ConfidenceAssessmentService.assess(
                     source_tier=cached_res.provenance.source_quality if cached_res.provenance else SourceTier.TIER_5_PROXY,
                     data_status=DataStatus.STALE,
                     effective_date=cached_res.effective_date,
+                    published_at=cached_res.published_at,
+                    observed_at=cached_res.observed_at,
                     retrieved_at=cached_res.retrieved_at,
                     as_of_time=context.as_of_time,
                     required_fields=policy.required_fields,
                     optional_fields=policy.optional_fields,
                     present_fields=list(cached_res.data.keys()),
+                    calculation_fields=policy.calculation_fields,
                     field_criticality=policy.field_criticality,
+                    freshness_basis=policy.freshness_basis,
                     warnings=stale_warnings,
                     is_fallback=True,
                     max_staleness_days=policy.max_staleness_seconds // 86400,
@@ -395,7 +513,7 @@ class ProviderOrchestrator:
         reasons = [f"All {len(policy.ordered_provider_names)} providers failed."]
         for a in attempts:
             if not a.success:
-                reasons.append(f"{a.provider_name}: {a.failure_type} ({a.message or 'No details'})")
+                reasons.append(f"{a.provider_name} (Attempt {a.attempt_number}): {a.failure_type} ({a.message or 'No details'})")
 
         return OrchestrationResult(
             observation_type=context.observation_type,
@@ -418,7 +536,10 @@ class ProviderOrchestrator:
         retry_policy: RetryPolicy,
         attempts: List[ProviderAttempt],
     ) -> Optional[ProviderResponse]:
-        """Executes fetch with bounded retries on transient errors."""
+        """
+        Executes fetch with bounded retries on transient errors.
+        Records every attempt in diagnostic attempts list.
+        """
         max_attempts = retry_policy.max_attempts
 
         for attempt_no in range(1, max_attempts + 1):
@@ -430,6 +551,7 @@ class ProviderOrchestrator:
                     attempts.append(
                         ProviderAttempt(
                             provider_name=provider.provider_name,
+                            attempt_number=attempt_no,
                             success=False,
                             failure_type="UNAVAILABLE",
                             message=f"Provider returned UNAVAILABLE: {', '.join(response.warnings)}",
@@ -438,51 +560,70 @@ class ProviderOrchestrator:
                     )
                     return None
                 return response
-            except asyncio.TimeoutError:
-                is_last = attempt_no == max_attempts
+            except (asyncio.TimeoutError, ProviderTimeoutError) as e:
                 latency = (time.perf_counter() - t_start) * 1000.0
-                if is_last:
-                    attempts.append(
-                        ProviderAttempt(
-                            provider_name=provider.provider_name,
-                            success=False,
-                            failure_type="TIMEOUT",
-                            message=f"Request timed out after {max_attempts} attempts.",
-                            latency_ms=latency,
-                        )
+                attempts.append(
+                    ProviderAttempt(
+                        provider_name=provider.provider_name,
+                        attempt_number=attempt_no,
+                        success=False,
+                        failure_type="TIMEOUT",
+                        message=f"Attempt {attempt_no} timed out: {str(e)}",
+                        latency_ms=latency,
                     )
+                )
+                if attempt_no < max_attempts:
+                    await asyncio.sleep(retry_policy.backoff_factor * attempt_no)
+                else:
                     return None
-                await asyncio.sleep(retry_policy.backoff_factor * attempt_no)
+            except ProviderRateLimitError as e:
+                latency = (time.perf_counter() - t_start) * 1000.0
+                attempts.append(
+                    ProviderAttempt(
+                        provider_name=provider.provider_name,
+                        attempt_number=attempt_no,
+                        success=False,
+                        failure_type="RATE_LIMIT",
+                        message=str(e),
+                        latency_ms=latency,
+                    )
+                )
+                if attempt_no < max_attempts:
+                    wait_time = e.retry_after_seconds or (retry_policy.backoff_factor * attempt_no)
+                    await asyncio.sleep(wait_time)
+                else:
+                    return None
+            except (ProviderAuthenticationError, ProviderPermissionError, ProviderInvalidSymbolError, ProviderSchemaError, NonRetryableProviderError) as e:
+                # Fast-fail non-retryable errors
+                latency = (time.perf_counter() - t_start) * 1000.0
+                failure_type = e.__class__.__name__.replace("Provider", "").replace("Error", "").upper()
+                attempts.append(
+                    ProviderAttempt(
+                        provider_name=provider.provider_name,
+                        attempt_number=attempt_no,
+                        success=False,
+                        failure_type=failure_type or "NON_RETRYABLE",
+                        message=f"Non-retryable error: {str(e)}",
+                        latency_ms=latency,
+                    )
+                )
+                return None
             except Exception as e:
-                err_str = str(e)
                 latency = (time.perf_counter() - t_start) * 1000.0
-                
-                # Check if error is non-retryable auth / permission
-                if "401" in err_str or "403" in err_str or "auth" in err_str.lower():
-                    attempts.append(
-                        ProviderAttempt(
-                            provider_name=provider.provider_name,
-                            success=False,
-                            failure_type="AUTH_ERROR",
-                            message=f"Non-retryable credentials error: {err_str}",
-                            latency_ms=latency,
-                        )
+                attempts.append(
+                    ProviderAttempt(
+                        provider_name=provider.provider_name,
+                        attempt_number=attempt_no,
+                        success=False,
+                        failure_type="FETCH_ERROR",
+                        message=str(e),
+                        latency_ms=latency,
                     )
+                )
+                if attempt_no < max_attempts:
+                    await asyncio.sleep(retry_policy.backoff_factor * attempt_no)
+                else:
                     return None
-
-                is_last = attempt_no == max_attempts
-                if is_last:
-                    attempts.append(
-                        ProviderAttempt(
-                            provider_name=provider.provider_name,
-                            success=False,
-                            failure_type="FETCH_ERROR",
-                            message=err_str,
-                            latency_ms=latency,
-                        )
-                    )
-                    return None
-                await asyncio.sleep(retry_policy.backoff_factor * attempt_no)
         return None
 
     @staticmethod
