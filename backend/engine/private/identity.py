@@ -344,3 +344,33 @@ class InstrumentResolverService:
             if s.split_factor and s.split_factor > 0:
                 factor *= s.split_factor
         return factor
+
+    def resolve_instruments_by_cik(self, cik: str) -> List[InstrumentRecord]:
+        """
+        Resolves all canonical investable security instruments associated with an SEC issuer CIK.
+        Returns 0..N InstrumentRecord instances (e.g. multiple share classes or ADRs).
+        """
+        if not cik or not isinstance(cik, str):
+            return []
+        norm_cik = cik.strip().zfill(10)
+        return [
+            inst for inst in self._instruments.values()
+            if inst.cik and inst.cik.strip().zfill(10) == norm_cik
+        ]
+
+
+def resolve_instruments_for_sec_cik(
+    cik: str,
+    instruments: List[InstrumentRecord],
+) -> List[InstrumentRecord]:
+    """
+    Read-side resolution helper mapping an SEC issuer CIK to 0..N investable InstrumentRecord instances.
+    """
+    if not cik or not isinstance(cik, str):
+        return []
+    norm_cik = cik.strip().zfill(10)
+    return [
+        inst for inst in instruments
+        if inst.cik and inst.cik.strip().zfill(10) == norm_cik
+    ]
+

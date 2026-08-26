@@ -3,10 +3,11 @@ backend/engine/private/sec/models.py
 ======================================
 Canonical Domain Models, Enums, and URL Builders for SEC EDGAR Filing & XBRL Data Backbone.
 
-Core Hardening Principles:
+Core Invariants:
+    - SEC filings and raw facts belong strictly to the issuer entity level (CIK).
+    - `acceptance_datetime` MUST be timezone-aware (TIMESTAMPTZ).
+    - `acceptance_local_datetime` MUST be naive local datetime (TIMESTAMP WITHOUT TIME ZONE).
     - `accession_number` is preserved in official hyphenated format without requiring issuer CIK prefix match.
-    - `acceptance_datetime` is strictly the SEC acceptance event timestamp; NOT guaranteed public availability.
-    - `public_available_at` remains None unless explicitly observed/proven.
     - Numerical facts use `Decimal` for exact representation; zero is preserved as Decimal("0"); missing is None.
     - `PeriodType` enforces DURATION (start + end) vs INSTANT (end only); missing dates are rejected.
     - `SECFactFilingLinkRecord` provides append-only asynchronous fact-filing linkage.
@@ -66,6 +67,7 @@ class SECSubmissionMetadata:
 class SECFilingRecord:
     """
     Canonical immutable filing record ingested from official SEC EDGAR submissions.
+    Entity-level record scoped to issuer CIK.
     """
     cik: str
     accession_number: str
@@ -73,7 +75,8 @@ class SECFilingRecord:
     is_amendment: bool
     filing_date: Optional[date] = None
     report_date: Optional[date] = None
-    acceptance_datetime: Optional[datetime] = None
+    acceptance_datetime: Optional[datetime] = None          # Timezone-aware UTC/offset timestamp only
+    acceptance_local_datetime: Optional[datetime] = None    # Naive local EDGAR timestamp without timezone
     acceptance_raw: Optional[str] = None
     acceptance_precision: Optional[str] = None
     acceptance_timezone_semantics: Optional[str] = None
@@ -89,7 +92,7 @@ class SECFilingRecord:
     primary_document: Optional[str] = None
     primary_doc_description: Optional[str] = None
     source_url: Optional[str] = None
-    instrument_id: Optional[UUID] = None
+    instrument_id: Optional[UUID] = None  # Deprecated: SEC filings are entity-level (CIK)
     snapshot_id: Optional[UUID] = None
     retrieved_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     raw_metadata: Dict[str, Any] = field(default_factory=dict)
@@ -100,6 +103,21 @@ class SECFilingRecord:
         self.cik = normalize_cik(self.cik)
         if not self.source_url:
             self.source_url = build_archive_url(self.cik, self.accession_number, self.primary_document)
+
+        # Enforce timezone-aware vs naive local invariants
+        if self.acceptance_datetime is not None:
+            if self.acceptance_datetime.tzinfo is None or self.acceptance_datetime.tzinfo.utcoffset(self.acceptance_datetime) is None:
+                raise ValueError(
+                    f"acceptance_datetime must be timezone-aware. Got naive datetime: {self.acceptance_datetime}. "
+                    f"Use acceptance_local_datetime for timezone-less local timestamps."
+                )
+
+        if self.acceptance_local_datetime is not None:
+            if self.acceptance_local_datetime.tzinfo is not None:
+                raise ValueError(
+                    f"acceptance_local_datetime must be a naive local datetime without timezone. "
+                    f"Got aware datetime: {self.acceptance_local_datetime}."
+                )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -112,6 +130,7 @@ class SECFilingRecord:
             "filing_date": self.filing_date.isoformat() if self.filing_date else None,
             "report_date": self.report_date.isoformat() if self.report_date else None,
             "acceptance_datetime": self.acceptance_datetime.isoformat() if self.acceptance_datetime else None,
+            "acceptance_local_datetime": self.acceptance_local_datetime.isoformat() if self.acceptance_local_datetime else None,
             "acceptance_raw": self.acceptance_raw,
             "acceptance_precision": self.acceptance_precision,
             "acceptance_timezone_semantics": self.acceptance_timezone_semantics,
@@ -138,7 +157,7 @@ class SECFilingRecord:
 class SECRawFactRecord:
     """
     Canonical immutable raw fact entry ingested from SEC CompanyFacts API (/api/xbrl/companyfacts/CIK##########.json).
-    Preserves original standard taxonomy tags without premature metric interpretation.
+    Entity-level record scoped to issuer CIK.
     """
     cik: str
     taxonomy: str
@@ -156,8 +175,8 @@ class SECRawFactRecord:
     form: Optional[str] = None
     filed_date: Optional[date] = None
     frame: Optional[str] = None
-    instrument_id: Optional[UUID] = None
-    filing_id: Optional[UUID] = None
+    instrument_id: Optional[UUID] = None  # Deprecated: SEC facts are entity-level (CIK)
+    filing_id: Optional[UUID] = None      # Deprecated in-memory property; sec_fact_filing_links is canonical DB lineage
     snapshot_id: Optional[UUID] = None
     retrieved_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     raw_fact: Dict[str, Any] = field(default_factory=dict)

@@ -9,6 +9,7 @@ Core Invariants:
     - delivery_provider: SEC EDGAR
     - SourceTier: TIER_1_REGULATORY
     - AccessStatus: GREEN
+    - SEC data is stored strictly at the entity level (CIK); canonical_instrument_id is retained in ProviderResponse.
     - Explicit resource routing (SECResource.SUBMISSIONS vs SECResource.COMPANY_FACTS).
     - Historical SYSTEM_AS_OF & SOURCE_AS_OF external reconstruction rejected (fail closed).
 """
@@ -55,7 +56,7 @@ class SECSubmissionsDataProvider(DataProviderContract):
     Adapter for SEC EDGAR Submissions endpoint.
     """
     provider_name: str = "SEC_SUBMISSIONS"
-    provider_version: str = "1.1.0"
+    provider_version: str = "1.2.0"
     source_quality: SourceTier = SourceTier.TIER_1_REGULATORY
     access_status: ProviderAccessStatus = ProviderAccessStatus.GREEN
     base_url: str = "https://data.sec.gov"
@@ -114,7 +115,6 @@ class SECSubmissionsDataProvider(DataProviderContract):
         try:
             res = await self.submissions_service.fetch_submissions(
                 cik=canonical_cik,
-                instrument_id=context.canonical_instrument_id,
             )
         except ProviderConfigurationError as e:
             return ProviderResponse(
@@ -191,7 +191,7 @@ class SECCompanyFactsDataProvider(DataProviderContract):
     Adapter for SEC EDGAR CompanyFacts endpoint.
     """
     provider_name: str = "SEC_COMPANY_FACTS"
-    provider_version: str = "1.1.0"
+    provider_version: str = "1.2.0"
     source_quality: SourceTier = SourceTier.TIER_1_REGULATORY
     access_status: ProviderAccessStatus = ProviderAccessStatus.GREEN
     base_url: str = "https://data.sec.gov"
@@ -250,7 +250,6 @@ class SECCompanyFactsDataProvider(DataProviderContract):
         try:
             facts, snapshot = await self.facts_service.fetch_company_facts(
                 cik=canonical_cik,
-                instrument_id=context.canonical_instrument_id,
             )
         except ProviderConfigurationError as e:
             return ProviderResponse(
@@ -325,7 +324,7 @@ class SECEdgarProvider(DataProviderContract):
     Unified router DataProviderContract adapter dispatching to Submissions or CompanyFacts.
     """
     provider_name: str = "SEC_EDGAR"
-    provider_version: str = "1.1.0"
+    provider_version: str = "1.2.0"
     source_quality: SourceTier = SourceTier.TIER_1_REGULATORY
     access_status: ProviderAccessStatus = ProviderAccessStatus.GREEN
     base_url: str = "https://data.sec.gov"
@@ -339,7 +338,7 @@ class SECEdgarProvider(DataProviderContract):
         resource = context.observation_type
         if resource in ("SEC_COMPANY_FACTS", "COMPANY_FACTS"):
             return await self.company_facts_adapter.fetch(context)
-        elif resource in ("SEC_SUBMISSIONS", "SUBMISSIONS", "FUNDAMENTAL_SEC"):
+        elif resource in ("SEC_SUBMISSIONS", "SUBMISSIONS"):
             return await self.submissions_adapter.fetch(context)
         else:
             return ProviderResponse(
@@ -350,7 +349,7 @@ class SECEdgarProvider(DataProviderContract):
                 effective_date=None,
                 status=DataStatus.UNAVAILABLE,
                 raw=None,
-                warnings=[f"Unknown SEC EDGAR resource observation_type: '{resource}'."],
+                warnings=[f"Unknown SEC EDGAR resource observation_type: '{resource}'. Specify SEC_SUBMISSIONS or SEC_COMPANY_FACTS."],
                 canonical_instrument_id=context.canonical_instrument_id,
                 provider_symbol=context.provider_symbol,
             )

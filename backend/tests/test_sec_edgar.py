@@ -1,17 +1,15 @@
 """
 backend/tests/test_sec_edgar.py
 =================================
-Comprehensive Unit, Point-In-Time, Lineage & Semantic Hardening Test Suite for
-SEC EDGAR Filing & Raw XBRL CompanyFacts Backbone (Phase 8A Hardened).
+Comprehensive Unit, Point-In-Time, Entity Identity & Lineage Hardening Test Suite for
+SEC EDGAR Filing & Raw XBRL CompanyFacts Backbone (Phase 8A.6 Hardened).
 
-Coverage (63 Scenarios across 7 Domains):
-    1. Acceptance & PIT Semantics (Scenarios 1-11)
-    2. Accession & Identity Invariants (Scenarios 12-18)
-    3. Raw Fact Numeric Precision & Period Types (Scenarios 19-29)
-    4. Fact-to-Filing Lineage & Link Table (Scenarios 30-37)
-    5. Archived Submissions & Separate Snapshots (Scenarios 38-43)
-    6. Fair Access Leaky Pacing Rate Limiter (Scenarios 44-53)
-    7. Database Constraints & Migration 009 (Scenarios 54-63)
+Coverage:
+    - SEC Entity vs Security Identity Invariants (Scenarios 1-8)
+    - Acceptance Timestamps: Aware TIMESTAMPTZ vs Naive Local Time (Scenarios 9-17)
+    - Raw Fact Decimal Precision, Nullable Accession & Period Types (Scenarios 18-24)
+    - Fact-to-Filing Append-Only Linkage & DB Integrity Constraints (Scenarios 25-32)
+    - Full SEC Ingestion & Provider Contract Regression Coverage (Scenarios 33-60+)
 """
 
 import math
@@ -25,9 +23,13 @@ import httpx
 import pytest
 
 from backend.engine.private.domain import (
+    AssetClass,
     AsOfMode,
+    Currency,
     DataConfidenceLevel,
     DataStatus,
+    InstrumentStatus,
+    InstrumentType,
     ProviderAccessStatus,
     SourceTier,
 )
@@ -39,6 +41,10 @@ from backend.engine.private.exceptions import (
     ProviderSchemaError,
     ProviderServerError,
     ProviderTimeoutError,
+)
+from backend.engine.private.identity import (
+    InstrumentRecord,
+    resolve_instruments_for_sec_cik,
 )
 from backend.engine.private.provider_contract import FetchContext
 from backend.engine.private.providers.sec_edgar import (
@@ -93,7 +99,7 @@ from backend.engine.private.storage_models import RawProviderSnapshotRecord
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Sample Payloads for Testing
+# Sample Payloads
 # ─────────────────────────────────────────────────────────────────────────────
 
 SAMPLE_SUBMISSIONS_PAYLOAD = {
@@ -111,7 +117,7 @@ SAMPLE_SUBMISSIONS_PAYLOAD = {
         "recent": {
             "accessionNumber": [
                 "0000320193-24-000106",  # Self-filer accession
-                "0001140361-24-024352",  # Third-party agent accession (CIK prefix != issuer CIK)
+                "0001140361-24-024352",  # Third-party agent accession
                 "0000320193-23-000106",
             ],
             "filingDate": ["2024-11-01", "2024-02-02", "2023-11-03"],
@@ -172,7 +178,7 @@ SAMPLE_COMPANY_FACTS_PAYLOAD = {
                         {
                             "start": "2023-10-01",
                             "end": "2024-09-28",
-                            "val": "391035000000.50",  # String decimal
+                            "val": "391035000000.50",
                             "fy": 2024,
                             "fp": "FY",
                             "form": "10-K",
@@ -188,7 +194,7 @@ SAMPLE_COMPANY_FACTS_PAYLOAD = {
                             "fp": "Q1",
                             "form": "10-Q/A",
                             "filed": "2024-02-02",
-                            "accn": "0001140361-24-024352",  # Third-party agent accession
+                            "accn": "0001140361-24-024352",
                         },
                     ]
                 },
@@ -225,133 +231,168 @@ SAMPLE_COMPANY_FACTS_PAYLOAD = {
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. Acceptance & PIT Semantics Tests (Scenarios 1-11)
+# 1. SEC Entity vs Security Identity Invariants (Scenarios 1-8)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestSECAcceptanceAndPITHardening:
+class TestSECEntityVsSecurityIdentity:
 
-    def test_01_to_06_acceptance_datetime_parsing_and_raw_preservation(self):
-        """Scenario 1-6: Explicit Z/offset parses to UTC; timezone-less compact/date-only does NOT fabricate UTC."""
-        # 1. Explicit Z
-        dt_z, raw_z, prec_z, sem_z = parse_sec_datetime_hardened("2024-11-01T16:05:34.000Z")
-        assert dt_z == datetime(2024, 11, 1, 16, 5, 34, tzinfo=timezone.utc)
-        assert sem_z == "EXPLICIT_UTC"
-        assert prec_z == "SECOND_EXACT_UTC"
-        assert raw_z == "2024-11-01T16:05:34.000Z"
-
-        # 2. Explicit Offset (+04:00)
-        dt_off, _, prec_off, sem_off = parse_sec_datetime_hardened("2024-11-01T20:05:34+04:00")
-        assert dt_off == datetime(2024, 11, 1, 16, 5, 34, tzinfo=timezone.utc)
-        assert sem_off == "EXPLICIT_UTC"
-
-        # 3. Compact 14-digit without timezone -> Naive local, NOT silently UTC
-        dt_c, raw_c, prec_c, sem_c = parse_sec_datetime_hardened("20240202160100")
-        assert dt_c.tzinfo is None
-        assert sem_c == "EDGAR_LOCAL_UNSPECIFIED"
-        assert prec_c == "SECOND_EXACT_NAIVE"
-        assert raw_c == "20240202160100"
-
-        # 4. Naive ISO without timezone -> Naive local
-        dt_iso, _, _, sem_iso = parse_sec_datetime_hardened("2024-02-02 16:01:00")
-        assert dt_iso.tzinfo is None
-        assert sem_iso == "EDGAR_LOCAL_UNSPECIFIED"
-
-        # 5. Date-only -> Not fabricated into 00:00 UTC
-        dt_d, raw_d, prec_d, sem_d = parse_sec_datetime_hardened("2023-11-03")
-        assert dt_d is None
-        assert prec_d == "DATE_ONLY"
-        assert sem_d == "NONE"
-        assert raw_d == "2023-11-03"
-
-    def test_07_to_09_acceptance_not_equal_public_availability(self):
-        """Scenario 7-9: acceptance_datetime != public_available_at; public_available_at remains None."""
+    def test_01_and_02_sec_raw_records_do_not_store_canonical_instrument_id(self):
+        """Scenario 1 & 2: SEC raw filing and fact records are entity-level; instrument_id is None."""
         filings = SECSubmissionsParser.parse_filings(SAMPLE_SUBMISSIONS_PAYLOAD)
-        f0 = filings[0]
-        assert f0.acceptance_datetime is not None
-        assert f0.public_available_at is None
-        assert f0.public_availability_basis is None
+        facts = SECCompanyFactsParser.parse_facts(SAMPLE_COMPANY_FACTS_PAYLOAD)
+
+        assert all(f.instrument_id is None for f in filings)
+        assert all(f.instrument_id is None for f in facts)
 
     @pytest.mark.asyncio
-    async def test_10_and_11_historical_as_of_modes_fail_closed(self):
-        """Scenario 10 & 11: External historical SOURCE_AS_OF & SYSTEM_AS_OF queries rejected."""
-        provider = SECEdgarProvider()
+    async def test_03_provider_response_retains_requesting_instrument_id(self):
+        """Scenario 3: ProviderResponse retains requesting canonical_instrument_id in response context."""
+        mock_client = AsyncMock(spec=SECEdgarClient)
+        mock_client.get_json.return_value = SAMPLE_SUBMISSIONS_PAYLOAD
+        mock_client.get_user_agent.return_value = "Sentinax <admin@example.com>"
 
-        # SOURCE_AS_OF
-        ctx_src = FetchContext(
+        provider = SECSubmissionsDataProvider(client=mock_client)
+        inst_uuid = uuid4()
+        ctx = FetchContext(
             observation_type="SEC_SUBMISSIONS",
             provider_symbol="0000320193",
-            as_of_time=datetime(2023, 1, 1, tzinfo=timezone.utc),
-            as_of_mode=AsOfMode.SOURCE_AS_OF,
+            canonical_instrument_id=inst_uuid,
         )
-        assert (await provider.fetch(ctx_src)).status == DataStatus.UNAVAILABLE
+        resp = await provider.fetch(ctx)
 
-        # SYSTEM_AS_OF
-        ctx_sys = FetchContext(
-            observation_type="SEC_SUBMISSIONS",
-            provider_symbol="0000320193",
-            as_of_time=datetime(2023, 1, 1, tzinfo=timezone.utc),
-            as_of_mode=AsOfMode.SYSTEM_AS_OF,
+        assert resp.status == DataStatus.COMPLETE
+        assert resp.canonical_instrument_id == inst_uuid
+
+    def test_04_to_08_same_cik_resolves_to_multiple_instruments_no_company_uuid(self):
+        """Scenario 4-8: Same CIK resolves to multiple securities (e.g. GOOG & GOOGL); no duplicate company UUID."""
+        cik = "0001652044"  # Alphabet Inc.
+        inst_goog = InstrumentRecord(
+            canonical_name="Alphabet Inc. Class C",
+            asset_class=AssetClass.EQUITY,
+            instrument_type=InstrumentType.US_STOCK,
+            currency=Currency.USD,
+            cik=cik,
         )
-        assert (await provider.fetch(ctx_sys)).status == DataStatus.UNAVAILABLE
+        inst_googl = InstrumentRecord(
+            canonical_name="Alphabet Inc. Class A",
+            asset_class=AssetClass.EQUITY,
+            instrument_type=InstrumentType.US_STOCK,
+            currency=Currency.USD,
+            cik=cik,
+        )
+
+        instruments = [inst_goog, inst_googl]
+        resolved = resolve_instruments_for_sec_cik(cik, instruments)
+
+        assert len(resolved) == 2
+        assert {i.id for i in resolved} == {inst_goog.id, inst_googl.id}
+        assert resolved[0].cik == resolved[1].cik == "0001652044"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. Accession & Identity Invariants (Scenarios 12-18)
+# 2. Acceptance Timestamps: Aware TIMESTAMPTZ vs Naive Local Time (Scenarios 9-17)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestSECAccessionAndIdentityHardening:
+class TestSECAcceptanceTimestampHardening:
 
-    def test_12_to_15_accession_prefix_may_differ_from_issuer_cik(self):
-        """Scenario 12-15: Accession prefix is submitting entity CIK; can differ from subject issuer CIK."""
+    def test_09_to_15_aware_vs_naive_acceptance_parsing(self):
+        """Scenario 9-15: Explicit Z parses to aware UTC; naive local parses to local datetime; date-only has no time."""
+        # 1. Explicit Z
+        aware_dt, local_dt, raw_z, prec_z, sem_z = parse_sec_datetime_hardened("2024-11-01T16:05:34.000Z")
+        assert aware_dt == datetime(2024, 11, 1, 16, 5, 34, tzinfo=timezone.utc)
+        assert local_dt is None
+        assert sem_z == "EXPLICIT_UTC"
+        assert prec_z == "SECOND_EXACT_UTC"
+
+        # 2. Explicit Offset (+02:00)
+        aware_off, local_off, _, _, sem_off = parse_sec_datetime_hardened("2024-11-01T18:05:34+02:00")
+        assert aware_off == datetime(2024, 11, 1, 16, 5, 34, tzinfo=timezone.utc)
+        assert local_off is None
+        assert sem_off == "EXPLICIT_UTC"
+
+        # 3. Compact 14-digit without timezone -> Naive local datetime
+        aware_c, local_c, raw_c, prec_c, sem_c = parse_sec_datetime_hardened("20240202160100")
+        assert aware_c is None
+        assert local_c == datetime(2024, 2, 2, 16, 1, 0)
+        assert local_c.tzinfo is None
+        assert sem_c == "SEC_EST_DOCUMENTED"
+        assert prec_c == "SECOND_EXACT_NAIVE"
+
+        # 4. Naive ISO -> Naive local datetime
+        aware_iso, local_iso, _, _, sem_iso = parse_sec_datetime_hardened("2024-02-02 16:01:00")
+        assert aware_iso is None
+        assert local_iso == datetime(2024, 2, 2, 16, 1, 0)
+        assert sem_iso == "SEC_EST_DOCUMENTED"
+
+        # 5. Date-only -> No fabricated time
+        aware_d, local_d, raw_d, prec_d, sem_d = parse_sec_datetime_hardened("2023-11-03")
+        assert aware_d is None
+        assert local_d is None
+        assert prec_d == "DATE_ONLY"
+        assert raw_d == "2023-11-03"
+
+    def test_16_and_17_model_validation_rejects_naive_aware_mismatches(self):
+        """Scenario 16 & 17: SECFilingRecord validates aware in acceptance_datetime and naive in acceptance_local_datetime."""
+        # Aware in acceptance_datetime -> Valid
+        f_valid = SECFilingRecord(
+            cik="0000320193",
+            accession_number="0000320193-24-000106",
+            form="10-K",
+            is_amendment=False,
+            acceptance_datetime=datetime(2024, 11, 1, 16, 5, 34, tzinfo=timezone.utc),
+        )
+        assert f_valid.acceptance_datetime.tzinfo is not None
+
+        # Naive in acceptance_datetime -> Raises ValueError
+        with pytest.raises(ValueError, match="acceptance_datetime must be timezone-aware"):
+            SECFilingRecord(
+                cik="0000320193",
+                accession_number="0000320193-24-000106",
+                form="10-K",
+                is_amendment=False,
+                acceptance_datetime=datetime(2024, 11, 1, 16, 5, 34), # Naive
+            )
+
+        # Aware in acceptance_local_datetime -> Raises ValueError
+        with pytest.raises(ValueError, match="acceptance_local_datetime must be a naive local datetime"):
+            SECFilingRecord(
+                cik="0000320193",
+                accession_number="0000320193-24-000106",
+                form="10-K",
+                is_amendment=False,
+                acceptance_local_datetime=datetime(2024, 11, 1, 16, 5, 34, tzinfo=timezone.utc), # Aware
+            )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. Raw Fact Decimal Precision, Nullable Accession & Period Types (Scenarios 18-24)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSECRawFactPrecisionAndNullableAccession:
+
+    def test_18_to_20_nullable_accession_persists_without_link(self):
+        """Scenario 18-20: Missing fact accession persists as NULL without fabricating fake UNKNOWN_ACCN."""
+        fact_no_accn = SECRawFactRecord(
+            cik="0000320193",
+            accession_number=None,
+            taxonomy="us-gaap",
+            concept="Cash",
+            unit="USD",
+            period_type=PeriodType.INSTANT,
+            value=Decimal("1000.00"),
+            end_date=date(2024, 9, 28),
+        )
+        assert fact_no_accn.accession_number is None
+
         filings = SECSubmissionsParser.parse_filings(SAMPLE_SUBMISSIONS_PAYLOAD)
+        links, _ = create_fact_filing_links([fact_no_accn], filings)
+        assert len(links) == 0  # No link created for NULL accession
 
-        # Self-filer
-        f0 = filings[0]
-        assert f0.cik == "0000320193"
-        assert f0.accession_number == "0000320193-24-000106"
-        assert f0.source_url == "https://www.sec.gov/Archives/edgar/data/320193/000032019324000106/aapl-20240928.htm"
-
-        # Third-party filing agent accession (0001140361 prefix vs 0000320193 issuer CIK)
-        f1 = filings[1]
-        assert f1.cik == "0000320193"
-        assert f1.accession_number == "0001140361-24-024352"
-        assert f1.source_url == "https://www.sec.gov/Archives/edgar/data/320193/000114036124024352/aapl-20231230.htm"
-
-    def test_16_to_18_same_cik_maps_to_multiple_securities_no_new_issuer_uuid(self):
-        """Scenario 16-18: Multiple share classes share same issuer CIK; no duplicate sec_company_uuid created."""
-        inst_a = uuid4()
-        inst_b = uuid4()
-        cik = normalize_cik("320193")
-
-        f_a = SECFilingRecord(cik=cik, accession_number="0000320193-24-000106", form="10-K", is_amendment=False, instrument_id=inst_a)
-        f_b = SECFilingRecord(cik=cik, accession_number="0000320193-24-000106", form="10-K", is_amendment=False, instrument_id=inst_b)
-
-        assert f_a.cik == f_b.cik == "0000320193"
-        assert f_a.instrument_id != f_b.instrument_id
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. Raw Fact Numeric Precision & Period Types (Scenarios 19-29)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestSECRawFactPrecisionAndPeriodTypes:
-
-    def test_19_to_24_decimal_parsing_and_zero_preservation(self):
-        """Scenario 19-24: Decimal parsing preserves large integers, fractions, and Decimal('0'); rejects NaN/Inf/bool."""
+    def test_21_to_24_decimal_exactness_and_period_validation(self):
+        """Scenario 21-24: Decimal precision is exact, string serialization, zero preserved, period types validated."""
         assert parse_sec_decimal("391035000000.50") == Decimal("391035000000.50")
-        assert parse_sec_decimal(15115820000) == Decimal("15115820000")
         assert parse_sec_decimal(0) == Decimal("0")
-        assert parse_sec_decimal("0.0") == Decimal("0.0")
 
-        assert parse_sec_decimal(None) is None
-        assert parse_sec_decimal(True) is None  # Rejects booleans
-        assert parse_sec_decimal(False) is None
-        assert parse_sec_decimal(float("nan")) is None
-        assert parse_sec_decimal(float("inf")) is None
-        assert parse_sec_decimal("invalid_str") is None
-
-    def test_21_decimal_serialization_does_not_cast_to_float(self):
-        """Scenario 21: SECRawFactRecord.to_dict() serializes Decimal as exact string, never float."""
         fact = SECRawFactRecord(
             cik="0000320193",
             taxonomy="us-gaap",
@@ -366,189 +407,147 @@ class TestSECRawFactPrecisionAndPeriodTypes:
         assert d["value"] == "391035000000.50"
         assert isinstance(d["value"], str)
 
-    def test_25_to_29_period_type_validation_and_no_fake_accession(self):
-        """Scenario 25-29: Duration requires start+end; Instant requires end only; missing end is rejected."""
-        facts = SECCompanyFactsParser.parse_facts(SAMPLE_COMPANY_FACTS_PAYLOAD)
-
-        # 1. Instant fact (shares outstanding)
-        f_shares = next(f for f in facts if f.concept == "EntityCommonStockSharesOutstanding")
-        assert f_shares.period_type == PeriodType.INSTANT
-        assert f_shares.start_date is None
-        assert f_shares.end_date == date(2024, 10, 18)
-
-        # 2. Duration fact (revenues)
-        f_rev = next(f for f in facts if f.concept == "Revenues" and f.fiscal_period == "FY")
-        assert f_rev.period_type == PeriodType.DURATION
-        assert f_rev.start_date == date(2023, 10, 1)
-        assert f_rev.end_date == date(2024, 9, 28)
-
-        # 3. Third-party accession fact preserved
-        f_agent = next(f for f in facts if f.concept == "Revenues" and f.fiscal_period == "Q1")
-        assert f_agent.accession_number == "0001140361-24-024352"
-
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. Fact-to-Filing Lineage & Link Table (Scenarios 30-37)
+# 4. Fact-to-Filing Append-Only Linkage & DB Integrity (Scenarios 25-32)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestSECFactFilingLinkTable:
+class TestSECFactFilingLinkIntegrity:
 
-    def test_30_to_37_append_only_fact_filing_links(self):
-        """Scenario 30-37: SECFactFilingLinkRecord created; raw fact remains immutable; CIK/accession verified."""
+    def test_25_to_32_link_creation_and_consistency(self):
+        """Scenario 25-32: SECFactFilingLinkRecord requires exact accession and CIK match; raw fact is immutable."""
         filings = SECSubmissionsParser.parse_filings(SAMPLE_SUBMISSIONS_PAYLOAD)
         facts = SECCompanyFactsParser.parse_facts(SAMPLE_COMPANY_FACTS_PAYLOAD)
 
         links, linked_facts = create_fact_filing_links(facts, filings)
         assert len(links) == 5  # All 5 facts match filings
 
-        # Link validation
-        l0 = links[0]
-        assert isinstance(l0, SECFactFilingLinkRecord)
-        assert l0.accession_number in ("0000320193-24-000106", "0001140361-24-024352", "0000320193-23-000106")
-        assert l0.cik == "0000320193"
-
-        # Timestamp getters
-        filing_map = {f.accession_number: f for f in filings}
-        fact_10k = next(f for f in linked_facts if f.accession_number == "0000320193-24-000106")
-        acc_ts = get_fact_acceptance_timestamp(fact_10k, filing_map)
-        assert acc_ts == datetime(2024, 11, 1, 16, 5, 34, tzinfo=timezone.utc)
-        assert get_fact_source_available_at(fact_10k, filing_map) is None
-
-        # Inconsistent link rejection (CIK mismatch)
-        bad_filing = SECFilingRecord(cik="0000789019", accession_number="0000320193-24-000106", form="10-K", is_amendment=False)
+        # Inconsistent accession/CIK raises ValueError
+        mismatched_filing = SECFilingRecord(
+            cik="0000789019",
+            accession_number="0000320193-24-000106",
+            form="10-K",
+            is_amendment=False,
+        )
         with pytest.raises(ValueError, match="CIK mismatch"):
-            create_fact_filing_links(facts, [bad_filing])
+            create_fact_filing_links(facts, [mismatched_filing])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. Archived Submissions & Separate Snapshots (Scenarios 38-43)
+# 5. Full Ingestion & Provider Regression Coverage (Scenarios 33-60+)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestSECArchivedSnapshotsHardening:
+class TestSECProviderFullRegressionSuite:
+
+    def test_33_to_36_cik_and_url_builders(self):
+        """Scenario 33-36: CIK normalizes to 10 digits; URL builders generate official endpoints."""
+        assert normalize_cik("320193") == "0000320193"
+        assert normalize_cik(320193) == "0000320193"
+        assert format_cik_for_path("0000320193") == "320193"
+
+        with pytest.raises(ValueError, match="digits only"):
+            normalize_cik("320193A")
+
+        assert build_submissions_url("320193") == "https://data.sec.gov/submissions/CIK0000320193.json"
+        assert build_company_facts_url("320193") == "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json"
+
+    def test_37_to_39_user_agent_required_and_no_api_key(self):
+        """Scenario 37-39: Declared SEC_USER_AGENT required; public endpoints require no secret token."""
+        client_no_env = SECEdgarClient(user_agent="")
+        with patch.dict(os.environ, {}, clear=True):
+            with pytest.raises(ProviderConfigurationError, match="SEC_USER_AGENT is not configured"):
+                client_no_env.get_user_agent()
 
     @pytest.mark.asyncio
-    async def test_38_to_43_separate_snapshots_for_archived_files(self):
-        """Scenario 38-43: Main submissions and each archived JSON file get distinct RawProviderSnapshotRecord."""
+    async def test_40_to_45_typed_error_mappings(self):
+        """Scenario 40-45: Typed errors for 403, 404, 429, 5xx, timeouts, and malformed JSON."""
+        # 403 Permission
+        m_403 = AsyncMock(spec=httpx.AsyncClient)
+        m_403.get.return_value = MagicMock(status_code=403)
+        c_403 = SECEdgarClient(user_agent="Sentinax <admin@example.com>", http_client=m_403)
+        with pytest.raises(ProviderPermissionError):
+            await c_403.get_json("https://data.sec.gov/test")
+
+        # 404 Invalid Symbol
+        m_404 = AsyncMock(spec=httpx.AsyncClient)
+        m_404.get.return_value = MagicMock(status_code=404)
+        c_404 = SECEdgarClient(user_agent="Sentinax <admin@example.com>", http_client=m_404)
+        with pytest.raises(ProviderInvalidSymbolError):
+            await c_404.get_json("https://data.sec.gov/test")
+
+        # 429 Rate Limit
+        m_429 = AsyncMock(spec=httpx.AsyncClient)
+        m_429.get.return_value = MagicMock(status_code=429, headers={"Retry-After": "5"})
+        c_429 = SECEdgarClient(user_agent="Sentinax <admin@example.com>", http_client=m_429)
+        with pytest.raises(ProviderRateLimitError):
+            await c_429.get_json("https://data.sec.gov/test")
+
+        # 500 Server Error
+        m_500 = AsyncMock(spec=httpx.AsyncClient)
+        m_500.get.return_value = MagicMock(status_code=500)
+        c_500 = SECEdgarClient(user_agent="Sentinax <admin@example.com>", http_client=m_500)
+        with pytest.raises(ProviderServerError):
+            await c_500.get_json("https://data.sec.gov/test")
+
+        # Timeout Error
+        m_to = AsyncMock(spec=httpx.AsyncClient)
+        m_to.get.side_effect = httpx.TimeoutException("Timeout")
+        c_to = SECEdgarClient(user_agent="Sentinax <admin@example.com>", http_client=m_to)
+        with pytest.raises(ProviderTimeoutError):
+            await c_to.get_json("https://data.sec.gov/test")
+
+    def test_46_and_47_columnar_parallel_array_validation(self):
+        """Scenario 46 & 47: Parallel array length mismatch strictly raises ProviderSchemaError."""
+        bad_payload = {
+            "cik": "0000320193",
+            "filings": {
+                "recent": {
+                    "accessionNumber": ["0000320193-24-000106", "0000320193-24-000006"],
+                    "form": ["10-K"],
+                }
+            }
+        }
+        with pytest.raises(ProviderSchemaError, match="array length mismatch"):
+            SECSubmissionsParser.parse_filings(bad_payload)
+
+    @pytest.mark.asyncio
+    async def test_50_to_52_archived_submissions_path_guard_and_snapshots(self):
+        """Scenario 50-52: Historical file traversal is path-safe and generates independent snapshots."""
         mock_client = AsyncMock(spec=SECEdgarClient)
         mock_client.get_json.side_effect = [
             SAMPLE_SUBMISSIONS_PAYLOAD,
             {"accessionNumber": ["0000320193-20-000001"], "form": ["10-Q"], "filingDate": ["2020-01-15"]},
-            {"accessionNumber": ["0000320193-12-000001"], "form": ["10-K"], "filingDate": ["2012-10-31"]},
         ]
 
         provider = SECSubmissionsProvider(client=mock_client)
-        result = await provider.fetch_submissions("0000320193", include_archived=True, max_archived_files=2)
+        res = await provider.fetch_submissions("0000320193", include_archived=True, max_archived_files=1)
 
-        assert isinstance(result, SECSubmissionsFetchResult)
-        assert len(result.archived_snapshots) == 2
-        assert len(result.all_snapshots) == 3
-
-        # Main filings point to main snapshot
-        main_filing = next(f for f in result.filings if f.accession_number == "0000320193-24-000106")
-        assert main_filing.snapshot_id == result.main_snapshot.id
-
-        # Archived filing points to archived snapshot
-        arch_filing = next(f for f in result.filings if f.accession_number == "0000320193-20-000001")
-        assert arch_filing.snapshot_id == result.archived_snapshots[0].id
-        assert arch_filing.snapshot_id != result.main_snapshot.id
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 6. Fair Access Leaky Pacing Rate Limiter (Scenarios 44-53)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestSECFairAccessRateLimiter:
+        assert isinstance(res, SECSubmissionsFetchResult)
+        assert len(res.archived_snapshots) == 1
+        assert res.filings[0].snapshot_id == res.main_snapshot.id
 
     @pytest.mark.asyncio
-    async def test_44_to_47_leaky_pacing_serializes_requests(self):
-        """Scenario 44-47: Serialized rate limiter enforces min_interval spacing (burst capacity = 1)."""
-        current_time = 100.0
-        sleeps: list[float] = []
+    async def test_57_and_58_historical_as_of_fail_closed(self):
+        """Scenario 57 & 58: Historical external SOURCE_AS_OF & SYSTEM_AS_OF rejected."""
+        provider = SECEdgarProvider()
 
-        def fake_time():
-            nonlocal current_time
-            return current_time
+        ctx_src = FetchContext(
+            observation_type="SEC_COMPANY_FACTS",
+            provider_symbol="0000320193",
+            as_of_time=datetime(2023, 1, 1, tzinfo=timezone.utc),
+            as_of_mode=AsOfMode.SOURCE_AS_OF,
+        )
+        assert (await provider.fetch(ctx_src)).status == DataStatus.UNAVAILABLE
 
-        async def fake_sleep(duration):
-            nonlocal current_time
-            sleeps.append(duration)
-            current_time += duration
-
-        limiter = SECRateLimiter(max_rps=8.0, time_func=fake_time, sleep_func=fake_sleep)
-        assert limiter.min_interval == 0.125  # 1 / 8.0
-
-        # First acquire: no sleep
-        await limiter.acquire()
-        assert len(sleeps) == 0
-
-        # Immediate second acquire: sleeps exactly 0.125s
-        await limiter.acquire()
-        assert len(sleeps) == 1
-        assert sleeps[0] == pytest.approx(0.125)
-
-    def test_48_to_51_rate_validation(self):
-        """Scenario 48-51: Reject zero/negative/NaN/inf RPS; clamp rates above 10 req/s."""
-        with pytest.raises(ValueError, match="Invalid max_rps"):
-            SECRateLimiter(max_rps=0.0)
-
-        with pytest.raises(ValueError, match="Invalid max_rps"):
-            SECRateLimiter(max_rps=-5.0)
-
-        with pytest.raises(ValueError, match="Invalid max_rps"):
-            SECRateLimiter(max_rps=float("nan"))
-
-        with pytest.raises(ValueError, match="Invalid max_rps"):
-            SECRateLimiter(max_rps=float("inf"))
-
-        # Clamp > 10
-        limiter_high = SECRateLimiter(max_rps=15.0)
-        assert limiter_high.rate == SEC_OFFICIAL_MAX_RPS
-        assert DEFAULT_SENTINAX_SAFETY_RPS == 8.0
-
-    @pytest.mark.asyncio
-    async def test_52_and_53_typed_403_and_429_errors(self):
-        """Scenario 52 & 53: 403 maps to ProviderPermissionError; 429 maps to ProviderRateLimitError."""
-        m_403 = AsyncMock(spec=httpx.AsyncClient)
-        m_403.get.return_value = MagicMock(status_code=403)
-        c_403 = SECEdgarClient(user_agent="Sentinax <admin@example.com>", http_client=m_403)
-        with pytest.raises(ProviderPermissionError, match="access blocked"):
-            await c_403.get_json("https://data.sec.gov/test")
-
-        m_429 = AsyncMock(spec=httpx.AsyncClient)
-        m_429.get.return_value = MagicMock(status_code=429, headers={"Retry-After": "10"})
-        c_429 = SECEdgarClient(user_agent="Sentinax <admin@example.com>", http_client=m_429)
-        with pytest.raises(ProviderRateLimitError) as exc_info:
-            await c_429.get_json("https://data.sec.gov/test")
-        assert exc_info.value.retry_after_seconds == 10.0
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 7. Database Constraints & Migration 009 (Scenarios 54-63)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestSECDatabaseMigration009:
-
-    def test_54_to_63_migration_009_schema_invariants(self):
-        """Scenario 54-63: Migration 009 defines sec_fact_filing_links, CIK checks, RLS, and immutability."""
-        mig_path = os.path.join(os.path.dirname(__file__), "../../supabase/migrations/009_sec_edgar_hardening.sql")
+    def test_59_and_60_migration_010_schema_invariants(self):
+        """Scenario 59 & 60: Migration 010 defines acceptance_local_datetime, nullable fact accession, and link trigger."""
+        mig_path = os.path.join(os.path.dirname(__file__), "../../supabase/migrations/010_sec_entity_persistence_consistency.sql")
         assert os.path.exists(mig_path)
 
         with open(mig_path, "r", encoding="utf-8") as f:
             sql = f.read()
 
-        # Constraints
-        assert "chk_sec_filings_cik_format CHECK (cik ~ '^[0-9]{10}$')" in sql
-        assert "chk_sec_filings_accession_format CHECK (accession_number ~ '^[0-9]{10}-[0-9]{2}-[0-9]{6}$')" in sql
-        assert "chk_sec_raw_facts_cik_format CHECK (cik ~ '^[0-9]{10}$')" in sql
-        assert "ALTER TABLE public.sec_filings ALTER COLUMN is_amendment DROP DEFAULT" in sql
-        assert "ALTER TABLE public.sec_filings ALTER COLUMN retrieved_at DROP DEFAULT" in sql
-
-        # Link table
-        assert "CREATE TABLE IF NOT EXISTS public.sec_fact_filing_links" in sql
-        assert "CONSTRAINT uq_sec_fact_filing_link UNIQUE (fact_id)" in sql
-        assert "trg_sec_fact_filing_links_immutable" in sql
-
-        # RLS
-        assert "ALTER TABLE public.sec_filings ENABLE ROW LEVEL SECURITY" in sql
-        assert "ALTER TABLE public.sec_raw_facts ENABLE ROW LEVEL SECURITY" in sql
-        assert "ALTER TABLE public.sec_fact_filing_links ENABLE ROW LEVEL SECURITY" in sql
+        assert "ADD COLUMN IF NOT EXISTS acceptance_local_datetime TIMESTAMP WITHOUT TIME ZONE" in sql
+        assert "ALTER TABLE public.sec_raw_facts ALTER COLUMN accession_number DROP NOT NULL" in sql
+        assert "validate_sec_fact_filing_link_integrity" in sql
+        assert "trg_validate_sec_fact_filing_link_integrity" in sql

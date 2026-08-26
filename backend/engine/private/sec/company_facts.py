@@ -3,14 +3,14 @@ backend/engine/private/sec/company_facts.py
 ============================================
 SEC EDGAR CompanyFacts Ingestion & Hierarchical Raw XBRL Fact Extractor.
 
-Core Hardening Invariants:
+Core Invariants:
+    - SEC raw facts belong strictly to the issuer entity level (CIK); instrument_id is not stored.
     - Numerical values parsed into exact `Decimal` representation; floats are avoided.
     - Genuine zero is preserved as Decimal("0"); missing values remain None.
     - Classification: DURATION (both start and end present) vs INSTANT (end only).
     - Missing end dates or start without end are rejected as schema-invalid.
     - No fake "UNKNOWN_ACCN" accession numbers; missing accession remains None.
     - Standard public taxonomies (us-gaap, dei, ifrs-full, srt) preserved verbatim.
-    - Amendments and restatements are preserved without overwriting.
 """
 
 from __future__ import annotations
@@ -86,9 +86,9 @@ class SECCompanyFactsParser:
     def parse_facts(
         cls,
         payload: Dict[str, Any],
-        instrument_id: Optional[UUID] = None,
         snapshot_id: Optional[UUID] = None,
         retrieved_at: Optional[datetime] = None,
+        instrument_id: Optional[UUID] = None,
     ) -> List[SECRawFactRecord]:
         raw_cik = payload.get("cik")
         if raw_cik is None:
@@ -187,7 +187,7 @@ class SECCompanyFactsParser:
                             form=str(form).strip() if form else None,
                             filed_date=filed_d,
                             frame=str(frame).strip() if frame else None,
-                            instrument_id=instrument_id,
+                            instrument_id=None,  # Entity-level record; security resolved via instruments.cik at query time
                             snapshot_id=snapshot_id,
                             retrieved_at=t_retrieved,
                             raw_fact=entry,
@@ -202,7 +202,7 @@ class SECCompanyFactsProvider:
     Provider service for SEC EDGAR CompanyFacts ingestion.
     """
     provider_name: str = "SEC_COMPANY_FACTS"
-    provider_version: str = "1.1.0"
+    provider_version: str = "1.2.0"
     source_quality: SourceTier = SourceTier.TIER_1_REGULATORY
     access_status: ProviderAccessStatus = ProviderAccessStatus.GREEN
 
@@ -212,7 +212,6 @@ class SECCompanyFactsProvider:
     async def fetch_company_facts(
         self,
         cik: Union[str, int],
-        instrument_id: Optional[UUID] = None,
     ) -> Tuple[List[SECRawFactRecord], RawProviderSnapshotRecord]:
         """
         Fetches CompanyFacts JSON for a CIK, parses all standard taxonomy facts, and produces raw snapshot.
@@ -242,7 +241,6 @@ class SECCompanyFactsProvider:
         # 3. Parse hierarchical facts
         facts = SECCompanyFactsParser.parse_facts(
             payload,
-            instrument_id=instrument_id,
             snapshot_id=snapshot.id,
             retrieved_at=retrieved_at,
         )

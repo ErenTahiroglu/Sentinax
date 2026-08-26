@@ -3,14 +3,12 @@ backend/engine/private/sec/submissions.py
 ===========================================
 SEC EDGAR Submissions Ingestion, Columnar Parallel Array Parser & Historical Traversal.
 
-Core Hardening Invariants:
-    - Parallel columnar arrays in payload["filings"]["recent"] MUST have matching lengths.
-    - Required arrays (`accessionNumber`, `form`) must be present; missing raises ProviderSchemaError.
-    - Timezone semantics: explicit Z/offset is preserved/normalized; timezone-less compact/ISO strings
-      are flagged as EDGAR_LOCAL_UNSPECIFIED and NEVER silently coerced to UTC.
+Core Invariants:
+    - SEC filings belong strictly to the issuer entity level (CIK); security-level instrument_id is not stored.
+    - Explicit UTC/offset timestamp is populated into `acceptance_datetime` (aware).
+    - SEC local/timezone-less timestamp is populated into `acceptance_local_datetime` (naive).
     - Date-only strings are NOT fabricated into midnight UTC.
     - Every archived JSON file fetched produces its own independent RawProviderSnapshotRecord.
-    - Filings from archived files reference their specific archived snapshot ID.
 """
 
 from __future__ import annotations
@@ -60,19 +58,19 @@ class SECSubmissionsFetchResult:
 
 def parse_sec_datetime_hardened(
     dt_str: Optional[Union[str, int]],
-) -> Tuple[Optional[datetime], Optional[str], Optional[str], Optional[str]]:
+) -> Tuple[Optional[datetime], Optional[datetime], Optional[str], Optional[str], Optional[str]]:
     """
-    Parses an SEC acceptanceDateTime string without fabricating timezones.
+    Parses an SEC acceptanceDateTime string separating aware timestamps from naive local timestamps.
 
     Returns:
-        Tuple of (parsed_datetime, raw_string, precision, timezone_semantics)
+        Tuple of (acceptance_datetime_aware, acceptance_local_datetime_naive, raw_string, precision, timezone_semantics)
     """
     if dt_str is None:
-        return None, None, None, None
+        return None, None, None, None, None
 
     s = str(dt_str).strip()
     if not s or s.lower() in ("null", "none"):
-        return None, None, None, None
+        return None, None, None, None, None
 
     # Format 1: Explicit ISO 8601 with Z or offset (e.g. "2024-05-15T16:05:34.000Z" or "...+00:00")
     if "Z" in s or ("+" in s and ":" in s[s.find("+"):]) or ("-" in s[10:] and ":" in s[10:]):
@@ -80,16 +78,15 @@ def parse_sec_datetime_hardened(
         clean_iso = clean_iso.replace("Z", "+00:00")
         try:
             dt = datetime.fromisoformat(clean_iso)
-            return dt.astimezone(timezone.utc), s, "SECOND_EXACT_UTC", "EXPLICIT_UTC"
+            return dt.astimezone(timezone.utc), None, s, "SECOND_EXACT_UTC", "EXPLICIT_UTC"
         except ValueError:
             pass
 
-    # Format 2: Compact 14 digits (YYYYMMDDHHMMSS) - No explicit timezone
+    # Format 2: Compact 14 digits (YYYYMMDDHHMMSS) - Documented SEC local time
     if re.match(r"^\d{14}$", s):
         try:
-            # Parse without timezone; do NOT silently assign UTC
-            dt = datetime.strptime(s, "%Y%m%d%H%M%S")
-            return dt, s, "SECOND_EXACT_NAIVE", "EDGAR_LOCAL_UNSPECIFIED"
+            dt_naive = datetime.strptime(s, "%Y%m%d%H%M%S")
+            return None, dt_naive, s, "SECOND_EXACT_NAIVE", "SEC_EST_DOCUMENTED"
         except ValueError:
             pass
 
@@ -97,16 +94,16 @@ def parse_sec_datetime_hardened(
     if re.match(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$", s):
         try:
             clean_s = s.replace("T", " ")
-            dt = datetime.strptime(clean_s, "%Y-%m-%d %H:%M:%S")
-            return dt, s, "SECOND_EXACT_NAIVE", "EDGAR_LOCAL_UNSPECIFIED"
+            dt_naive = datetime.strptime(clean_s, "%Y-%m-%d %H:%M:%S")
+            return None, dt_naive, s, "SECOND_EXACT_NAIVE", "SEC_EST_DOCUMENTED"
         except ValueError:
             pass
 
     # Format 4: Date-only (YYYY-MM-DD) - Do NOT fabricate 00:00:00 UTC
     if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
-        return None, s, "DATE_ONLY", "NONE"
+        return None, None, s, "DATE_ONLY", "NONE"
 
-    return None, s, "UNPARSED_RAW", "UNKNOWN"
+    return None, None, s, "UNPARSED_RAW", "UNKNOWN"
 
 
 def parse_sec_date(d_str: Optional[str]) -> Optional[date]:
@@ -177,13 +174,13 @@ class SECSubmissionsParser:
     def parse_filings(
         cls,
         payload: Dict[str, Any],
-        instrument_id: Optional[UUID] = None,
         snapshot_id: Optional[UUID] = None,
         retrieved_at: Optional[datetime] = None,
+        instrument_id: Optional[UUID] = None,
     ) -> List[SECFilingRecord]:
         """
         Parses columnar arrays in payload["filings"]["recent"] into SECFilingRecord objects.
-        Enforces strict columnar array length validation and required fields.
+        SEC filings are entity-level records; canonical instrument_id is not stored.
         """
         filings_block = payload.get("filings", {})
         recent = filings_block.get("recent")
@@ -246,7 +243,7 @@ class SECSubmissionsParser:
 
             f_date = parse_sec_date(filing_dates[i])
             r_date = parse_sec_date(report_dates[i])
-            acc_dt, acc_raw, acc_prec, acc_tz_sem = parse_sec_datetime_hardened(acceptance_datetimes[i])
+            acc_aware_dt, acc_local_dt, acc_raw, acc_prec, acc_tz_sem = parse_sec_datetime_hardened(acceptance_datetimes[i])
 
             # Parse items if present
             raw_items = items_list[i]
@@ -274,7 +271,8 @@ class SECSubmissionsParser:
                 is_amendment=is_amend,
                 filing_date=f_date,
                 report_date=r_date,
-                acceptance_datetime=acc_dt,
+                acceptance_datetime=acc_aware_dt,
+                acceptance_local_datetime=acc_local_dt,
                 acceptance_raw=acc_raw,
                 acceptance_precision=acc_prec,
                 acceptance_timezone_semantics=acc_tz_sem,
@@ -290,7 +288,7 @@ class SECSubmissionsParser:
                 primary_document=p_doc,
                 primary_doc_description=p_desc,
                 source_url=build_archive_url(canonical_cik, accn_clean, p_doc),
-                instrument_id=instrument_id,
+                instrument_id=None,  # Entity-level record; security resolved via instruments.cik at query time
                 snapshot_id=snapshot_id,
                 retrieved_at=t_retrieved,
                 raw_metadata={
@@ -310,7 +308,7 @@ class SECSubmissionsProvider:
     Provider service for SEC Submissions ingestion.
     """
     provider_name: str = "SEC_SUBMISSIONS"
-    provider_version: str = "1.1.0"
+    provider_version: str = "1.2.0"
     source_quality: SourceTier = SourceTier.TIER_1_REGULATORY
     access_status: ProviderAccessStatus = ProviderAccessStatus.GREEN
 
@@ -320,7 +318,6 @@ class SECSubmissionsProvider:
     async def fetch_submissions(
         self,
         cik: Union[str, int],
-        instrument_id: Optional[UUID] = None,
         include_archived: bool = False,
         max_archived_files: int = 10,
     ) -> SECSubmissionsFetchResult:
@@ -350,7 +347,6 @@ class SECSubmissionsProvider:
         meta = SECSubmissionsParser.parse_metadata(payload)
         filings = SECSubmissionsParser.parse_filings(
             payload,
-            instrument_id=instrument_id,
             snapshot_id=main_snapshot.id,
             retrieved_at=retrieved_at,
         )
@@ -396,7 +392,6 @@ class SECSubmissionsProvider:
                 arch_filings_dict = {"cik": canonical_cik, "filings": {"recent": arch_payload}}
                 arch_filings = SECSubmissionsParser.parse_filings(
                     arch_filings_dict,
-                    instrument_id=instrument_id,
                     snapshot_id=arch_snap.id,
                     retrieved_at=arch_retrieved,
                 )

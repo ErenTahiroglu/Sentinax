@@ -46,7 +46,10 @@ class SECRateLimiter:
     """
     Async leaky pacing rate limiter enforcing serialized request spacing.
     Guarantees that consecutive requests are spaced by at least (1.0 / max_rps) seconds (burst capacity = 1).
+    Scope: Process-local.
     """
+    rate_limit_scope: str = "PROCESS_LOCAL"
+
     def __init__(
         self,
         max_rps: float = DEFAULT_SENTINAX_SAFETY_RPS,

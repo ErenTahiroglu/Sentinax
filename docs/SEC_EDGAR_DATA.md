@@ -1,8 +1,8 @@
 # SEC EDGAR Filing & Raw XBRL CompanyFacts Data Layer
 
-**Version:** 1.1 (Phase 8A Hardened — Point-in-Time, Lineage & Integrity Specification)  
+**Version:** 1.2 (Phase 8A.6 Hardened — Entity-Level Persistence & Storage Consistency Specification)  
 **Effective Date:** 26 August 2026  
-**Scope:** Official SEC EDGAR Submissions, CompanyFacts APIs, CIK symbology, Point-in-Time acceptance vs public availability boundaries, append-only fact-filing linkage, and raw fact storage.
+**Scope:** Official SEC EDGAR Submissions, CompanyFacts APIs, CIK entity vs security-level symbology, Point-in-Time acceptance (TIMESTAMPTZ vs local TIMESTAMP) vs public availability boundaries, append-only fact-filing linkage trigger, and raw fact storage.
 
 ---
 
@@ -10,13 +10,24 @@
 
 | Source | Authority Level | Access Method | Contract Status | Rate Limit (Official / Safety) | Authentication | PIT Knowledge Boundary |
 |---|---|---|---|---|---|---|
-| **SEC EDGAR Submissions** | `TIER_1_REGULATORY` | REST API (JSON) | **VERIFIED** | 10 req/s / **<= 8 req/s** | Declared `User-Agent` | `acceptance_datetime` (Acceptance Event) |
+| **SEC EDGAR Submissions** | `TIER_1_REGULATORY` | REST API (JSON) | **VERIFIED** | 10 req/s / **<= 8 req/s** | Declared `User-Agent` | `acceptance_datetime` (Aware) / `acceptance_local_datetime` (Local) |
 | **SEC EDGAR CompanyFacts** | `TIER_1_REGULATORY` | REST API (JSON) | **VERIFIED** | 10 req/s / **<= 8 req/s** | Declared `User-Agent` | Linked `acceptance_datetime` via Link Table |
 | **SEC Ticker Mapping** | `TIER_1_REGULATORY` | Static JSON Feed | **CANDIDATE ONLY** | 10 req/s / **<= 8 req/s** | Declared `User-Agent` | Non-authoritative candidate suggestion |
 
 ---
 
-## 2. Official SEC Endpoints
+## 2. Entity Level (CIK) vs Security Level (`instruments.id`)
+
+- **Issuer Entity Level:** SEC filings (`sec_filings`) and XBRL facts (`sec_raw_facts`) represent the corporate reporting entity (identified by 10-digit zero-padded `CIK`).
+- **Security Level Identity:** Sentinax `InstrumentRecord.id` (UUID) represents an investable security (e.g. Common Stock Class A, Common Stock Class B, Preferred Stock, ADR).
+- **Association Semantics:**
+  - **Security -> SEC:** `instrument.cik` points to the reporting issuer's CIK.
+  - **SEC -> Securities:** `resolve_instruments_for_sec_cik(cik)` dynamically resolves all active securities sharing that issuer CIK at query time.
+  - **Invariant:** Canonical SEC raw storage tables do **NOT** store a 1-to-1 canonical `instrument_id`. No parallel `sec_company_uuid` is introduced.
+
+---
+
+## 3. Official SEC Endpoints
 
 Base URL: `https://data.sec.gov`
 
@@ -35,17 +46,6 @@ Base URL: `https://data.sec.gov`
 
 ---
 
-## 3. CIK & Symbology Semantics
-
-- **CIK Definition:** Central Index Key is an issuer-level numerical identifier assigned by the SEC.
-- **Canonical Storage:** 10-digit zero-padded string (`zfill(10)` e.g. `"0000320193"`). Stored with DB check constraint `CHECK (cik ~ '^[0-9]{10}$')`.
-- **Security vs Issuer Distinction:**
-  - `instruments.id` (UUID) is Sentinax's **single canonical security-level identity**.
-  - `instruments.cik` (VARCHAR(10)) represents the **issuer**.
-  - Multiple share classes (e.g. GOOG Class C vs GOOGL Class A) or dual-listed securities share the same issuer CIK. Therefore, CIK is indexed but **not unique** across `instruments`.
-
----
-
 ## 4. Accession Number Semantics & Third-Party Filers
 
 - **Accession Format:** 20-character hyphenated identifier: `0000320193-24-000106` (regex: `^[0-9]{10}-[0-9]{2}-[0-9]{6}$`).
@@ -54,12 +54,10 @@ Base URL: `https://data.sec.gov`
 
 ---
 
-## 5. Acceptance Timestamp vs Public Availability (Critical PIT Distinction)
+## 5. Acceptance Timestamp vs Local Time vs Public Availability
 
-- **`acceptance_datetime`:** The exact timestamp when EDGAR accepted and timestamped the transmission.
-  - Parsed with strict timezone semantics (`EXPLICIT_UTC`, `EXPLICIT_OFFSET`, or `EDGAR_LOCAL_UNSPECIFIED`).
-  - Timezone-less strings are **NEVER** silently coerced to UTC.
-  - Date-only strings are **NEVER** fabricated into midnight UTC.
+- **`acceptance_datetime` (`TIMESTAMPTZ`):** Only populated when the SEC payload provides an explicit timezone or offset (e.g. ISO 8601 with `Z` or `+/-offset`).
+- **`acceptance_local_datetime` (`TIMESTAMP WITHOUT TIME ZONE`):** Populated when the SEC payload provides a compact 14-digit (`YYYYMMDDHHMMSS`) or naive local datetime. SEC official FAQ documents EDGAR acceptance time as Eastern Standard/Daylight Time (EST/EDT). Naive datetimes are **never** silently coerced into UTC `TIMESTAMPTZ`.
 - **`public_available_at`:** The verified timestamp when filing documents actually became accessible on sec.gov.
   - SEC guidance notes that documents typically appear on sec.gov **1–3 minutes** after acceptance.
   - SEC does **NOT** publish a first-public-availability timestamp.
@@ -80,7 +78,7 @@ Base URL: `https://data.sec.gov`
   - Values are parsed and stored as exact **`Decimal`** instances (mapped to `NUMERIC` in SQL).
   - Genuine zero is preserved as `Decimal("0")`. Missing values remain `None`.
   - Serialized via `to_dict()` as exact decimal strings; float casting during serialization is prohibited.
-- **Amendments:** Filings with `/A` suffix produce new accession-scoped facts. Previous facts for the same economic period are preserved without overwriting.
+- **Nullable Accession:** Raw facts without an accession number in the source payload are preserved with `accession_number = NULL` (no fake `"UNKNOWN_ACCN"`).
 
 ---
 
@@ -88,6 +86,7 @@ Base URL: `https://data.sec.gov`
 
 - When CompanyFacts contains facts whose filing accession has not yet been ingested into `sec_filings`, the fact is stored with `filing_id = None` (unresolved status) and **NEVER dropped**.
 - When the corresponding historical filing is ingested later, a new linkage row is inserted into `sec_fact_filing_links` (`fact_id`, `filing_id`, `accession_number`, `cik`).
+- **Database Trigger:** PostgreSQL trigger `trg_validate_sec_fact_filing_link_integrity` strictly enforces CIK and accession number equality between the linked fact and filing before insertion.
 - Because `sec_raw_facts` is strictly immutable, the raw fact row is **never modified or updated**.
 
 ---
@@ -96,11 +95,12 @@ Base URL: `https://data.sec.gov`
 
 - **Declared User-Agent:** Mandated by SEC fair access policy (`SEC_USER_AGENT` environment variable). Missing agent raises `ProviderConfigurationError`.
 - **Serialized Leaky Pacing:** `SECRateLimiter` enforces strict serialized spacing: `min_interval = 1.0 / rate` (e.g. `0.125s` for 8 req/s; burst capacity = 1) to eliminate initial multi-request bursts.
-- **Process-Wide Shared Limiter:** All `SECEdgarClient` instances, Submissions, CompanyFacts, and Ticker Discovery calls share a single singleton limiter.
+- **Process-Wide Shared Limiter:** All `SECEdgarClient` instances, Submissions, CompanyFacts, and Ticker Discovery calls share a single singleton limiter (`rate_limit_scope = "PROCESS_LOCAL"`).
+- **Architecture Note (Distributed Clusters):** In a multi-worker / distributed environment, global rate limiting across instances will be enforced via Redis token buckets.
 
 ---
 
 ## 9. Boundary to Phase 8B
 
-Phase 8A provides the **hardened, Point-in-Time, append-only raw fact backbone**.  
+Phase 8A provides the **hardened, Point-in-Time, entity-level raw fact backbone**.  
 Financial concept standardization (e.g. mapping `Revenues` vs `SalesRevenueNet`, computing TTM, FCF, ROIC, EPS, Margins, or Restatement Reconciliation) is strictly deferred to **Phase 8B**.

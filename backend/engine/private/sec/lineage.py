@@ -3,10 +3,13 @@ backend/engine/private/sec/lineage.py
 ======================================
 Fact-to-Filing Lineage & Point-In-Time Acceptance Timeline Resolution Service.
 
-Core Hardening Principles:
+Core Invariants:
     - `SECFactFilingLinkRecord` provides an append-only linkage table without mutating raw fact records.
     - CIK and accession number consistency is strictly verified between fact and filing before linking.
-    - `acceptance_datetime` is strictly the SEC EDGAR acceptance event timestamp.
+    - Facts with NULL accession number are never linked.
+    - SEC facts and filings are entity-level records; instrument_id is not mutated.
+    - `acceptance_datetime` represents the aware UTC acceptance event timestamp.
+    - `acceptance_local_datetime` represents the naive SEC local acceptance timestamp.
     - `public_available_at` represents verified public availability on sec.gov (None if unknown).
     - Unresolved facts persist with `filing_id = None` and are NEVER dropped.
 """
@@ -15,7 +18,6 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
-from uuid import UUID
 
 from backend.engine.private.sec.models import (
     SECFactFilingLinkRecord,
@@ -63,8 +65,6 @@ def create_fact_filing_links(
             )
             links.append(link)
             fact.filing_id = filing.id
-            if fact.instrument_id is None and filing.instrument_id is not None:
-                fact.instrument_id = filing.instrument_id
 
     return links, facts
 
@@ -85,14 +85,14 @@ def get_fact_acceptance_timestamp(
     filings_by_accession: Dict[str, SECFilingRecord],
 ) -> Optional[datetime]:
     """
-    Returns the SEC EDGAR acceptance timestamp for a fact from its linked filing.
+    Returns the SEC EDGAR acceptance timestamp (aware or local) for a fact from its linked filing.
     """
     if not fact.accession_number:
         return None
     accn = fact.accession_number.strip()
     filing = filings_by_accession.get(accn)
-    if filing and filing.acceptance_datetime:
-        return filing.acceptance_datetime
+    if filing:
+        return filing.acceptance_datetime or filing.acceptance_local_datetime
     return None
 
 
