@@ -3,12 +3,12 @@ backend/engine/private/providers/tuik_sdmx.py
 ===============================================
 TÜİK (Turkish Statistical Institute) Official SDMX Web Service Adapter.
 
-Official Specification:
+Specification & Verification Status:
     - Base URL: https://data.tuik.gov.tr/api/sdmx/v1/
-    - Protocol: SDMX 2.1 RESTful Web Service (Official Data Portal active since June 2026).
-    - Dataflows: Consumer Price Index (CPI / TÜFE) and Domestic Producer Price Index (D_PPI / Yİ-ÜFE).
-    - Differentiates: Index levels (2003=100) vs Month-on-Month % change vs Year-on-Year % change.
-    - Vergi Endeksleme Referansı: Yurt İçi Üretici Fiyat Endeksi (Yİ-ÜFE).
+    - Status: YELLOW (Pending official TurkStat SDMX dataflow catalog & codelist verification).
+    - Unverified series codes return UNAVAILABLE with explicit diagnostics.
+    - Zero observation (0.0) is a valid float, never treated as missing.
+    - Published_at is strictly None if not officially provided in observation metadata.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from backend.engine.private.exceptions import (
     ProviderServerError,
     ProviderTimeoutError,
 )
+from backend.engine.private.macro.models import ContractStatus
 from backend.engine.private.macro.registry import MacroSeriesRegistry
 from backend.engine.private.provider_contract import (
     DataProviderContract,
@@ -46,18 +47,21 @@ logger = logging.getLogger(__name__)
 class TUIKSDMXProvider(DataProviderContract):
     """
     Official data adapter for TÜİK SDMX REST Web Service.
+    Marked YELLOW pending official dataflow catalog verification.
     """
     provider_name: str = "TUIK_SDMX"
     provider_version: str = "1.0.0"
     source_quality: SourceTier = SourceTier.TIER_1_REGULATORY
-    access_status: ProviderAccessStatus = ProviderAccessStatus.GREEN
+    access_status: ProviderAccessStatus = ProviderAccessStatus.YELLOW
     base_url: str = "https://data.tuik.gov.tr/api/sdmx/v1/data/"
 
     def __init__(
         self,
         http_client: Optional[httpx.AsyncClient] = None,
+        enforce_verified_contract: bool = True,
     ) -> None:
         self._http_client = http_client
+        self._enforce_verified_contract = enforce_verified_contract
 
     def _get_client(self) -> httpx.AsyncClient:
         return self._http_client or get_http_client()
@@ -69,11 +73,26 @@ class TUIKSDMXProvider(DataProviderContract):
         series_key = context.provider_symbol or "TR_CPI_TUIK_YOY"
         canonical_def = MacroSeriesRegistry.get(series_key)
 
+        # Discovery / Verification Guard
+        if self._enforce_verified_contract:
+            if canonical_def and (not canonical_def.is_active or canonical_def.contract_status != ContractStatus.VERIFIED):
+                return ProviderResponse(
+                    provider_name=self.provider_name,
+                    source_quality=self.source_quality,
+                    retrieved_at=datetime.now(timezone.utc),
+                    published_at=None,
+                    effective_date=None,
+                    status=DataStatus.UNAVAILABLE,
+                    raw=None,
+                    warnings=[f"TÜİK series {series_key} is currently UNVERIFIED pending official SDMX codelist catalog release."],
+                    canonical_instrument_id=context.canonical_instrument_id,
+                    provider_symbol=context.provider_symbol,
+                )
+
         dataflow = "CPI"
         if "PPI" in series_key:
             dataflow = "D_PPI"
 
-        # Determine target period (YYYY-MM)
         target_date = context.effective_date or (context.as_of_time.date() if context.as_of_time else date.today())
         period_str = target_date.strftime("%Y-%m")
 
@@ -113,7 +132,7 @@ class TUIKSDMXProvider(DataProviderContract):
                 source_quality=self.source_quality,
                 retrieved_at=t_retrieved,
                 published_at=None,
-                effective_date=target_date,
+                effective_date=None,
                 status=DataStatus.UNAVAILABLE,
                 raw=None,
                 warnings=[f"Dataflow {dataflow} not found for period {period_str}"],
@@ -130,29 +149,30 @@ class TUIKSDMXProvider(DataProviderContract):
         val = normalized.get("value")
         status = DataStatus.COMPLETE if val is not None else DataStatus.UNAVAILABLE
 
-        # Extract published_at if provided in SDMX header/metadata
-        published_at = self._extract_published_at(payload) or t_retrieved
-        eff_date = self._parse_period_to_date(normalized.get("period")) or target_date
+        # Strict: published_at is None unless officially present in dataset metadata
+        published_at = self._extract_published_at(payload)
+        eff_date = self._parse_period_to_date(normalized.get("period"))
+
+        if eff_date is None and status == DataStatus.COMPLETE:
+            status = DataStatus.UNAVAILABLE
 
         return ProviderResponse(
             provider_name=self.provider_name,
             source_quality=self.source_quality,
             retrieved_at=t_retrieved,
-            published_at=published_at,
+            published_at=published_at, # No fabrication of retrieval timestamp
             effective_date=eff_date,
             observed_at=t_retrieved,
             status=status,
             raw=payload,
-            warnings=[] if status == DataStatus.COMPLETE else ["TÜİK SDMX payload contained no usable observation."],
+            warnings=[] if status == DataStatus.COMPLETE else ["TÜİK SDMX payload contained no usable observation or date."],
             canonical_instrument_id=context.canonical_instrument_id,
             provider_symbol=context.provider_symbol,
         )
 
     def normalize(self, raw: Any) -> Dict[str, Any]:
         """
-        Maps SDMX dataset or tabular JSON to distinct canonical inflation fields:
-        - cpi_index, cpi_yoy_pct, cpi_mom_pct
-        - ppi_index, ppi_yoy_pct, ppi_mom_pct
+        Maps SDMX dataset or tabular JSON to canonical fields.
         """
         if not isinstance(raw, (dict, list)):
             raise ProviderSchemaError("TÜİK payload must be dict or list.")
@@ -164,7 +184,7 @@ class TUIKSDMXProvider(DataProviderContract):
             val = self._parse_decimal(item.get("VALUE") or item.get("OBS_VALUE"))
             indicator = str(item.get("INDICATOR") or "").upper()
 
-            res = {
+            res: Dict[str, Any] = {
                 "period": period,
                 "value": val,
             }
@@ -178,18 +198,12 @@ class TUIKSDMXProvider(DataProviderContract):
 
         # Case 2: Standard SDMX 2.1 Structure / Data Object
         if isinstance(raw, dict):
-            # Check for direct key fields
             if "data" in raw or "dataSets" in raw:
-                # Extract observations map
                 obs_data = raw.get("data", raw)
                 datasets = obs_data.get("dataSets", [{}])
                 observations = datasets[0].get("observations", {}) if datasets else {}
-                
-                # If simplified series object exists
-                series_dict = obs_data.get("series", {})
                 period = raw.get("header", {}).get("extracted")
 
-                # Find last observation value
                 val = None
                 if observations:
                     last_key = sorted(observations.keys())[-1]
@@ -202,7 +216,6 @@ class TUIKSDMXProvider(DataProviderContract):
                     "raw_observations_count": len(observations),
                 }
 
-            # Direct dictionary fields
             period = raw.get("period") or raw.get("TIME_PERIOD")
             val = self._parse_decimal(raw.get("value") or raw.get("OBS_VALUE"))
             return {
@@ -220,7 +233,6 @@ class TUIKSDMXProvider(DataProviderContract):
 
     def validate(self, normalized: Dict[str, Any]) -> List[str]:
         warnings: List[str] = []
-        # Enforce that index level is not confused with percentage change
         cpi_idx = normalized.get("cpi_index")
         if cpi_idx is not None and cpi_idx < 10.0:
             warnings.append(f"CPI Index level appears abnormally low (< 10.0): {cpi_idx}")
@@ -245,23 +257,28 @@ class TUIKSDMXProvider(DataProviderContract):
 
     @staticmethod
     def _extract_published_at(payload: Dict[str, Any]) -> Optional[datetime]:
+        """Strict extraction: only returns datetime if explicitly specified as publication metadata."""
         if not isinstance(payload, dict):
             return None
-        header = payload.get("header", {})
-        prepared = header.get("prepared") or header.get("extracted")
-        if prepared:
+        # Only if explicitly tagged as publication_time / release_time in dataset metadata
+        release_time = payload.get("release_time") or payload.get("published_at")
+        if release_time:
             try:
-                return datetime.fromisoformat(str(prepared).replace("Z", "+00:00"))
+                return datetime.fromisoformat(str(release_time).replace("Z", "+00:00"))
             except ValueError:
                 pass
         return None
 
     @staticmethod
     def _parse_decimal(val: Any) -> Optional[float]:
-        if val is None or val == "" or val == "-" or val == "null":
+        if val is None:
+            return None
+        cleaned = str(val).strip()
+        if cleaned in ("", "-", "null", "None"):
             return None
         try:
-            return float(str(val).strip().replace(",", "."))
+            # 0.0 is valid
+            return float(cleaned.replace(",", "."))
         except (ValueError, TypeError):
             return None
 
@@ -270,11 +287,9 @@ class TUIKSDMXProvider(DataProviderContract):
         if not period_str:
             return None
         try:
-            # Format YYYY-MM
             cleaned = str(period_str).strip()
             if len(cleaned) == 7 and "-" in cleaned:
                 year, month = map(int, cleaned.split("-"))
-                # End of month date for inflation index
                 if month in (1, 3, 5, 7, 8, 10, 12):
                     day = 31
                 elif month in (4, 6, 9, 11):

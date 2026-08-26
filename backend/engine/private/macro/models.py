@@ -64,6 +64,13 @@ class VerificationStatus(Enum):
     REJECTED = "rejected"
 
 
+class ContractStatus(Enum):
+    """Contract and series code verification status."""
+    VERIFIED = "verified"
+    UNVERIFIED = "unverified"
+    DISABLED = "disabled"
+
+
 @dataclass
 class MacroSeriesDefinition:
     """
@@ -79,8 +86,11 @@ class MacroSeriesDefinition:
     frequency: MacroFrequency
     freshness_basis: FreshnessBasis
     source_tier: SourceTier
+    contract_status: ContractStatus = ContractStatus.VERIFIED
     expected_release_interval_days: int = 1
     source_url: Optional[str] = None
+    verification_source: Optional[str] = None
+    verification_notes: Optional[str] = None
     is_active: bool = True
     id: UUID = field(default_factory=uuid4)
 

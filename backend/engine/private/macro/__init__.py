@@ -3,6 +3,7 @@ backend/engine/private/macro — Canonical Macroeconomic Data Layer
 """
 
 from backend.engine.private.macro.models import (
+    ContractStatus,
     MacroCategory,
     MacroFrequency,
     MacroObservationRecord,
@@ -13,6 +14,7 @@ from backend.engine.private.macro.models import (
 )
 
 __all__ = [
+    "ContractStatus",
     "MacroCategory",
     "MacroFrequency",
     "MacroObservationRecord",

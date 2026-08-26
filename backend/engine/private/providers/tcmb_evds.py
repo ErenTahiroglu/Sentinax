@@ -9,6 +9,12 @@ Official Specification:
     - Query Parameters: `series`, `startDate`, `endDate`, `type=json`
     - Date Format: DD-MM-YYYY
     - Response Format: JSON object containing items array with series fields (dots converted to underscores).
+
+Hardening Invariants:
+    - Zero observation is a valid float (0.0), NEVER treated as missing or falsy.
+    - Missing observation is None.
+    - Multi-series returns deterministic `values` dictionary; does not overwrite `value`.
+    - Unparseable response date returns UNAVAILABLE (no fabricated date fallback).
 """
 
 from __future__ import annotations
@@ -34,6 +40,7 @@ from backend.engine.private.exceptions import (
     ProviderServerError,
     ProviderTimeoutError,
 )
+from backend.engine.private.macro.models import ContractStatus
 from backend.engine.private.macro.registry import MacroSeriesRegistry
 from backend.engine.private.provider_contract import (
     DataProviderContract,
@@ -78,6 +85,19 @@ class TCMBEVDSProvider(DataProviderContract):
         if context.provider_symbol and context.provider_symbol.startswith("TR_"):
             canonical_def = MacroSeriesRegistry.get(context.provider_symbol)
             if canonical_def:
+                if not canonical_def.is_active or canonical_def.contract_status != ContractStatus.VERIFIED:
+                    return ProviderResponse(
+                        provider_name=self.provider_name,
+                        source_quality=self.source_quality,
+                        retrieved_at=datetime.now(timezone.utc),
+                        published_at=None,
+                        effective_date=None,
+                        status=DataStatus.UNAVAILABLE,
+                        raw=None,
+                        warnings=[f"Series {context.provider_symbol} is unverified or disabled in registry ({canonical_def.verification_notes})."],
+                        canonical_instrument_id=context.canonical_instrument_id,
+                        provider_symbol=context.provider_symbol,
+                    )
                 series_code = canonical_def.provider_series_code
 
         if not series_code:
@@ -154,7 +174,7 @@ class TCMBEVDSProvider(DataProviderContract):
                 source_quality=self.source_quality,
                 retrieved_at=t_retrieved,
                 published_at=None,
-                effective_date=target_date,
+                effective_date=None,
                 status=DataStatus.UNAVAILABLE,
                 raw=None,
                 warnings=[f"EVDS returned HTTP {resp.status_code}"],
@@ -177,7 +197,7 @@ class TCMBEVDSProvider(DataProviderContract):
                 source_quality=self.source_quality,
                 retrieved_at=t_retrieved,
                 published_at=None,
-                effective_date=target_date,
+                effective_date=None,
                 status=DataStatus.UNAVAILABLE,
                 raw=payload,
                 warnings=[f"EVDS error: {err_msg}"],
@@ -192,7 +212,7 @@ class TCMBEVDSProvider(DataProviderContract):
                 source_quality=self.source_quality,
                 retrieved_at=t_retrieved,
                 published_at=None,
-                effective_date=target_date,
+                effective_date=None,
                 status=DataStatus.UNAVAILABLE,
                 raw=payload,
                 warnings=["EVDS returned 0 observation items for query period."],
@@ -200,27 +220,47 @@ class TCMBEVDSProvider(DataProviderContract):
                 provider_symbol=context.provider_symbol,
             )
 
-        # Most recent item in result
         latest_item = items[-1]
-        raw_val_str = self._extract_series_value(latest_item, series_code)
-        parsed_val = self._parse_decimal(raw_val_str)
-
-        # Parse effective date from item Tarih
         item_date_str = latest_item.get("Tarih")
-        eff_date = self._parse_date(item_date_str) or target_date
+        eff_date = self._parse_date(item_date_str)
 
-        status = DataStatus.COMPLETE if parsed_val is not None else DataStatus.UNAVAILABLE
+        # Invariant: No fabricated effective_date
+        if eff_date is None:
+            return ProviderResponse(
+                provider_name=self.provider_name,
+                source_quality=self.source_quality,
+                retrieved_at=t_retrieved,
+                published_at=None,
+                effective_date=None,
+                status=DataStatus.UNAVAILABLE,
+                raw=payload,
+                warnings=[f"EVDS response item contained missing or unparseable Tarih field: '{item_date_str}'"],
+                canonical_instrument_id=context.canonical_instrument_id,
+                provider_symbol=context.provider_symbol,
+            )
+
+        normalized = self.normalize(payload)
+        is_multi = "-" in series_code
+
+        if is_multi:
+            # Multi-series: check if at least one value is present
+            values_dict = normalized.get("values", {})
+            has_valid = any(v is not None for v in values_dict.values())
+            status = DataStatus.COMPLETE if has_valid else DataStatus.UNAVAILABLE
+        else:
+            val = normalized.get("value")
+            status = DataStatus.COMPLETE if val is not None else DataStatus.UNAVAILABLE
 
         return ProviderResponse(
             provider_name=self.provider_name,
             source_quality=self.source_quality,
             retrieved_at=t_retrieved,
-            published_at=None, # EVDS does not provide distinct publication timestamps in quote items
+            published_at=None,
             effective_date=eff_date,
             observed_at=t_retrieved,
             status=status,
             raw=payload,
-            warnings=[] if status == DataStatus.COMPLETE else ["Value in EVDS item was null or unparseable."],
+            warnings=[] if status == DataStatus.COMPLETE else ["Value in EVDS observation was null, non-existent, or unparseable."],
             canonical_instrument_id=context.canonical_instrument_id,
             provider_symbol=context.provider_symbol,
         )
@@ -228,6 +268,7 @@ class TCMBEVDSProvider(DataProviderContract):
     def normalize(self, raw: Any) -> Dict[str, Any]:
         """
         Normalizes raw EVDS payload to canonical macro fields.
+        Differentiates single-series (returns 'value') vs multi-series (returns 'values' dict).
         """
         if not isinstance(raw, dict):
             raise ProviderSchemaError("EVDS raw payload must be a dict.")
@@ -237,17 +278,30 @@ class TCMBEVDSProvider(DataProviderContract):
             return {}
 
         latest_item = items[-1]
-        normalized = {
+        normalized: Dict[str, Any] = {
             "date": latest_item.get("Tarih"),
             "unix_time": latest_item.get("UNIXTIME"),
         }
 
-        # Extract all series keys (skipping metadata fields like Tarih, UNIXTIME)
+        # Extract series fields
+        series_fields: Dict[str, Optional[float]] = {}
         for k, v in latest_item.items():
             if k not in ("Tarih", "UNIXTIME"):
                 parsed = self._parse_decimal(v)
-                normalized[k] = parsed
-                normalized["value"] = parsed  # Canonical primary value alias
+                series_fields[k] = parsed
+
+        if len(series_fields) == 1:
+            # Single series: deterministic single value
+            single_key = next(iter(series_fields))
+            single_val = series_fields[single_key]
+            normalized[single_key] = single_val
+            normalized["value"] = single_val
+        elif len(series_fields) > 1:
+            # Multi-series: deterministic values mapping
+            normalized.update(series_fields)
+            normalized["values"] = series_fields
+        else:
+            normalized["value"] = None
 
         return normalized
 
@@ -272,18 +326,23 @@ class TCMBEVDSProvider(DataProviderContract):
 
     @staticmethod
     def _extract_series_value(item: Dict[str, Any], series_code: str) -> Any:
-        # EVDS converts dots to underscores in JSON response keys (e.g. TP.DK.USD.A.YTL -> TP_DK_USD_A_YTL)
         alt_key = series_code.replace(".", "_")
-        return item.get(series_code) or item.get(alt_key)
+        if series_code in item:
+            return item[series_code]
+        if alt_key in item:
+            return item[alt_key]
+        return None
 
     @staticmethod
     def _parse_decimal(val_str: Any) -> Optional[float]:
-        if val_str is None or val_str == "" or val_str == "-" or val_str == "null":
+        if val_str is None:
+            return None
+        cleaned = str(val_str).strip()
+        if cleaned in ("", "-", "null", "None"):
             return None
         try:
-            # Handle localized comma or dot
-            cleaned = str(val_str).strip().replace(",", ".")
-            return float(cleaned)
+            # 0 and 0.0 are valid observations
+            return float(cleaned.replace(",", "."))
         except (ValueError, TypeError):
             return None
 

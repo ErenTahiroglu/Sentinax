@@ -5,10 +5,10 @@ Manual Verified Ingestion Service & Provider for ENAG Inflation Data.
 
 Core Principles:
     - Automated scraping is STRICTLY FORBIDDEN.
-    - ENAG data is entered via manual verified records (ManualENAGRecord).
-    - Requires verification_status == VERIFIED before use in any macro decision calculation.
-    - PENDING and REJECTED records are automatically rejected from production calculations.
-    - Distinct non-governmental tier (TIER_3_AGGREGATOR).
+    - Direct overwrites are prohibited; revisions must explicitly link `supersedes_record_id`.
+    - Verification lifecycle is immutable regarding data values and source references.
+    - Requires `verification_status == VERIFIED` before use in any macro decision calculation.
+    - Published_at is None unless explicitly known (NEVER falls back to entered_at).
     - STRICT INVARIANT: ENAG is NEVER used for tax indexation (tax indexation strictly requires TÜİK Yİ-ÜFE).
 """
 
@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 class ManualENAGProvider(DataProviderContract):
     """
-    Data adapter and in-memory repository for manually entered and verified ENAG records.
+    Data adapter and in-memory revision repository for manually entered and verified ENAG records.
     """
     provider_name: str = "ENAG_MANUAL"
     provider_version: str = "1.0.0"
@@ -49,8 +49,8 @@ class ManualENAGProvider(DataProviderContract):
     access_status: ProviderAccessStatus = ProviderAccessStatus.GREEN
 
     def __init__(self) -> None:
-        # Storage for verified ENAG records keyed by (reference_period, value_type)
-        self._records: Dict[str, ManualENAGRecord] = {}
+        # Storage for verified ENAG records history keyed by (reference_period:value_type) -> List[ManualENAGRecord]
+        self._records_history: Dict[str, List[ManualENAGRecord]] = {}
 
     def ingest_record(self, record: ManualENAGRecord) -> None:
         """
@@ -60,17 +60,30 @@ class ManualENAGProvider(DataProviderContract):
             raise ValueError("Manual ENAG record must specify reference_period (YYYY-MM) and value_type.")
 
         key = f"{record.reference_period}:{record.value_type}"
-        self._records[key] = record
+        history = self._records_history.setdefault(key, [])
+
+        if history:
+            latest = history[-1]
+            if record.supersedes_record_id != latest.id:
+                raise ValueError(
+                    f"Record for {key} already exists (id={latest.id}). Direct overwrite is forbidden. "
+                    f"Set supersedes_record_id={latest.id} to submit a revision."
+                )
+            history.append(record)
+        else:
+            history.append(record)
 
     def verify_record(self, reference_period: str, value_type: str, verified_by: str) -> bool:
         """
         Transitions a PENDING record to VERIFIED status after manual validation.
+        Does NOT mutate substantive data (value, reference_period, source_url, published_at).
         """
         key = f"{reference_period}:{value_type}"
-        record = self._records.get(key)
-        if not record:
+        history = self._records_history.get(key)
+        if not history:
             return False
 
+        record = history[-1]
         if not record.source_url:
             raise ValueError("Cannot verify ENAG record without a valid source_url.")
 
@@ -79,15 +92,19 @@ class ManualENAGProvider(DataProviderContract):
         record.verified_by = verified_by
         return True
 
-    def get_record(self, reference_period: str, value_type: str) -> Optional[ManualENAGRecord]:
+    def get_latest_record(self, reference_period: str, value_type: str) -> Optional[ManualENAGRecord]:
         key = f"{reference_period}:{value_type}"
-        return self._records.get(key)
+        history = self._records_history.get(key)
+        return history[-1] if history else None
+
+    def get_record_history(self, reference_period: str, value_type: str) -> List[ManualENAGRecord]:
+        key = f"{reference_period}:{value_type}"
+        return list(self._records_history.get(key, []))
 
     async def fetch(self, context: FetchContext) -> ProviderResponse:
         """
         Retrieves a verified ENAG inflation observation.
         """
-        # Determine value type from provider symbol
         val_type = "MONTHLY_PCT"
         if context.provider_symbol and "YOY" in context.provider_symbol:
             val_type = "ANNUAL_PCT"
@@ -96,11 +113,10 @@ class ManualENAGProvider(DataProviderContract):
         period_str = target_date.strftime("%Y-%m")
 
         key = f"{period_str}:{val_type}"
-        record = self._records.get(key)
+        history = self._records_history.get(key)
         t_retrieved = datetime.now(timezone.utc)
 
-        # 1. Check if record exists
-        if not record:
+        if not history:
             return ProviderResponse(
                 provider_name=self.provider_name,
                 source_quality=self.source_quality,
@@ -114,13 +130,32 @@ class ManualENAGProvider(DataProviderContract):
                 provider_symbol=context.provider_symbol,
             )
 
-        # 2. Check Verification Status (PENDING or REJECTED is UNAVAILABLE)
+        # In point-in-time mode, resolve appropriate revision
+        record = history[-1]
+        if context.as_of_time:
+            # Find latest revision entered on or before as_of_time
+            valid_revisions = [r for r in history if r.entered_at <= context.as_of_time]
+            if not valid_revisions:
+                return ProviderResponse(
+                    provider_name=self.provider_name,
+                    source_quality=self.source_quality,
+                    retrieved_at=t_retrieved,
+                    published_at=None,
+                    effective_date=target_date,
+                    status=DataStatus.UNAVAILABLE,
+                    raw=None,
+                    warnings=[f"No ENAG record entered before as-of boundary {context.as_of_time}."],
+                    canonical_instrument_id=context.canonical_instrument_id,
+                    provider_symbol=context.provider_symbol,
+                )
+            record = valid_revisions[-1]
+
         if record.verification_status != VerificationStatus.VERIFIED:
             return ProviderResponse(
                 provider_name=self.provider_name,
                 source_quality=self.source_quality,
                 retrieved_at=t_retrieved,
-                published_at=record.published_at,
+                published_at=record.published_at, # No fabrication of entered_at as publication
                 effective_date=target_date,
                 status=DataStatus.UNAVAILABLE,
                 raw=record,
@@ -135,7 +170,7 @@ class ManualENAGProvider(DataProviderContract):
             provider_name=self.provider_name,
             source_quality=self.source_quality,
             retrieved_at=t_retrieved,
-            published_at=record.published_at or record.entered_at,
+            published_at=record.published_at, # Strict: None if unknown
             effective_date=eff_date,
             observed_at=record.entered_at,
             status=DataStatus.COMPLETE,
@@ -147,6 +182,8 @@ class ManualENAGProvider(DataProviderContract):
                 "verification_status": record.verification_status.value,
                 "verified_at": record.verified_at.isoformat() if record.verified_at else None,
                 "verified_by": record.verified_by,
+                "id": str(record.id),
+                "supersedes_record_id": str(record.supersedes_record_id) if record.supersedes_record_id else None,
             },
             warnings=["Non-governmental inflation research data. Not official statistics."],
             canonical_instrument_id=context.canonical_instrument_id,

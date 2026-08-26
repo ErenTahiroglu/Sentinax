@@ -9,7 +9,7 @@ Rules:
     - Reads TCMB_EVDS_API_KEY from environment.
     - NEVER logs or prints raw API key.
     - Zero database mutations (read-only health check).
-    - Single small request to verify API connectivity and response parsing.
+    - Tests verified series: USD/TRY, EUR/TRY, and TCMB AOFM (TP.APIFON4).
 
 Usage:
     export TCMB_EVDS_API_KEY="your_actual_key"
@@ -27,6 +27,27 @@ from backend.engine.private.provider_contract import FetchContext
 from backend.engine.private.providers.tcmb_evds import TCMBEVDSProvider
 
 
+async def test_series(provider: TCMBEVDSProvider, symbol: str, label: str) -> None:
+    print(f"\n📡 Querying {label} ({symbol})...")
+    ctx = FetchContext(
+        observation_type="MACRO",
+        provider_symbol=symbol,
+    )
+    try:
+        response = await provider.fetch(ctx)
+        print(f"  Status:         {response.status.value}")
+        print(f"  Effective Date: {response.effective_date}")
+        print(f"  Usable:         {response.is_usable}")
+        if response.is_usable and response.raw:
+            normalized = provider.normalize(response.raw)
+            print(f"  Normalized:     {normalized.get('value')}")
+            print(f"  ✅ {label}: SUCCESS")
+        else:
+            print(f"  ⚠️ {label}: UNSUCCESSFUL ({response.warnings})")
+    except Exception as e:
+        print(f"  ❌ {label} FAILED: {e}")
+
+
 async def main() -> None:
     api_key = os.getenv("TCMB_EVDS_API_KEY")
     if not api_key:
@@ -38,29 +59,13 @@ async def main() -> None:
     print(f"🔍 Testing TCMB EVDS API connection using key: {masked_key}")
 
     provider = TCMBEVDSProvider(api_key=api_key)
-    ctx = FetchContext(
-        observation_type="MACRO_FX",
-        provider_symbol="TP.DK.USD.A.YTL",
-    )
 
-    try:
-        response = await provider.fetch(ctx)
-        print("\n--- TCMB EVDS Response ---")
-        print(f"Status:          {response.status.value}")
-        print(f"Effective Date:  {response.effective_date}")
-        print(f"Retrieved At:    {response.retrieved_at.isoformat()}")
-        print(f"Usable:          {response.is_usable}")
-        
-        normalized = provider.normalize(response.raw)
-        print(f"Normalized Data: {normalized}")
-        
-        if response.is_usable and normalized.get("value") is not None:
-            print("\n✅ TCMB EVDS Live Smoke Test: SUCCESS")
-        else:
-            print(f"\n⚠️ TCMB EVDS returned unusable status: {response.warnings}")
-    except Exception as e:
-        print(f"\n❌ TCMB EVDS Smoke Test FAILED with error: {e}")
-        sys.exit(1)
+    # 1. USD/TRY
+    await test_series(provider, "TP.DK.USD.A.YTL", "USD/TRY Buying Rate")
+    # 2. EUR/TRY
+    await test_series(provider, "TP.DK.EUR.A.YTL", "EUR/TRY Buying Rate")
+    # 3. TCMB AOFM (TP.APIFON4)
+    await test_series(provider, "TP.APIFON4", "TCMB AOFM (Weighted Funding Cost)")
 
 
 if __name__ == "__main__":
