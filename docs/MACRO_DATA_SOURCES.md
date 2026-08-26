@@ -1,6 +1,6 @@
 # Global & Turkey Macroeconomic Data Layer
 
-**Version:** 3.0 (Global Multi-Provider Release)  
+**Version:** 3.1 (2026 Euro Area EA21 & Treasury Hardened Release)  
 **Effective Date:** 26 August 2026  
 **Scope:** Macroeconomic data sources, Point-in-Time (PIT) vintage semantics, authentication, contract verification, and canonical registry for Sentinax Private Engine.
 
@@ -15,7 +15,7 @@
 | **ENAG Manual** | TR | `TIER_3_AGGREGATOR` | Manual Ingestion | **VERIFIED (MANUAL)** | `PUBLISHED_AT` | None (Audit Trail) | **NO** (Strictly Prohibited) |
 | **FRED / ALFRED** | US | `TIER_1_REGULATORY` | REST API v1 (JSON) | **VERIFIED** | `PUBLISHED_AT` / `EFFECTIVE_DATE` | `FRED_API_KEY` (Query `api_key`) | N/A (Global Macro) |
 | **ECB Data Portal** | EA | `TIER_1_REGULATORY` | SDMX 2.1 REST (CSV) | **VERIFIED** | `EFFECTIVE_DATE` | None (Open Web Service) | N/A (Euro Area Macro) |
-| **Eurostat** | EA | `TIER_1_REGULATORY` | SDMX 2.1 REST (CSV) | **VERIFIED** | `PUBLISHED_AT` | None (Open Web Service) | N/A (Euro Area Macro) |
+| **Eurostat** | EA (`EA21`) | `TIER_1_REGULATORY` | SDMX 2.1 REST (CSV) | **VERIFIED** | `PUBLISHED_AT` | None (Open Web Service) | N/A (Euro Area Macro) |
 | **U.S. Treasury** | US | `TIER_1_REGULATORY` | XML DataServices Feed | **VERIFIED** | `EFFECTIVE_DATE` | None (Open Web Service) | N/A (Sovereign Yields) |
 
 ---
@@ -25,7 +25,7 @@
 To eliminate lookahead contamination and semantic confusion, Sentinax strictly separates these date/time concepts:
 
 1. **Effective / Observation Date (`effective_date`):**
-   - The economic period the measurement applies to (e.g. `2023-01-01` for Q1 2023 GDP, `2024-04-01` for April CPI).
+   - The economic period the measurement applies to (e.g. `2026-01-01` for Q1 2026 GDP, `2026-04-01` for April CPI).
 2. **Requested Vintage Snapshot Date (`vintage_date`):**
    - The as-of date requested from ALFRED (`vintage_dates=YYYY-MM-DD`). Represents "what was known on this calendar date".
 3. **FRED / SDMX Real-Time Period (`realtime_start` / `realtime_end`):**
@@ -51,37 +51,39 @@ To eliminate lookahead contamination and semantic confusion, Sentinax strictly s
 - **Format:** SDMX-CSV (`format=csvdata`).
 - **Authentication:** None (Public open API).
 
-### B. Execution Modes & Query Bounding
-- **Current Mode:** Bounded single latest observation via `lastNObservations=1`.
-- **Historical Query:** Bounded by `startPeriod` and `endPeriod`.
-- **PIT Limitations:** External `SOURCE_AS_OF` and `SYSTEM_AS_OF` return `UNAVAILABLE` (`"ECB historical SOURCE_AS_OF requires local PIT storage"`).
+### B. Policy Rate Frequency & Freshness Semantics
+- **Event-Driven Nature:** Policy rates (Deposit Facility Rate `DFR`, Main Refinancing Operations `MRO`) are date-of-changes series (`MacroFrequency.EVENT_DRIVEN`).
+- **Freshness Invariant:** An unchanged policy rate is valid until the next official Governing Council decision. `expected_release_interval_days = None` prevents false staleness penalties.
+- **Daily Benchmarks:** €STR (`ESTR`) and EUR/USD reference rates remain daily (`MacroFrequency.BUSINESS_DAILY`) with `expected_release_interval_days = 1`.
 
 ### C. Verified Initial Series (Geography: `EA`)
 1. `EA_EURUSD_REFERENCE_RATE` (`EXR/D.USD.EUR.SP00.A`): ECB Euro Foreign Exchange Reference Rate: US Dollar / Euro (`1 EUR = X USD`).
-2. `EA_ECB_DEPOSIT_FACILITY_RATE` (`FM/D.U2.EUR.4F.KR.DFR.LEV`): Deposit Facility Rate (Key Policy Rate, %).
-3. `EA_ECB_MAIN_REFINANCING_RATE` (`FM/D.U2.EUR.4F.KR.MRR_FR.LEV`): Main Refinancing Operations Rate (Fixed / Minimum Bid Rate, %).
-4. `EA_ESTR` (`EST/B.EU000A2X2A25.WT`): Euro Short-Term Rate (€STR, %).
+2. `EA_ECB_DEPOSIT_FACILITY_RATE` (`FM/D.U2.EUR.4F.KR.DFR.LEV`): Deposit Facility Rate (Key Policy Rate, %, `EVENT_DRIVEN`).
+3. `EA_ECB_MAIN_REFINANCING_RATE` (`FM/D.U2.EUR.4F.KR.MRR_FR.LEV`): Main Refinancing Operations Rate (Fixed / Minimum Bid Rate, %, `EVENT_DRIVEN`).
+4. `EA_ESTR` (`EST/B.EU000A2X2A25.WT`): Euro Short-Term Rate (€STR, %, `BUSINESS_DAILY`).
 
 ---
 
-## 4. Eurostat Dissemination API
+## 4. Eurostat Dissemination API (2026 Euro Area EA21 & HICP 2025=100)
 
-### A. Contract & Protocol
-- **Official Authority:** Eurostat (Statistical Office of the European Union).
-- **Base Endpoint:** `https://ec.europa.eu/eurostat/api/dissemination/`
-- **Protocol:** SDMX 2.1 REST Dissemination Service (`/sdmx/2.1/data/{flowRef}/{key}?format=SDMX-CSV`).
-- **Authentication:** None (Public open API).
+### A. 2026 Euro Area Composition (`EA21`)
+- **Bulgaria Accession:** On 1 January 2026, Bulgaria adopted the Euro. The Euro Area consists of **21 member states** (`EA21`).
+- **Canonical Composition:** Current canonical Euro Area series use provider-native geography code `EA21` (`composition_member_count = 21`, `composition_valid_from = 2026-01-01`).
 
-### B. Execution Modes & PIT Reality
-- **Current Mode:** Bounded by `lastNObservations=1`.
-- **Historical Query:** Bounded by `startPeriod` and `endPeriod` (e.g. `YYYY-MM`).
-- **PIT Limitations:** Eurostat dissemination API does not support past vintage reconstruction. `SOURCE_AS_OF` and `SYSTEM_AS_OF` fail closed as `UNAVAILABLE` requiring local PIT storage.
+### B. 2026 HICP Reference Period & ECOICOP v2
+- **Reference Base:** 2026 HICP index series use the common reference base **2025 = 100** (dimension `I25`).
+- **Classification:** ECOICOP version 2 (`CP00` all-items).
 
-### C. Verified Initial Series (Geography: `EA`, Provider Native: `EA20`)
-1. `EA_HICP_ALL_ITEMS_INDEX` (`prc_hicp_midx/M.I15.CP00.EA20`): Harmonised Index of Consumer Prices (Index 2015=100).
-2. `EA_HICP_ALL_ITEMS_YOY` (`prc_hicp_manr/M.RCH_A.CP00.EA20`): Harmonised Index of Consumer Prices (Annual Rate of Change, %).
-3. `EA_UNEMPLOYMENT_RATE` (`une_rt_m/M.SA.TOTAL.PC_ACT.T.EA20`): Civilian Unemployment Rate (% of active population, SA).
-4. `EA_REAL_GDP` (`namq_10_gdp/Q.CLV10_MNAC.SCA.B1GQ.EA20`): Real Gross Domestic Product (Chain-linked volumes 2010 Million EUR, SA).
+### C. Frequency-Aware Period Formatter & Validation
+- **Quarterly GDP:** Formats `effective_date` to `YYYY-Qn` (e.g. `2026-Q1`).
+- **Monthly Series:** Formats to `YYYY-MM`.
+- **Validation Guard:** The returned observation's `TIME_PERIOD` must match the requested formatted period string; otherwise, returns `UNAVAILABLE`.
+
+### D. Verified Initial Series (Geography: `EA`, Provider Native: `EA21`)
+1. `EA_HICP_ALL_ITEMS_INDEX` (`prc_hicp_midx/M.I25.CP00.EA21`): Harmonised Index of Consumer Prices (Index 2025=100, Euro Area 21).
+2. `EA_HICP_ALL_ITEMS_YOY` (`prc_hicp_manr/M.RCH_A.CP00.EA21`): Harmonised Index of Consumer Prices (Annual Rate of Change, %, Euro Area 21).
+3. `EA_UNEMPLOYMENT_RATE` (`une_rt_m/M.SA.TOTAL.PC_ACT.T.EA21`): Civilian Unemployment Rate (% of active population, SA, Euro Area 21).
+4. `EA_REAL_GDP` (`namq_10_gdp/Q.CLV10_MNAC.SCA.B1GQ.EA21`): Real Gross Domestic Product (Chain-linked volumes 2010 Million EUR, SA, Euro Area 21).
 
 ---
 
@@ -93,10 +95,11 @@ To eliminate lookahead contamination and semantic confusion, Sentinax strictly s
 - **Protocol:** Atom XML Feed with Microsoft OData DataServices (`data=daily_treasury_yield_curve`).
 - **Authentication:** None (Public open feed).
 
-### B. Single Curve Fetch Model & Bounded Queries
-- **Current / Month Query:** Fetches monthly feed `field_tdr_date_value_month=YYYYMM` (~20 rows) and selects the latest date row.
-- **Exact Date Query:** Selects the exact date entry in the month feed. If not found, returns `UNAVAILABLE` (no automatic forward-filling).
-- **All Tenors in Single Fetch:** A single XML response contains all tenors (`1M`, `2M`, `3M`, `4M`, `6M`, `1Y`, `2Y`, `3Y`, `5Y`, `7Y`, `10Y`, `20Y`, `30Y`).
+### B. Single Curve Fetch & Fan-Out Architecture
+- **Single Curve Row:** A single XML request fetches all tenors (`1M` to `30Y`) for the requested date/month.
+- **Raw Snapshot Preservation:** Full raw XML text is preserved in `response.raw["xml_text"]` for audit.
+- **Curve Fan-Out Helper:** `USTreasuryYieldCurveProvider.materialize_curve_observations()` produces observations for all 4 canonical tenors (`3M`, `2Y`, `10Y`, `30Y`) sharing the same raw `snapshot_id`.
+- **No Silent Default:** Missing provider symbol fails fast as `UNAVAILABLE` without defaulting to 10Y.
 - **No Spread Calculation:** Provider delivers pure raw yields; yield spreads (e.g. 10Y-2Y) are never computed by the provider.
 
 ### C. Methodology Break Preservation
@@ -107,13 +110,3 @@ To eliminate lookahead contamination and semantic confusion, Sentinax strictly s
 2. `US_TREASURY_PAR_2Y` (`BC_2YEAR`): 2-Year Daily Par Yield Rate (%).
 3. `US_TREASURY_PAR_10Y` (`BC_10YEAR`): 10-Year Benchmark Daily Par Yield Rate (%).
 4. `US_TREASURY_PAR_30Y` (`BC_30YEAR`): 30-Year Daily Par Yield Rate (%).
-
----
-
-## 6. St. Louis Fed FRED / ALFRED (United States)
-- See Section 3 of previous version for detailed FRED/ALFRED architecture and ALFRED vintage mode.
-
----
-
-## 7. Turkey Official Sources (TCMB EVDS, TÜİK SDMX, ENAG)
-- See Section 4 of previous version for detailed EVDS2 and manual ENAG architecture.

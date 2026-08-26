@@ -47,6 +47,7 @@ class MacroFrequency(Enum):
     MONTHLY = "monthly"
     QUARTERLY = "quarterly"
     ANNUAL = "annual"
+    EVENT_DRIVEN = "event_driven"
 
 
 class MacroUnit(Enum):
@@ -91,13 +92,16 @@ class MacroSeriesDefinition:
     frequency: MacroFrequency
     freshness_basis: FreshnessBasis
     source_tier: SourceTier
-    geography: str                  # 'TR', 'US', etc. (Explicit, no silent default)
+    geography: str                  # 'TR', 'US', 'EA', etc. (Explicit, no silent default)
     provider_native_units: Optional[str] = None
+    provider_native_geography: Optional[str] = None
+    composition_member_count: Optional[int] = None
+    composition_valid_from: Optional[str] = None
     seasonal_adjustment: Optional[str] = None
     origin_source: Optional[str] = None
     release_name: Optional[str] = None
     contract_status: ContractStatus = ContractStatus.VERIFIED
-    expected_release_interval_days: int = 1
+    expected_release_interval_days: Optional[int] = 1
     source_url: Optional[str] = None
     verification_source: Optional[str] = None
     verification_notes: Optional[str] = None

@@ -173,15 +173,18 @@ class EurostatSDMXProvider(DataProviderContract):
                 provider_symbol=context.provider_symbol,
             )
 
-        # 4. Build query parameters (Bounded requests)
+        # 4. Build query parameters (Bounded requests with Frequency-Aware Period Formatter)
         params: Dict[str, Any] = {
             "format": "SDMX-CSV",
         }
 
+        freq = canonical_def.frequency if canonical_def else None
+        expected_period_str: Optional[str] = None
+
         if context.effective_date:
-            period_str = context.effective_date.strftime("%Y-%m")
-            params["startPeriod"] = period_str
-            params["endPeriod"] = period_str
+            expected_period_str = self._format_period(context.effective_date, freq, key)
+            params["startPeriod"] = expected_period_str
+            params["endPeriod"] = expected_period_str
         else:
             params["lastNObservations"] = 1
 
@@ -245,6 +248,22 @@ class EurostatSDMXProvider(DataProviderContract):
         parsed_val = self._parse_decimal(raw_val)
 
         time_period_str = latest_row.get("TIME_PERIOD")
+
+        # Returned Period Validation
+        if expected_period_str and time_period_str != expected_period_str:
+            return ProviderResponse(
+                provider_name=self.provider_name,
+                source_quality=self.source_quality,
+                retrieved_at=t_retrieved,
+                published_at=None,
+                effective_date=None,
+                status=DataStatus.UNAVAILABLE,
+                raw={"csv_text": csv_text, "rows": rows, "latest": latest_row},
+                warnings=[f"Returned TIME_PERIOD '{time_period_str}' does not match requested period '{expected_period_str}'."],
+                canonical_instrument_id=context.canonical_instrument_id,
+                provider_symbol=context.provider_symbol,
+            )
+
         eff_date = self._parse_time_period(time_period_str)
 
         if eff_date is None:
@@ -357,6 +376,30 @@ class EurostatSDMXProvider(DataProviderContract):
             return float(cleaned)
         except (ValueError, TypeError):
             return None
+
+    @staticmethod
+    def _format_period(eff_date: date, frequency: Optional[Any] = None, key: Optional[str] = None) -> str:
+        """
+        Frequency-aware period formatter for Eurostat SDMX API.
+        Formats date to exact TIME_PERIOD representation (Monthly, Quarterly, Annual, Daily).
+        """
+        from backend.engine.private.macro.models import MacroFrequency
+
+        # 1. Quarterly check
+        if frequency == MacroFrequency.QUARTERLY or (key and key.startswith("Q.")):
+            quarter = (eff_date.month - 1) // 3 + 1
+            return f"{eff_date.year}-Q{quarter}"
+
+        # 2. Annual check
+        if frequency == MacroFrequency.ANNUAL or (key and key.startswith("A.")):
+            return eff_date.strftime("%Y")
+
+        # 3. Daily check
+        if frequency in (MacroFrequency.DAILY, MacroFrequency.BUSINESS_DAILY) or (key and (key.startswith("D.") or key.startswith("B."))):
+            return eff_date.strftime("%Y-%m-%d")
+
+        # 4. Default to Monthly (YYYY-MM)
+        return eff_date.strftime("%Y-%m")
 
     @staticmethod
     def _parse_time_period(period_str: Optional[str]) -> Optional[date]:

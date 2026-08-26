@@ -17,6 +17,8 @@ Point-in-Time & Semantic Invariants:
     - Historical effective_date queries check exact date entry (no forward/backfill).
     - Provider does NOT calculate yield spreads (10Y-2Y, etc.); provides pure raw par yields.
     - Preserves 6 December 2021 methodology break (quasi-cubic Hermite spline -> monotone convex spline).
+    - Raw official XML is preserved in response payload for immutable snapshotting.
+    - Missing provider_symbol fails fast without silent 10Y default.
 """
 
 from __future__ import annotations
@@ -24,12 +26,14 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from uuid import UUID, uuid4
 import xml.etree.ElementTree as ET
 
 import httpx
 
 from backend.engine.private.domain import (
     AsOfMode,
+    DataConfidenceLevel,
     DataStatus,
     ProviderAccessStatus,
     SourceTier,
@@ -44,7 +48,10 @@ from backend.engine.private.exceptions import (
 )
 from backend.engine.private.macro.models import (
     ContractStatus,
+    MacroCategory,
+    MacroFrequency,
     MacroObservationRecord,
+    MacroUnit,
 )
 from backend.engine.private.macro.registry import MacroSeriesRegistry
 from backend.engine.private.provider_contract import (
@@ -87,7 +94,7 @@ class USTreasuryYieldCurveProvider(DataProviderContract):
     Adapter for U.S. Department of the Treasury Daily Treasury Par Yield Curve XML Feed.
     """
     provider_name: str = "US_TREASURY"
-    provider_version: str = "1.0.0"
+    provider_version: str = "1.1.0"
     source_quality: SourceTier = SourceTier.TIER_1_REGULATORY
     access_status: ProviderAccessStatus = ProviderAccessStatus.GREEN
     base_url: str = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml"
@@ -102,32 +109,44 @@ class USTreasuryYieldCurveProvider(DataProviderContract):
         """
         Fetches daily Treasury yield curve observations.
         """
-        # 1. Resolve requested tenor and series definition
+        # 1. Reject missing provider symbol (No silent 10Y default)
+        if not context.provider_symbol:
+            return ProviderResponse(
+                provider_name=self.provider_name,
+                source_quality=self.source_quality,
+                retrieved_at=datetime.now(timezone.utc),
+                published_at=None,
+                effective_date=None,
+                status=DataStatus.UNAVAILABLE,
+                raw=None,
+                warnings=["No Treasury maturity or provider_symbol specified."],
+                canonical_instrument_id=context.canonical_instrument_id,
+                provider_symbol=context.provider_symbol,
+            )
+
+        # 2. Resolve requested tenor and series definition
         canonical_def = None
-        target_field = "BC_10YEAR"
+        target_field = context.provider_symbol
 
-        if context.provider_symbol:
-            if context.provider_symbol.startswith("US_TREASURY_"):
-                canonical_def = MacroSeriesRegistry.get(context.provider_symbol)
-                if canonical_def:
-                    if not canonical_def.is_active or canonical_def.contract_status != ContractStatus.VERIFIED:
-                        return ProviderResponse(
-                            provider_name=self.provider_name,
-                            source_quality=self.source_quality,
-                            retrieved_at=datetime.now(timezone.utc),
-                            published_at=None,
-                            effective_date=None,
-                            status=DataStatus.UNAVAILABLE,
-                            raw=None,
-                            warnings=[f"Series {context.provider_symbol} is unverified or disabled in registry."],
-                            canonical_instrument_id=context.canonical_instrument_id,
-                            provider_symbol=context.provider_symbol,
-                        )
-                    target_field = canonical_def.provider_series_code
-            else:
-                target_field = context.provider_symbol
+        if context.provider_symbol.startswith("US_TREASURY_"):
+            canonical_def = MacroSeriesRegistry.get(context.provider_symbol)
+            if canonical_def:
+                if not canonical_def.is_active or canonical_def.contract_status != ContractStatus.VERIFIED:
+                    return ProviderResponse(
+                        provider_name=self.provider_name,
+                        source_quality=self.source_quality,
+                        retrieved_at=datetime.now(timezone.utc),
+                        published_at=None,
+                        effective_date=None,
+                        status=DataStatus.UNAVAILABLE,
+                        raw=None,
+                        warnings=[f"Series {context.provider_symbol} is unverified or disabled in registry."],
+                        canonical_instrument_id=context.canonical_instrument_id,
+                        provider_symbol=context.provider_symbol,
+                    )
+                target_field = canonical_def.provider_series_code
 
-        # 2. Historical Mode Validation & Fail-Closed Guards
+        # 3. Historical Mode Validation & Fail-Closed Guards
         if context.is_historical:
             if context.as_of_mode == AsOfMode.SYSTEM_AS_OF:
                 return ProviderResponse(
@@ -169,7 +188,7 @@ class USTreasuryYieldCurveProvider(DataProviderContract):
                     provider_symbol=context.provider_symbol,
                 )
 
-        # 3. Determine month parameter (Bounded query)
+        # 4. Determine month parameter (Bounded query)
         now_utc = datetime.now(timezone.utc)
         if context.effective_date:
             month_param = context.effective_date.strftime("%Y%m")
@@ -218,7 +237,7 @@ class USTreasuryYieldCurveProvider(DataProviderContract):
                 provider_symbol=context.provider_symbol,
             )
 
-        # 4. Parse XML feed
+        # 5. Parse XML feed
         xml_text = resp.text
         curves_by_date = self._parse_yield_curve_xml(xml_text)
 
@@ -236,7 +255,7 @@ class USTreasuryYieldCurveProvider(DataProviderContract):
                 provider_symbol=context.provider_symbol,
             )
 
-        # 5. Select target curve entry
+        # 6. Select target curve entry
         selected_curve: Optional[Dict[str, Any]] = None
         selected_date: Optional[date] = None
 
@@ -272,6 +291,7 @@ class USTreasuryYieldCurveProvider(DataProviderContract):
             for tenor, tag in TENOR_TAG_MAP.items():
                 if target_field in (tenor, tag):
                     target_val = maturities.get(tag)
+                    target_field = tag
                     break
 
         status = DataStatus.COMPLETE if target_val is not None else DataStatus.UNAVAILABLE
@@ -289,6 +309,15 @@ class USTreasuryYieldCurveProvider(DataProviderContract):
             "availability_precision": None,
         }
 
+        # Raw payload carries original XML text and complete normalized data (no value loss)
+        raw_payload: Dict[str, Any] = {
+            "xml_text": xml_text,
+            "selected_date": selected_date.isoformat(),
+            "target_field": target_field,
+            "value": target_val,
+            "maturities": maturities,
+        }
+
         return ProviderResponse(
             provider_name=self.provider_name,
             source_quality=self.source_quality,
@@ -297,7 +326,7 @@ class USTreasuryYieldCurveProvider(DataProviderContract):
             effective_date=selected_date,
             observed_at=t_retrieved,
             status=status,
-            raw={"date": selected_date.isoformat(), "maturities": maturities},
+            raw=raw_payload,
             warnings=[] if status == DataStatus.COMPLETE else [f"Maturity '{target_field}' missing for date '{selected_date}'."],
             canonical_instrument_id=context.canonical_instrument_id,
             provider_symbol=context.provider_symbol,
@@ -305,12 +334,24 @@ class USTreasuryYieldCurveProvider(DataProviderContract):
         )
 
     def normalize(self, raw: Any) -> Dict[str, Any]:
+        """
+        Normalizes Treasury raw payload deterministically.
+        """
         if not isinstance(raw, dict):
             return {}
+
+        val = raw.get("value")
+        target_f = raw.get("target_field")
+        maturities = raw.get("maturities", {})
+
+        if val is None and target_f and target_f in maturities:
+            val = maturities[target_f]
+
         return {
-            "date": raw.get("date"),
-            "value": raw.get("value"),
-            "maturities": raw.get("maturities", {}),
+            "date": raw.get("selected_date") or raw.get("date"),
+            "target_field": target_f,
+            "value": val,
+            "maturities": maturities,
         }
 
     def validate(self, normalized: Dict[str, Any]) -> List[str]:
@@ -334,9 +375,60 @@ class USTreasuryYieldCurveProvider(DataProviderContract):
             metadata=meta,
         )
 
+    @staticmethod
+    def materialize_curve_observations(
+        response: ProviderResponse,
+        snapshot_id: Optional[UUID] = None,
+    ) -> List[MacroObservationRecord]:
+        """
+        Fan-out helper: Materializes individual MacroObservationRecord instances for all 4 canonical
+        Treasury tenors (3M, 2Y, 10Y, 30Y) from a single curve response sharing the same raw snapshot_id.
+        No spread calculations are performed.
+        """
+        if not response.is_usable or response.effective_date is None or response.retrieved_at is None:
+            return []
+
+        maturities = response.source_metadata.get("maturities", {})
+        if not maturities and isinstance(response.raw, dict):
+            maturities = response.raw.get("maturities", {})
+
+        tenor_mapping = {
+            "US_TREASURY_PAR_3M": "BC_3MONTH",
+            "US_TREASURY_PAR_2Y": "BC_2YEAR",
+            "US_TREASURY_PAR_10Y": "BC_10YEAR",
+            "US_TREASURY_PAR_30Y": "BC_30YEAR",
+        }
+
+        records: List[MacroObservationRecord] = []
+        for series_key, field_tag in tenor_mapping.items():
+            val = maturities.get(field_tag)
+            rec = MacroObservationRecord(
+                series_key=series_key,
+                effective_date=response.effective_date,
+                value=val,
+                unit=MacroUnit.PERCENT,
+                frequency=MacroFrequency.BUSINESS_DAILY,
+                data_status=DataStatus.COMPLETE if val is not None else DataStatus.UNAVAILABLE,
+                confidence_level=DataConfidenceLevel.HIGH if val is not None else DataConfidenceLevel.NONE,
+                source_tier=SourceTier.TIER_1_REGULATORY,
+                retrieved_at=response.retrieved_at,
+                observed_at=response.observed_at or response.retrieved_at,
+                published_at=None,
+                source_available_date=None,
+                availability_precision=None,
+                origin_source="U.S. Department of the Treasury",
+                release_name="Daily Treasury Par Yield Curve Rates",
+                snapshot_id=snapshot_id,
+                warnings=list(response.warnings),
+                raw_payload={"field_tag": field_tag, "value": val, "curve_date": response.effective_date.isoformat()},
+            )
+            records.append(rec)
+
+        return records
+
     async def get_all_curves_page(self, page: int = 0) -> List[Dict[str, Any]]:
         """
-        Helper for historical backfill: fetches a paginated slice of all Treasury history.
+        Helper for historical backfill: fetches a paginated slice of all Treasury history with typed errors.
         """
         params = {
             "data": "daily_treasury_yield_curve",
@@ -344,13 +436,39 @@ class USTreasuryYieldCurveProvider(DataProviderContract):
             "page": page,
         }
         client = self._get_client()
-        resp = await client.get(self.base_url, params=params, timeout=15.0)
 
+        try:
+            resp = await client.get(self.base_url, params=params, timeout=15.0)
+        except httpx.TimeoutException as e:
+            raise ProviderTimeoutError(f"Treasury backfill request timed out: {e}", provider_name=self.provider_name)
+        except httpx.NetworkError as e:
+            raise ProviderServerError(f"Treasury backfill network error: {e}", provider_name=self.provider_name)
+
+        if resp.status_code in (401, 403):
+            raise ProviderAuthenticationError("Treasury backfill access forbidden.", provider_name=self.provider_name)
+        if resp.status_code == 429:
+            raise ProviderRateLimitError("Treasury rate limit exceeded.", provider_name=self.provider_name)
+        if resp.status_code >= 500:
+            raise ProviderServerError(f"Treasury server error: HTTP {resp.status_code}", status_code=resp.status_code, provider_name=self.provider_name)
         if resp.status_code != 200:
-            return []
+            raise ProviderServerError(f"Treasury backfill returned HTTP {resp.status_code}", status_code=resp.status_code, provider_name=self.provider_name)
 
         curves = self._parse_yield_curve_xml(resp.text)
         return list(curves.values())
+
+    async def get_all_curves(self, max_pages: int = 100) -> List[Dict[str, Any]]:
+        """
+        Historical backfill helper: traverses all pages starting at page=0 until no entries remain.
+        """
+        all_curves: List[Dict[str, Any]] = []
+        page = 0
+        while page < max_pages:
+            curves_page = await self.get_all_curves_page(page=page)
+            if not curves_page:
+                break
+            all_curves.extend(curves_page)
+            page += 1
+        return all_curves
 
     @staticmethod
     def _parse_yield_curve_xml(xml_text: str) -> Dict[date, Dict[str, Any]]:
@@ -391,7 +509,6 @@ class USTreasuryYieldCurveProvider(DataProviderContract):
 
             maturities: Dict[str, Optional[float]] = {}
             for child in props:
-                # Strip namespace tag
                 tag_name = child.tag.split("}")[-1] if "}" in child.tag else child.tag
                 if tag_name.startswith("BC_"):
                     val_text = child.text.strip() if child.text else None

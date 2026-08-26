@@ -120,7 +120,7 @@ class ConfidenceAssessmentService:
         conflicts: Optional[List[DataConflict]] = None,
         is_fallback: bool = False,
         is_proxy: bool = False,
-        max_staleness_days: int = 3,
+        max_staleness_days: Optional[int] = 3,
     ) -> DataConfidence:
         reasons: List[str] = []
         warnings = warnings or []
@@ -192,6 +192,9 @@ class ConfidenceAssessmentService:
                 is_lookahead_violation = True
                 freshness_score = 0.0
                 reasons.append(f"Observation occurs after requested as-of boundary (future data lookahead: {eval_date} > {ref_date}).")
+            elif max_staleness_days is None:
+                # Event-driven series (e.g. policy rate decision): valid until next official decision
+                freshness_score = 1.0
             elif age_days == 0:
                 freshness_score = 1.0
             elif age_days <= max_staleness_days:
