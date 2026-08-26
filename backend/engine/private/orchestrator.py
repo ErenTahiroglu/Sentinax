@@ -192,11 +192,16 @@ class OrchestrationResult:
         """
         Maps macro orchestration result to MacroObservationRecord.
         Preserves vintage_date, source_available_date, and origin source metadata.
+        Strict: No timestamp, source_tier, or precision fabrication.
         """
         from backend.engine.private.macro.models import MacroObservationRecord
+        from backend.engine.private.macro.registry import MacroSeriesRegistry
 
         if not self.is_available or self.effective_date is None:
             return None
+
+        if self.retrieved_at is None:
+            raise ValueError(f"Cannot map to MacroObservationRecord without retrieved_at timestamp (series={series_key}).")
 
         val = self.data.get("value")
         if val is None and self.data:
@@ -215,6 +220,21 @@ class OrchestrationResult:
         if isinstance(src_avail_d, str):
             src_avail_d = date.fromisoformat(src_avail_d)
 
+        # Availability precision strictly tied to source_available_date
+        avail_precision = None
+        if src_avail_d is not None:
+            avail_precision = src_meta.get("availability_precision") or prov_meta.get("availability_precision")
+
+        # Source Tier resolution without silent TIER_1 default
+        if self.provenance and self.provenance.source_quality:
+            resolved_tier = self.provenance.source_quality
+        else:
+            reg_def = MacroSeriesRegistry.get(series_key)
+            if reg_def:
+                resolved_tier = reg_def.source_tier
+            else:
+                raise ValueError(f"Cannot resolve source_tier for macro series '{series_key}'.")
+
         return MacroObservationRecord(
             series_key=series_key,
             effective_date=self.effective_date,
@@ -223,12 +243,12 @@ class OrchestrationResult:
             frequency=frequency,
             data_status=self.status,
             confidence_level=self.confidence.level,
-            source_tier=self.provenance.source_quality if self.provenance else SourceTier.TIER_1_REGULATORY,
-            retrieved_at=self.retrieved_at or datetime.now(timezone.utc),
+            source_tier=resolved_tier,
+            retrieved_at=self.retrieved_at,
             published_at=self.published_at,
-            observed_at=self.observed_at or self.retrieved_at or datetime.now(timezone.utc),
+            observed_at=self.observed_at or self.retrieved_at,
             source_available_date=src_avail_d,
-            availability_precision=src_meta.get("availability_precision") or prov_meta.get("availability_precision") or "DATE",
+            availability_precision=avail_precision,
             vintage_date=vintage_d,
             origin_source=src_meta.get("origin_source") or prov_meta.get("origin_source"),
             release_name=src_meta.get("release_name") or prov_meta.get("release_name"),

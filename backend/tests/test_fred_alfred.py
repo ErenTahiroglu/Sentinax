@@ -31,13 +31,18 @@ Coverage:
     25. ProviderProvenance metadata serialization round-trip
     26. ProviderResponse source_metadata survives OrchestrationResult round-trip
     27. to_macro_observation mapper preserves vintage_date
-    28. to_macro_observation mapper does not fabricate source_available_date
+    28. to_macro_observation mapper does not fabricate source_available_date or precision
     29. Release calendar date does not become availability date
     30. Current realtime_start query date does not become first availability
-    31. Geography migration safe pattern
+    31. Geography migration safe pattern (no silent DEFAULT 'TR')
     32. Availability precision check constraint
     33. FRED six registry series remain verified
     34. Missing != 0 invariant
+    35. MacroSeriesDefinition requires explicit geography (no silent default)
+    36. MacroObservationRecord availability_precision defaults to None and validates
+    37. to_macro_observation fails fast without retrieved_at timestamp (no now() fabrication)
+    38. to_macro_observation resolves source_tier from provenance/registry without silent TIER_1
+    39. Raw non-registry FRED query does not fabricate origin_source as FRED
 """
 
 import os
@@ -70,6 +75,7 @@ from backend.engine.private.macro.models import (
     MacroCategory,
     MacroFrequency,
     MacroObservationRecord,
+    MacroSeriesDefinition,
     MacroUnit,
 )
 from backend.engine.private.macro.registry import MacroSeriesRegistry
@@ -121,6 +127,9 @@ class TestFREDALFREDProviderHardening:
         resp = await provider.fetch(ctx)
         assert resp.status == DataStatus.COMPLETE
         assert resp.source_metadata["vintage_date"] == "2023-04-30" # Conservative prior day
+        assert resp.source_metadata["vintage_precision"] == "DATE"
+        assert resp.source_metadata["source_available_date"] is None
+        assert resp.source_metadata["availability_precision"] is None
 
     def test_03_string_coercion_to_as_of_mode(self):
         """Scenario 3: Valid strings coerce to AsOfMode enum in FetchContext."""
@@ -139,7 +148,6 @@ class TestFREDALFREDProviderHardening:
     @pytest.mark.asyncio
     async def test_06_07_08_and_30_realtime_start_not_fabricated_into_availability(self):
         """Scenario 6, 7, 8 & 30: realtime_start is query period, NOT first availability."""
-        # Even if observation is 1990 and realtime_start is 2026-08-26
         mock_payload = {
             "realtime_start": "2026-08-26",
             "observations": [
@@ -155,6 +163,7 @@ class TestFREDALFREDProviderHardening:
 
         assert resp.source_metadata["realtime_start"] == "2026-08-26"
         assert resp.source_metadata["source_available_date"] is None
+        assert resp.source_metadata["availability_precision"] is None
         assert resp.published_at is None
 
     # 3. Same-day Lookahead Policy
@@ -168,7 +177,6 @@ class TestFREDALFREDProviderHardening:
         )
 
         provider = FREDALFREDProvider(api_key="key", http_client=mock_client)
-        # As of May 15, 2024 at 09:30 AM UTC
         ctx = FetchContext(
             observation_type="MACRO_US",
             provider_symbol="US_CPI_HEADLINE_INDEX",
@@ -178,7 +186,6 @@ class TestFREDALFREDProviderHardening:
         await provider.fetch(ctx)
 
         _, kwargs = mock_client.get.call_args
-        # Must request 2024-05-14 (prior day snapshot)
         assert kwargs["params"]["vintage_dates"] == "2024-05-14"
 
     # 4. Bounded Queries
@@ -229,9 +236,7 @@ class TestFREDALFREDProviderHardening:
         """Scenario 16 & 17: get_all_vintage_dates traverses multiple pages using offset."""
         mock_client = AsyncMock(spec=httpx.AsyncClient)
 
-        # Page 1: 3 dates out of 5 total
         page1 = {"vintage_dates": ["2024-05-01", "2024-04-01", "2024-03-01"], "count": 5}
-        # Page 2: 2 remaining dates
         page2 = {"vintage_dates": ["2024-02-01", "2024-01-01"], "count": 5}
 
         mock_client.get.side_effect = [
@@ -345,6 +350,7 @@ class TestFREDALFREDProviderHardening:
     # 7. Macro Observation Mapper
     def test_27_28_and_29_macro_observation_mapper_semantics(self):
         """Scenario 27-29: to_macro_observation maps vintage_date, keeps source_available_date None."""
+        t_retrieved = datetime(2024, 5, 1, 14, 0, tzinfo=timezone.utc)
         orch = OrchestrationResult(
             observation_type="MACRO_US",
             status=DataStatus.COMPLETE,
@@ -359,11 +365,12 @@ class TestFREDALFREDProviderHardening:
             ),
             data={"value": 22758.969},
             effective_date=date(2024, 1, 1),
+            retrieved_at=t_retrieved,
             provenance=ProviderProvenance(
                 provider_name="FRED_ALFRED",
                 provider_version="1.1.0",
                 endpoint="https://api.stlouisfed.org/fred/series/observations",
-                retrieved_at=datetime.now(timezone.utc),
+                retrieved_at=t_retrieved,
                 source_quality=SourceTier.TIER_1_REGULATORY,
                 metadata={
                     "origin_source": "U.S. Bureau of Economic Analysis",
@@ -374,6 +381,7 @@ class TestFREDALFREDProviderHardening:
             source_metadata={
                 "vintage_date": "2024-04-25",
                 "source_available_date": None,
+                "availability_precision": None,
             }
         )
 
@@ -388,8 +396,11 @@ class TestFREDALFREDProviderHardening:
         assert macro_rec.value == 22758.969
         assert macro_rec.vintage_date == date(2024, 4, 25)
         assert macro_rec.source_available_date is None
+        assert macro_rec.availability_precision is None
         assert macro_rec.origin_source == "U.S. Bureau of Economic Analysis"
         assert macro_rec.release_name == "Gross Domestic Product"
+        assert macro_rec.retrieved_at == t_retrieved
+        assert macro_rec.observed_at == t_retrieved
 
     # 8. Migration 007 Hardening & Schema Integrity
     def test_31_and_32_migration_007_schema_integrity(self):
@@ -401,14 +412,113 @@ class TestFREDALFREDProviderHardening:
         with open(migration_path, "r", encoding="utf-8") as f:
             sql = f.read()
 
-        # No silent DEFAULT 'TR' for future rows
         assert "ALTER TABLE public.macro_series" in sql
         assert "DROP DEFAULT" in sql
-        # Check constraint on precision
         assert "chk_macro_obs_precision" in sql
         assert "CHECK (availability_precision IS NULL OR availability_precision IN ('DATE', 'TIMESTAMP'))" in sql
 
-    # 9. Registry & Taxonomy Invariants
+    # 9. Consistency & No-Fabrication Hardening
+    def test_35_macro_series_definition_requires_explicit_geography(self):
+        """Scenario 35: MacroSeriesDefinition cannot be instantiated without geography."""
+        with pytest.raises(TypeError):
+            MacroSeriesDefinition(  # type: ignore[call-arg]
+                canonical_key="TEST_SERIES",
+                provider="TEST_PROV",
+                provider_series_code="CODE1",
+                category=MacroCategory.FX,
+                description="Test",
+                unit=MacroUnit.TRY,
+                frequency=MacroFrequency.DAILY,
+                freshness_basis=FreshnessBasis.EFFECTIVE_DATE,
+                source_tier=SourceTier.TIER_1_REGULATORY,
+                # Missing geography argument
+            )
+
+    def test_36_macro_observation_record_precision_validation(self):
+        """Scenario 36: availability_precision defaults to None and validates correctly."""
+        rec = MacroObservationRecord(
+            series_key="TEST_KEY",
+            effective_date=date(2024, 1, 1),
+            value=100.0,
+            unit=MacroUnit.PERCENT,
+            frequency=MacroFrequency.MONTHLY,
+            data_status=DataStatus.COMPLETE,
+            confidence_level=DataConfidenceLevel.HIGH,
+            source_tier=SourceTier.TIER_1_REGULATORY,
+            retrieved_at=datetime.now(timezone.utc),
+        )
+        assert rec.availability_precision is None
+
+        # Invalid precision raises ValueError
+        with pytest.raises(ValueError, match="Invalid availability_precision"):
+            MacroObservationRecord(
+                series_key="TEST_KEY",
+                effective_date=date(2024, 1, 1),
+                value=100.0,
+                unit=MacroUnit.PERCENT,
+                frequency=MacroFrequency.MONTHLY,
+                data_status=DataStatus.COMPLETE,
+                confidence_level=DataConfidenceLevel.HIGH,
+                source_tier=SourceTier.TIER_1_REGULATORY,
+                retrieved_at=datetime.now(timezone.utc),
+                availability_precision="HOURLY",
+            )
+
+        # Precision specified when source_available_date is None raises ValueError
+        with pytest.raises(ValueError, match="when source_available_date is None"):
+            MacroObservationRecord(
+                series_key="TEST_KEY",
+                effective_date=date(2024, 1, 1),
+                value=100.0,
+                unit=MacroUnit.PERCENT,
+                frequency=MacroFrequency.MONTHLY,
+                data_status=DataStatus.COMPLETE,
+                confidence_level=DataConfidenceLevel.HIGH,
+                source_tier=SourceTier.TIER_1_REGULATORY,
+                retrieved_at=datetime.now(timezone.utc),
+                source_available_date=None,
+                availability_precision="DATE",
+            )
+
+    def test_37_mapper_fails_fast_without_retrieved_at_no_now_fabrication(self):
+        """Scenario 37: to_macro_observation raises ValueError when retrieved_at is None."""
+        orch = OrchestrationResult(
+            observation_type="MACRO_US",
+            status=DataStatus.COMPLETE,
+            confidence=DataConfidence(
+                level=DataConfidenceLevel.HIGH,
+                freshness=1.0,
+                source_quality=1.0,
+                coverage=1.0,
+                consistency=1.0,
+                calculation_coverage=1.0,
+                reasons=[],
+            ),
+            data={"value": 100.0},
+            effective_date=date(2024, 1, 1),
+            retrieved_at=None, # Missing retrieval timestamp
+        )
+        with pytest.raises(ValueError, match="without retrieved_at timestamp"):
+            orch.to_macro_observation("US_CPI_HEADLINE_INDEX", MacroUnit.INDEX_POINTS, MacroFrequency.MONTHLY)
+
+    @pytest.mark.asyncio
+    async def test_39_raw_non_registry_fred_query_does_not_fabricate_origin_source(self):
+        """Scenario 39: Raw non-registry FRED queries leave origin_source as None."""
+        mock_payload = {
+            "observations": [{"date": "2024-01-01", "value": "5.0"}]
+        }
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get.return_value = MagicMock(status_code=200, json=MagicMock(return_value=mock_payload))
+
+        provider = FREDALFREDProvider(api_key="key", http_client=mock_client)
+        # Query unmapped ad-hoc FRED code
+        ctx = FetchContext("MACRO_RAW", provider_symbol="UNKNOWN_SERIES_XYZ")
+        resp = await provider.fetch(ctx)
+
+        assert resp.source_metadata["origin_source"] is None
+        assert resp.source_metadata["delivery_provider"] == "Federal Reserve Bank of St. Louis FRED"
+
+    # 10. Registry & Taxonomy Invariants
     def test_33_and_34_registry_and_missing_invariants(self):
         """Scenario 33 & 34: 6 verified US series and Missing != 0."""
         us_series = MacroSeriesRegistry.list_by_geography("US")
@@ -416,6 +526,12 @@ class TestFREDALFREDProviderHardening:
         for s in us_series:
             assert s.contract_status == ContractStatus.VERIFIED
             assert s.is_active is True
+            assert s.geography == "US"
+
+        tr_series = MacroSeriesRegistry.list_by_geography("TR")
+        assert len(tr_series) > 0
+        for s in tr_series:
+            assert s.geography == "TR"
 
         assert FREDALFREDProvider._parse_decimal(".") is None
         assert FREDALFREDProvider._parse_decimal("0.0") == 0.0

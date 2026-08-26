@@ -90,7 +90,7 @@ class MacroSeriesDefinition:
     frequency: MacroFrequency
     freshness_basis: FreshnessBasis
     source_tier: SourceTier
-    geography: str = "TR"           # 'TR', 'US', etc.
+    geography: str                  # 'TR', 'US', etc. (Explicit, no silent default)
     provider_native_units: Optional[str] = None
     seasonal_adjustment: Optional[str] = None
     origin_source: Optional[str] = None
@@ -120,8 +120,8 @@ class MacroObservationRecord:
     retrieved_at: datetime
     published_at: Optional[datetime] = None
     observed_at: Optional[datetime] = None
-    source_available_date: Optional[date] = None       # e.g. ALFRED realtime_start
-    availability_precision: str = "DATE"               # 'DATE' or 'TIMESTAMP'
+    source_available_date: Optional[date] = None       # e.g. Proven availability date
+    availability_precision: Optional[str] = None       # 'DATE', 'TIMESTAMP', or None
     realtime_end: Optional[date] = None
     vintage_date: Optional[date] = None
     origin_source: Optional[str] = None
@@ -139,6 +139,16 @@ class MacroObservationRecord:
     def __post_init__(self) -> None:
         if self.observed_at is None:
             self.observed_at = self.retrieved_at
+        if self.availability_precision is not None:
+            valid_precisions = {"DATE", "TIMESTAMP"}
+            if self.availability_precision not in valid_precisions:
+                raise ValueError(
+                    f"Invalid availability_precision: '{self.availability_precision}'. Must be 'DATE', 'TIMESTAMP', or None."
+                )
+        if self.source_available_date is None and self.availability_precision is not None:
+            raise ValueError(
+                f"Cannot specify availability_precision '{self.availability_precision}' when source_available_date is None."
+            )
 
     @property
     def is_usable(self) -> bool:

@@ -314,17 +314,18 @@ class FREDALFREDProvider(DataProviderContract):
         # Sanitize payload for raw snapshot (strip secret API key from request representation)
         sanitized_raw = {k: v for k, v in payload.items() if k != "api_key"}
 
-        # Construct rich source metadata (Directives 11 & 12)
+        # Construct rich source metadata (Directives 3, 6, 11 & 12)
         source_meta: Dict[str, Any] = {
             "delivery_provider": "Federal Reserve Bank of St. Louis FRED",
-            "origin_source": canonical_def.origin_source if canonical_def else "Federal Reserve Economic Data",
+            "origin_source": canonical_def.origin_source if canonical_def else None,
             "release_name": canonical_def.release_name if canonical_def else None,
             "series_id": series_id,
             "vintage_date": vintage_snapshot_date.isoformat() if vintage_snapshot_date else None,
+            "vintage_precision": "DATE" if vintage_snapshot_date else None,
             "realtime_start": rt_start_str,
             "realtime_end": rt_end_str,
             "source_available_date": None,  # Invariant: realtime_start is NOT actual first availability
-            "availability_precision": "DATE" if vintage_snapshot_date else None,
+            "availability_precision": None, # Invariant: None when source_available_date is None
             "units": "lin",
         }
 
@@ -377,12 +378,12 @@ class FREDALFREDProvider(DataProviderContract):
         Returns rich audit trail preserving origin source, release metadata, and vintage date.
         """
         meta = dict(response.source_metadata)
+        meta["delivery_provider"] = "Federal Reserve Bank of St. Louis FRED"
         if response.provider_symbol and not meta.get("origin_source"):
             canonical_def = MacroSeriesRegistry.get(response.provider_symbol)
-            if canonical_def:
+            if canonical_def and canonical_def.origin_source:
                 meta["origin_source"] = canonical_def.origin_source
                 meta["release_name"] = canonical_def.release_name
-                meta["delivery_provider"] = "Federal Reserve Bank of St. Louis FRED"
 
         return ProviderProvenance(
             provider_name=self.provider_name,
