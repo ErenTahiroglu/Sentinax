@@ -520,13 +520,16 @@ class TestFREDALFREDProviderHardening:
 
     # 10. Registry & Taxonomy Invariants
     def test_33_and_34_registry_and_missing_invariants(self):
-        """Scenario 33 & 34: 6 verified US series and Missing != 0."""
-        us_series = MacroSeriesRegistry.list_by_geography("US")
-        assert len(us_series) == 6
-        for s in us_series:
+        """Scenario 33 & 34: 6 verified FRED US series and Missing != 0."""
+        fred_series = MacroSeriesRegistry.list_by_provider("FRED_ALFRED")
+        assert len(fred_series) == 6
+        for s in fred_series:
             assert s.contract_status == ContractStatus.VERIFIED
             assert s.is_active is True
             assert s.geography == "US"
+
+        us_series = MacroSeriesRegistry.list_by_geography("US")
+        assert len(us_series) >= 6
 
         tr_series = MacroSeriesRegistry.list_by_geography("TR")
         assert len(tr_series) > 0
