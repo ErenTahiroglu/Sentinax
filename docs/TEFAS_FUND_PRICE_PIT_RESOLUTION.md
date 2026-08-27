@@ -24,6 +24,7 @@ class TefasFundPriceQueryKey:
 - **Primary Identity Authority:** `(instrument_id, trade_date)` with fixed provider `TEFAS`.
 - **Diagnostic Context:** `provider_symbol` (e.g. `"MAC"`, `"NNF"`) is recorded for diagnostic lineage and preflight mismatch checks, but does not control canonical identity.
 - **Title Exclusion:** The source title field (`fonUnvan`) is current-metadata-only in TEFAS historical API responses and is strictly excluded from resolution authority and normalized price observation models.
+- **Upstream Identity Prerequisite:** The resolver operates strictly on pre-validated observations where canonical `instrument_id` and `currency` are already resolved; it does not perform share-class discrimination.
 
 ---
 

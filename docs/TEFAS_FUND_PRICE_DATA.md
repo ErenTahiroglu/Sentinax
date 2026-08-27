@@ -72,6 +72,10 @@ TEFAS strictly enforces valid values for `periyod` representing duration in mont
    - Currency is sourced strictly from `InstrumentRecord.currency` in the Instrument Master (e.g. `TRY`, `USD`, `EUR`). TEFAS payload never overrides currency authority.
 4. **Metadata Immutability**:
    - TEFAS `fonUnvan` title is captured as snapshot metadata only and **never mutates or controls** canonical master instrument identity.
+5. **Multi-Pay-Group / Share-Class Ambiguity Warning**:
+   - Certain TEFAS-traded funds (e.g. `TPJ`) feature multiple pay groups (e.g. A Group TRY vs B Group USD) with distinct unit prices.
+   - The public TEFAS API exposes only a single un-discriminated price row per date (typically the primary TRY reference price).
+   - `TefasFundPriceProvider` is valid strictly for unambiguous single-currency funds; multi-pay-group funds must not be mapped to foreign-currency share classes under the un-discriminated `TEFAS:<CODE>` alias.
 
 ---
 
