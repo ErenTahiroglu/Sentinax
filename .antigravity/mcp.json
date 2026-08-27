@@ -1,0 +1,34 @@
+{
+    "mcpServers": {
+        "graphify": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@graphify/mcp-server",
+                "--workspace",
+                "${workspaceFolder}"
+            ],
+            "env": {
+                "GRAPHIFY_DEPTH": "3"
+            }
+        },
+        "codebase-memory": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-memory"
+            ],
+            "env": {
+                "MEMORY_FILE_PATH": "${workspaceFolder}/.antigravity/memory.json"
+            }
+        },
+        "caveman": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "caveman-mcp",
+                "--compact-mode"
+            ]
+        }
+    }
+}

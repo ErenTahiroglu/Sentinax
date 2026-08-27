@@ -1,0 +1,40 @@
+# Antigravity Agent Execution Protocol
+
+You have access to three dynamic tools. Invoke them ONLY when specific conditions are met:
+
+## 1. Graphify (`@graphify`)
+
+- **Trigger when:**
+  - Planning refactoring across multiple files.
+  - Analyzing function call hierarchies, circular dependencies, or architectural blast radius.
+  - User asks "where is X used?" or "what breaks if I change Y?".
+- **Do NOT trigger:** For simple single-file edits or syntax questions.
+
+## 2. Codebase Memory (`@codebase-memory`)
+
+- **Trigger (Read):** At the beginning of complex tasks to recall past architecture decisions, bug history, or user preferences.
+- **Trigger (Write):** Whenever a major architectural decision is made, a tricky bug is solved, or a pattern is established.
+- **Do NOT trigger:** For temporary scratchpad data or standard framework knowledge.
+
+## 3. Caveman (`@caveman`)
+
+- **Trigger when:**
+  - Processing very large logs, AST dumps, or dense files to minimize token footprint.
+  - User explicitly requests ultra-concise, low-latency execution or batch diffs.
+- **Do NOT trigger:** When detailed explanatory architectural feedback is required.
+
+# Superpowers Framework
+- Brainstorming: .superpowers/skills/brainstorming/SKILL.md
+- Systematic Debugging: .superpowers/skills/systematic-debugging/SKILL.md
+- TDD: .superpowers/skills/test-driven-development/SKILL.md
+- Subagent Development: .superpowers/skills/subagent-driven-development/SKILL.md
+- Worktrees: .superpowers/skills/using-git-worktrees/SKILL.md
+- Antigravity Tools: .superpowers/skills/using-superpowers/references/antigravity-tools.md
+
+# Superpowers Framework
+- Brainstorming: .superpowers/skills/brainstorming/SKILL.md
+- Systematic Debugging: .superpowers/skills/systematic-debugging/SKILL.md
+- TDD: .superpowers/skills/test-driven-development/SKILL.md
+- Subagent Development: .superpowers/skills/subagent-driven-development/SKILL.md
+- Worktrees: .superpowers/skills/using-git-worktrees/SKILL.md
+- Antigravity Tools: .superpowers/skills/using-superpowers/references/antigravity-tools.md
