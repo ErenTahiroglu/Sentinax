@@ -19,6 +19,7 @@ from backend.engine.private.market_data.models import (
     MarketDataResolutionStatus,
     MarketObservationResolutionResult,
     PreciousMetalSemanticKey,
+    TefasFundPriceQueryKey,
 )
 from backend.engine.private.market_data.resolver import (
     PointInTimeMarketDataResolver,
@@ -36,6 +37,7 @@ __all__ = [
     "MarketDataResolutionStatus",
     "BISTInstrumentQueryKey",
     "GlobalEODQueryKey",
+    "TefasFundPriceQueryKey",
     "PreciousMetalSemanticKey",
     "MarketObservationResolutionResult",
     "PointInTimeMarketDataResolver",

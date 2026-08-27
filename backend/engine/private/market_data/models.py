@@ -27,6 +27,7 @@ from backend.engine.private.domain import (
     DataConfidenceLevel,
 )
 from backend.engine.private.market_data.global_models import GlobalEODObservation
+from backend.engine.private.market_data.tefas_models import TefasFundPriceObservation
 from backend.engine.private.precious_metals.constants import (
     PreciousMetalPriceType,
     PreciousMetalType,
@@ -88,6 +89,21 @@ class GlobalEODQueryKey:
     def to_string(self) -> str:
         sym = f"({self.provider_symbol})" if self.provider_symbol else ""
         return f"GLOBAL_EOD:{self.provider}:{self.instrument_id}{sym}@{self.trade_date.isoformat()}"
+
+
+@dataclass(frozen=True)
+class TefasFundPriceQueryKey:
+    """
+    Query key for resolving a Point-in-Time TEFAS Turkish Investment Fund daily price observation.
+    Authority is (instrument_id, trade_date); provider is fixed to 'TEFAS'; provider_symbol is diagnostic only.
+    """
+    instrument_id: UUID
+    trade_date: date
+    provider_symbol: Optional[str] = None
+
+    def to_string(self) -> str:
+        sym = f"({self.provider_symbol})" if self.provider_symbol else ""
+        return f"TEFAS_FUND_PRICE:{self.instrument_id}{sym}@{self.trade_date.isoformat()}"
 
 
 @dataclass(frozen=True)
@@ -159,7 +175,14 @@ class MarketObservationResolutionResult:
     observation_type: str
     effective_date: Optional[date]
 
-    selected_observation: Optional[Union[BISTEODObservation, PreciousMetalMarketObservation, GlobalEODObservation]] = None
+    selected_observation: Optional[
+        Union[
+            BISTEODObservation,
+            PreciousMetalMarketObservation,
+            GlobalEODObservation,
+            TefasFundPriceObservation,
+        ]
+    ] = None
     selected_observation_id: Optional[UUID] = None
 
     snapshot_id: Optional[UUID] = None

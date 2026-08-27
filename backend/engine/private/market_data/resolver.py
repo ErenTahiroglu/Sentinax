@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from uuid import UUID
 
@@ -27,7 +28,7 @@ from backend.engine.private.bist.models import (
     BISTEODObservation,
     BISTObservationStatus,
 )
-from backend.engine.private.domain import DataConfidenceLevel
+from backend.engine.private.domain import DataConfidenceLevel, InstrumentType
 from backend.engine.private.market_data.global_models import (
     GlobalEODObservation,
     GlobalEODSnapshot,
@@ -40,12 +41,56 @@ from backend.engine.private.market_data.models import (
     MarketDataResolutionStatus,
     MarketObservationResolutionResult,
     PreciousMetalSemanticKey,
+    TefasFundPriceQueryKey,
+)
+from backend.engine.private.market_data.tefas_models import (
+    TefasFundPriceObservation,
+    TefasFundPriceSnapshot,
+    TefasObservationStatus,
 )
 from backend.engine.private.precious_metals.models import (
     PreciousMetalMarketObservation,
     PreciousMetalObservationStatus,
     PreciousMetalSnapshot,
 )
+
+TEFAS_RESOLVER_ALLOWED_INSTRUMENT_TYPES: Set[InstrumentType] = {
+    InstrumentType.TEFAS_FUND,
+    InstrumentType.TEFAS_EQUITY,
+    InstrumentType.TEFAS_MONEY_MARKET,
+    InstrumentType.TEFAS_VARIABLE,
+    InstrumentType.TEFAS_BALANCED,
+}
+
+
+def _tefas_observation_fingerprint(obs: TefasFundPriceObservation) -> str:
+    """Computes a deterministic, UUID-independent economic fingerprint of a TEFAS fund price observation."""
+    return (
+        f"{obs.instrument_id}:{obs.provider}:{obs.provider_symbol.strip().upper() if obs.provider_symbol else 'None'}:"
+        f"{obs.trade_date.isoformat()}:{obs.unit_price}:{obs.currency.value if obs.currency else 'None'}:"
+        f"{obs.instrument_type.value if obs.instrument_type else 'None'}:{obs.status.value}"
+    )
+
+
+def _tefas_snapshot_covers_target_date(snap: TefasFundPriceSnapshot, target: date) -> bool:
+    """
+    Determines whether a TEFAS snapshot has authority over target trade_date.
+    Coverage is established ONLY through:
+    A) two-sided snapshot.trade_date_range: range_start <= target <= range_end
+    OR
+    B) snapshot contains an observation with trade_date == target.
+
+    Do NOT derive target range from period_months, retrieved_at - 60 months, or calendar arithmetic.
+    """
+    r_start, r_end = snap.trade_date_range
+    if r_start is not None and r_end is not None:
+        if r_start <= target <= r_end:
+            return True
+
+    if any(o.trade_date == target for o in snap.observations):
+        return True
+
+    return False
 
 
 def _global_observation_fingerprint(obs: GlobalEODObservation) -> str:
@@ -1005,6 +1050,413 @@ class PointInTimeMarketDataResolver:
             f"GLOBAL_EOD:{mode.value}:{as_of.isoformat() if as_of else 'CURRENT'}:"
             f"{provider_name}:{inst_id}:{target_date.isoformat()}:{auth_snap.payload_hash}:"
             f"{auth_snap.start_date}:{auth_snap.end_date}:{auth_snap.trade_date_range}:{obs_fp}"
+        )
+        resolution_key = hashlib.sha256(res_key_raw.encode("utf-8")).hexdigest()
+
+        confidence = selected_obs.confidence_level
+        diags = list(selected_obs.diagnostics)
+
+        return MarketObservationResolutionResult(
+            status=MarketDataResolutionStatus.SELECTED,
+            resolution_mode=mode,
+            as_of=as_of,
+            observation_type=obs_type,
+            effective_date=target_date,
+            selected_observation=selected_obs,
+            selected_observation_id=selected_obs.id,
+            snapshot_id=auth_snap.id,
+            snapshot_hash=auth_snap.payload_hash,
+            snapshot_retrieved_at=auth_snap.retrieved_at,
+            provider=provider_name,
+            originating_source=provider_name,
+            canonical_instrument_id=inst_id,
+            semantic_key=sem_str,
+            confidence=confidence,
+            is_stale_discovery=False,
+            diagnostics=diags,
+            evaluation_snapshot_ids=eval_ids,
+            resolution_key=resolution_key,
+        )
+
+    @classmethod
+    def resolve_tefas_fund_price(
+        cls,
+        query_key: TefasFundPriceQueryKey,
+        snapshots: Sequence[TefasFundPriceSnapshot],
+        mode: MarketDataResolutionMode = MarketDataResolutionMode.CURRENT_REPORTED,
+        as_of: Optional[datetime] = None,
+    ) -> MarketObservationResolutionResult:
+        """
+        Resolves the Point-in-Time TEFAS Turkish Investment Fund daily price observation for an instrument_id on a trade_date.
+        Provider is fixed to 'TEFAS'.
+        """
+        obs_type = "TEFAS_FUND_PRICE"
+        target_date = query_key.trade_date
+        inst_id = query_key.instrument_id
+        provider_name = "TEFAS"
+        sem_str = query_key.to_string()
+
+        # 1. Mode Validation
+        if mode == MarketDataResolutionMode.SOURCE_AS_OF:
+            return MarketObservationResolutionResult(
+                status=MarketDataResolutionStatus.UNAVAILABLE_SOURCE_AS_OF,
+                resolution_mode=mode,
+                as_of=as_of,
+                observation_type=obs_type,
+                effective_date=target_date,
+                canonical_instrument_id=inst_id,
+                provider=provider_name,
+                originating_source=provider_name,
+                semantic_key=sem_str,
+                diagnostics=["SOURCE_AS_OF unavailable: TEFAS does not provide reliable historical first-publication timestamps."],
+            )
+
+        if mode == MarketDataResolutionMode.SYSTEM_AS_OF:
+            if as_of is None or as_of.tzinfo is None:
+                return MarketObservationResolutionResult(
+                    status=MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE,
+                    resolution_mode=mode,
+                    as_of=as_of,
+                    observation_type=obs_type,
+                    effective_date=target_date,
+                    canonical_instrument_id=inst_id,
+                    provider=provider_name,
+                    originating_source=provider_name,
+                    semantic_key=sem_str,
+                    diagnostics=["SYSTEM_AS_OF resolution requires a timezone-aware as_of timestamp."],
+                )
+
+        # 2. Filter Snapshots by Provider and Canonical Instrument ID
+        relevant_snaps = [
+            s for s in snapshots
+            if s.provider.strip().upper() == provider_name and s.instrument_id == inst_id
+        ]
+        if not relevant_snaps:
+            return MarketObservationResolutionResult(
+                status=MarketDataResolutionStatus.NO_SNAPSHOT,
+                resolution_mode=mode,
+                as_of=as_of,
+                observation_type=obs_type,
+                effective_date=target_date,
+                canonical_instrument_id=inst_id,
+                provider=provider_name,
+                originating_source=provider_name,
+                semantic_key=sem_str,
+                diagnostics=[f"No TEFAS snapshots found for canonical instrument {inst_id}."],
+            )
+
+        # 3. Discard Failed / Non-Authoritative Transport Snapshots (HTTP != 200 or missing payload_hash)
+        successful_snaps = [s for s in relevant_snaps if s.http_status == 200 and s.payload_hash]
+        if not successful_snaps:
+            eval_ids = sorted([str(s.id) for s in relevant_snaps])
+            return MarketObservationResolutionResult(
+                status=MarketDataResolutionStatus.INVALID_SNAPSHOT,
+                resolution_mode=mode,
+                as_of=as_of,
+                observation_type=obs_type,
+                effective_date=target_date,
+                canonical_instrument_id=inst_id,
+                provider=provider_name,
+                originating_source=provider_name,
+                semantic_key=sem_str,
+                evaluation_snapshot_ids=eval_ids,
+                diagnostics=[f"No successful HTTP 200 snapshots available for TEFAS:{inst_id}."],
+            )
+
+        # 4. Filter by Target-Date Coverage (Non-covering snapshots ignored and cannot poison resolution)
+        covering_snaps = [s for s in successful_snaps if _tefas_snapshot_covers_target_date(s, target_date)]
+        if not covering_snaps:
+            eval_ids = sorted([str(s.id) for s in successful_snaps])
+            return MarketObservationResolutionResult(
+                status=MarketDataResolutionStatus.NO_SNAPSHOT,
+                resolution_mode=mode,
+                as_of=as_of,
+                observation_type=obs_type,
+                effective_date=target_date,
+                canonical_instrument_id=inst_id,
+                provider=provider_name,
+                originating_source=provider_name,
+                semantic_key=sem_str,
+                evaluation_snapshot_ids=eval_ids,
+                diagnostics=[f"No TEFAS snapshots cover target trade_date {target_date.isoformat()} for instrument {inst_id}."],
+            )
+
+        # 5. Validate retrieved_at Timezone Awareness on Successful Covering Snapshots ONLY
+        for s in covering_snaps:
+            if s.retrieved_at is None or s.retrieved_at.tzinfo is None:
+                eval_ids = sorted([str(snap.id) for snap in covering_snaps])
+                return MarketObservationResolutionResult(
+                    status=MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE,
+                    resolution_mode=mode,
+                    as_of=as_of,
+                    observation_type=obs_type,
+                    effective_date=target_date,
+                    canonical_instrument_id=inst_id,
+                    provider=provider_name,
+                    originating_source=provider_name,
+                    semantic_key=sem_str,
+                    evaluation_snapshot_ids=eval_ids,
+                    diagnostics=[f"Covering snapshot {s.id} contains naive or missing retrieved_at timestamp."],
+                )
+
+        # 6. SYSTEM_AS_OF Temporal Filtering BEFORE conflict checks & authority selection
+        if mode == MarketDataResolutionMode.SYSTEM_AS_OF:
+            assert as_of is not None
+            temporal_snaps = [s for s in covering_snaps if s.retrieved_at <= as_of]
+            if not temporal_snaps:
+                return MarketObservationResolutionResult(
+                    status=MarketDataResolutionStatus.NO_SNAPSHOT_AS_OF,
+                    resolution_mode=mode,
+                    as_of=as_of,
+                    observation_type=obs_type,
+                    effective_date=target_date,
+                    canonical_instrument_id=inst_id,
+                    provider=provider_name,
+                    originating_source=provider_name,
+                    semantic_key=sem_str,
+                    diagnostics=[f"No TEFAS snapshots retrieved as of {as_of.isoformat()} for instrument {inst_id}."],
+                )
+        else:
+            temporal_snaps = covering_snaps
+
+        eval_ids = sorted([str(s.id) for s in temporal_snaps])
+
+        # 7. Deduplicate Logical Snapshots Deterministically
+        logical_groups: Dict[Tuple[Any, ...], List[TefasFundPriceSnapshot]] = {}
+        for s in temporal_snaps:
+            log_key = (
+                s.provider.strip().upper(),
+                s.instrument_id,
+                s.provider_symbol.strip().upper() if s.provider_symbol else None,
+                s.retrieved_at,
+                s.payload_hash,
+                s.period_months,
+                s.trade_date_range,
+                s.endpoint,
+                s.parser_version,
+            )
+            logical_groups.setdefault(log_key, []).append(s)
+
+        deduped_snaps: List[TefasFundPriceSnapshot] = [grp[0] for grp in logical_groups.values()]
+
+        # 8. Check Conflicts at Latest retrieved_at Frontier
+        max_retrieved = max(s.retrieved_at for s in deduped_snaps)
+        frontier_snaps = [s for s in deduped_snaps if s.retrieved_at == max_retrieved]
+
+        auth_snap: TefasFundPriceSnapshot
+        if len(frontier_snaps) > 1:
+            # Check if same scope but different payload_hash
+            scopes = {
+                (s.period_months, s.trade_date_range, s.endpoint, s.parser_version)
+                for s in frontier_snaps
+            }
+            if len(scopes) == 1:
+                return MarketObservationResolutionResult(
+                    status=MarketDataResolutionStatus.SNAPSHOT_CONFLICT,
+                    resolution_mode=mode,
+                    as_of=as_of,
+                    observation_type=obs_type,
+                    effective_date=target_date,
+                    canonical_instrument_id=inst_id,
+                    provider=provider_name,
+                    originating_source=provider_name,
+                    semantic_key=sem_str,
+                    evaluation_snapshot_ids=eval_ids,
+                    diagnostics=[f"SNAPSHOT_CONFLICT: Multiple distinct snapshots at identical retrieved_at {max_retrieved.isoformat()}."],
+                )
+            else:
+                obs_fingerprints_by_snap: Dict[str, Set[str]] = {}
+                for s in frontier_snaps:
+                    target_obs = [
+                        o for o in s.observations
+                        if o.trade_date == target_date and o.instrument_id == inst_id
+                    ]
+                    fps = {_tefas_observation_fingerprint(o) for o in target_obs}
+                    obs_fingerprints_by_snap[str(s.id)] = fps
+
+                all_fps = set()
+                for fps in obs_fingerprints_by_snap.values():
+                    all_fps.update(fps)
+
+                if len(all_fps) != 1 or any(len(fps) == 0 for fps in obs_fingerprints_by_snap.values()):
+                    return MarketObservationResolutionResult(
+                        status=MarketDataResolutionStatus.SNAPSHOT_CONFLICT,
+                        resolution_mode=mode,
+                        as_of=as_of,
+                        observation_type=obs_type,
+                        effective_date=target_date,
+                        canonical_instrument_id=inst_id,
+                        provider=provider_name,
+                        originating_source=provider_name,
+                        semantic_key=sem_str,
+                        evaluation_snapshot_ids=eval_ids,
+                        diagnostics=["SNAPSHOT_CONFLICT: Differing scopes at same retrieved_at produce conflicting target observations."],
+                    )
+                def _stable_tefas_scope_key(s: TefasFundPriceSnapshot):
+                    return (
+                        str(s.payload_hash),
+                        int(s.period_months or 0),
+                        str(s.trade_date_range),
+                        str(s.endpoint),
+                        str(s.provider_symbol),
+                    )
+                auth_snap = min(frontier_snaps, key=_stable_tefas_scope_key)
+        else:
+            auth_snap = frontier_snaps[0]
+
+        # 9. Extract Target Observations from Authoritative Snapshot & Lineage Checks
+        matching_obs = [
+            o for o in auth_snap.observations
+            if o.trade_date == target_date and o.instrument_id == inst_id
+        ]
+
+        # Lineage checks: provenance failures return INVALID_TEMPORAL_LINEAGE
+        for o in matching_obs:
+            if o.provider.strip().upper() != auth_snap.provider.strip().upper():
+                return MarketObservationResolutionResult(
+                    status=MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE,
+                    resolution_mode=mode,
+                    as_of=as_of,
+                    observation_type=obs_type,
+                    effective_date=target_date,
+                    snapshot_id=auth_snap.id,
+                    snapshot_hash=auth_snap.payload_hash,
+                    snapshot_retrieved_at=auth_snap.retrieved_at,
+                    canonical_instrument_id=inst_id,
+                    provider=provider_name,
+                    originating_source=provider_name,
+                    semantic_key=sem_str,
+                    evaluation_snapshot_ids=eval_ids,
+                    diagnostics=[f"INVALID_TEMPORAL_LINEAGE: Observation provider '{o.provider}' mismatches snapshot provider '{auth_snap.provider}'."],
+                )
+            if o.snapshot_id and o.snapshot_id != auth_snap.id:
+                return MarketObservationResolutionResult(
+                    status=MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE,
+                    resolution_mode=mode,
+                    as_of=as_of,
+                    observation_type=obs_type,
+                    effective_date=target_date,
+                    snapshot_id=auth_snap.id,
+                    snapshot_hash=auth_snap.payload_hash,
+                    snapshot_retrieved_at=auth_snap.retrieved_at,
+                    canonical_instrument_id=inst_id,
+                    provider=provider_name,
+                    originating_source=provider_name,
+                    semantic_key=sem_str,
+                    evaluation_snapshot_ids=eval_ids,
+                    diagnostics=[f"INVALID_TEMPORAL_LINEAGE: Observation snapshot_id '{o.snapshot_id}' mismatches snapshot id '{auth_snap.id}'."],
+                )
+            if o.payload_hash and o.payload_hash != auth_snap.payload_hash:
+                return MarketObservationResolutionResult(
+                    status=MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE,
+                    resolution_mode=mode,
+                    as_of=as_of,
+                    observation_type=obs_type,
+                    effective_date=target_date,
+                    snapshot_id=auth_snap.id,
+                    snapshot_hash=auth_snap.payload_hash,
+                    snapshot_retrieved_at=auth_snap.retrieved_at,
+                    canonical_instrument_id=inst_id,
+                    provider=provider_name,
+                    originating_source=provider_name,
+                    semantic_key=sem_str,
+                    evaluation_snapshot_ids=eval_ids,
+                    diagnostics=["INVALID_TEMPORAL_LINEAGE: Observation payload_hash mismatches snapshot payload_hash."],
+                )
+            if auth_snap.provider_symbol and o.provider_symbol:
+                if o.provider_symbol.strip().upper() != auth_snap.provider_symbol.strip().upper():
+                    return MarketObservationResolutionResult(
+                        status=MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE,
+                        resolution_mode=mode,
+                        as_of=as_of,
+                        observation_type=obs_type,
+                        effective_date=target_date,
+                        snapshot_id=auth_snap.id,
+                        snapshot_hash=auth_snap.payload_hash,
+                        snapshot_retrieved_at=auth_snap.retrieved_at,
+                        canonical_instrument_id=inst_id,
+                        provider=provider_name,
+                        originating_source=provider_name,
+                        semantic_key=sem_str,
+                        evaluation_snapshot_ids=eval_ids,
+                        diagnostics=[f"INVALID_TEMPORAL_LINEAGE: Observation provider_symbol '{o.provider_symbol}' mismatches snapshot symbol '{auth_snap.provider_symbol}'."],
+                    )
+
+        if not matching_obs:
+            # No-resurrection: The authoritative snapshot covered this date, but target row was absent/not provided.
+            return MarketObservationResolutionResult(
+                status=MarketDataResolutionStatus.NO_ELIGIBLE_OBSERVATION,
+                resolution_mode=mode,
+                as_of=as_of,
+                observation_type=obs_type,
+                effective_date=target_date,
+                snapshot_id=auth_snap.id,
+                snapshot_hash=auth_snap.payload_hash,
+                snapshot_retrieved_at=auth_snap.retrieved_at,
+                canonical_instrument_id=inst_id,
+                provider=provider_name,
+                originating_source=provider_name,
+                semantic_key=sem_str,
+                evaluation_snapshot_ids=eval_ids,
+                diagnostics=[f"Authoritative snapshot {auth_snap.id} ({auth_snap.payload_hash[:8]}) covers {target_date.isoformat()} but contains no matching observation."],
+            )
+
+        # 10. Deduplicate and Validate Target Observations
+        obs_fps = {_tefas_observation_fingerprint(o) for o in matching_obs}
+        if len(obs_fps) > 1:
+            return MarketObservationResolutionResult(
+                status=MarketDataResolutionStatus.OBSERVATION_CONFLICT,
+                resolution_mode=mode,
+                as_of=as_of,
+                observation_type=obs_type,
+                effective_date=target_date,
+                snapshot_id=auth_snap.id,
+                snapshot_hash=auth_snap.payload_hash,
+                snapshot_retrieved_at=auth_snap.retrieved_at,
+                canonical_instrument_id=inst_id,
+                provider=provider_name,
+                originating_source=provider_name,
+                semantic_key=sem_str,
+                evaluation_snapshot_ids=eval_ids,
+                diagnostics=[f"OBSERVATION_CONFLICT: Multiple valid observations with differing fingerprints for {target_date.isoformat()} in snapshot {auth_snap.id}."],
+            )
+
+        selected_obs = matching_obs[0]
+
+        # 11. Validate Selected Observation Eligibility
+        if (
+            selected_obs.status != TefasObservationStatus.VALID
+            or selected_obs.unit_price is None
+            or not selected_obs.unit_price.is_finite()
+            or selected_obs.unit_price <= Decimal("0")
+            or selected_obs.instrument_id != inst_id
+            or selected_obs.trade_date != target_date
+            or selected_obs.currency is None
+            or selected_obs.instrument_type not in TEFAS_RESOLVER_ALLOWED_INSTRUMENT_TYPES
+        ):
+            return MarketObservationResolutionResult(
+                status=MarketDataResolutionStatus.NO_ELIGIBLE_OBSERVATION,
+                resolution_mode=mode,
+                as_of=as_of,
+                observation_type=obs_type,
+                effective_date=target_date,
+                snapshot_id=auth_snap.id,
+                snapshot_hash=auth_snap.payload_hash,
+                snapshot_retrieved_at=auth_snap.retrieved_at,
+                canonical_instrument_id=inst_id,
+                provider=provider_name,
+                originating_source=provider_name,
+                semantic_key=sem_str,
+                evaluation_snapshot_ids=eval_ids,
+                diagnostics=[f"Matching observation in snapshot {auth_snap.id} is invalid: status={selected_obs.status.value}, unit_price={selected_obs.unit_price}."],
+            )
+
+        # 12. Construct Deterministic Resolution Key and Return SELECTED Result
+        obs_fp = _tefas_observation_fingerprint(selected_obs)
+        res_key_raw = (
+            f"TEFAS_FUND_PRICE:{mode.value}:{as_of.isoformat() if as_of else 'CURRENT'}:"
+            f"{provider_name}:{inst_id}:{target_date.isoformat()}:{auth_snap.payload_hash}:"
+            f"{auth_snap.period_months}:{auth_snap.trade_date_range}:{obs_fp}"
         )
         resolution_key = hashlib.sha256(res_key_raw.encode("utf-8")).hexdigest()
 

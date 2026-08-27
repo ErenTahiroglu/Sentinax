@@ -102,7 +102,7 @@ All probes executed using ordinary Python `urllib` / `curl` with transparent Use
 - **Bulk vs Single Fund Semantics:**
   - `fonFiyatBilgiGetir` requires `fonKodu` (single fund per request).
   - `fonUnvanAra` provides the master list of 2,589 searchable/public fund entries observed on 2026-08-27.
-  - Daily incremental synchronization requires looping over the active portfolio fund universe.
+  - Daily incremental synchronization requires looping over the tracked/selected TEFAS fund set.
 
 ---
 
@@ -114,7 +114,7 @@ All probes executed using ordinary Python `urllib` / `curl` with transparent Use
    - Historical name/category changes are not preserved in the time-series response.
 3. **Price Lineage:**
    - `trade_date`: Parsed from `tarih` (`YYYY-MM-DD`).
-   - `close`: Parsed from `fiyat` (strict `Decimal`).
+   - `unit_price`: Parsed from `fiyat` (strict `Decimal`).
    - `retrieved_at`: UTC timezone-aware ingestion timestamp.
    - `published_at`: `None` (no microsecond publication timestamp exposed).
    - `mode == SOURCE_AS_OF`: Returns `UNAVAILABLE_SOURCE_AS_OF`.
