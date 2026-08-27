@@ -320,13 +320,25 @@ Derived Standalone Quarter Fact
    - Any operand with `COMPATIBLE` match strength or `MEDIUM` winner confidence $\to$ `MEDIUM` eligibility confidence.
    - Any `LEGACY_COMPATIBLE` operand mixed with modern concepts $\to$ `SEMANTIC_QUALITY_RISK`.
    - Eligibility confidence never exceeds the weakest input winner operand.
-7. **Explicit Out-Of-Scope Guards**:
-   - `Q4` derivation and `TTM` formulas return `UNSUPPORTED_PERIOD` in Phase 8B.3A.
-   - No numerical subtraction or derived values are produced in this phase.
+### 12.4 Phase 8B.3A.5 — Fiscal Chain Identity, Series-Conflict & No-Fabrication Hardening
 
-
-
-
+1. **Strict No-Date-Fabrication Invariant**:
+   - Missing economic dates are NEVER substituted with epoch/sentinel dates (`1970-01-01`).
+   - Selected winner results lacking `economic_end_date` are excluded from normal series points, retained in `failed_results`, and recorded in diagnostics.
+2. **Structured Series Conflict Model (`SECFiscalSeriesConflict`)**:
+   - Conflicting selected winner values on identical economic period intervals `(kind, start_date, end_date)` are preserved as structured `SECFiscalSeriesConflict` instances.
+   - The series status is marked as `SECFiscalSeriesStatus.CONFLICTED`.
+3. **Conflict Cannot Be Bypassed**:
+   - If a target quarter's standalone interval or any required derivation operand interval contains a series conflict, the evaluator returns `SERIES_CONFLICT`.
+   - The evaluator CANNOT bypass a conflicted standalone fact to perform YTD subtraction, nor can it treat a conflicted operand as missing.
+4. **Fiscal-Chain Resolution & Disambiguation (No Arbitrary First-Match)**:
+   - Evaluator resolves target fiscal chains via explicit `target_fiscal_start_date`, or a single unambiguous fiscal year start.
+   - If multiple fiscal chains exist in the series (e.g. multi-year series) without explicit disambiguation, or if differing start dates exist under the same `fiscal_year` metadata, the evaluator fails closed with `AMBIGUOUS_FISCAL_CHAIN`.
+   - Arbitrary `[0]` selection is strictly forbidden.
+5. **Interval-Based Standalone Quarter Identity**:
+   - Quarter identity (Q1, Q2, Q3) requires interval-based proof relative to the resolved fiscal start date and prior quarter boundaries.
+   - `fp` (fiscal period) metadata serves as corroborating helper evidence, never sole quarter authority.
+   - Dates indicating Q1 cannot be treated as Q2/Q3 solely due to `fp` claims; date and `fp` contradictions fail closed with `PERIOD_IDENTITY_UNRESOLVED`.
 
 
 

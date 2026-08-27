@@ -94,6 +94,8 @@ from backend.engine.private.sec.winner_resolver import (
 )
 from backend.engine.private.sec.fiscal_series import (
     SECDerivationEligibilityStatus,
+    SECFiscalSeriesStatus,
+    SECFiscalSeriesConflict,
     SECFiscalSeriesPoint,
     SECFiscalSeries,
     SECQuarterDerivationEligibility,
@@ -171,6 +173,8 @@ __all__ = [
     "validate_company_facts_snapshot",
     "get_semantic_quality_rank",
     "SECDerivationEligibilityStatus",
+    "SECFiscalSeriesStatus",
+    "SECFiscalSeriesConflict",
     "SECFiscalSeriesPoint",
     "SECFiscalSeries",
     "SECQuarterDerivationEligibility",

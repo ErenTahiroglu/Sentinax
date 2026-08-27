@@ -1,31 +1,36 @@
 """
 backend/engine/private/sec/fiscal_series.py
 =============================================
-SEC EDGAR Phase 8B.3A: PIT Fiscal Series Assembly & Derivation Eligibility.
+SEC EDGAR Phase 8B.3A / Phase 8B.3A.5: PIT Fiscal Series Assembly,
+Fiscal Chain Identity, Series-Conflict & No-Fabrication Hardening.
 
 Core Invariants:
     - Pure Economic Series Assembly: Groups verified winner results by CIK, canonical concept, unit,
-      resolution mode, and as_of date.
+      resolution mode, as_of date, and evaluation snapshot state.
+    - No Date Fabrication: Missing economic dates are NEVER replaced with epoch or sentinel dates.
+      Selected winner candidates lacking economic_end_date are excluded from normal series points and logged.
+    - Structured Series Conflict: Conflicting values for identical economic periods are recorded as structured
+      SECFiscalSeriesConflict objects and mark the series status as CONFLICTED.
+    - Conflict Cannot Be Bypassed: A target quarter cannot bypass a conflicted standalone or operand interval
+      to fall back to YTD derivation or declare missing operands; returns SERIES_CONFLICT.
+    - Fiscal Chain Resolution: Disambiguates fiscal chains via explicit target_fiscal_start_date, single unique
+      fiscal year start, or fails closed with AMBIGUOUS_FISCAL_CHAIN if multiple chains exist. No arbitrary candidates[0].
+    - Interval-Based Quarter Identity: Standalone Q1, Q2, Q3 identities require actual interval proof relative
+      to the fiscal start and prior quarter boundaries. fp (fiscal_period) is corroborating helper, never sole authority.
+    - Cross-Quarter Misidentification Defense: Standalone Q3 cannot masquerade as Q2; Q2 cannot masquerade as Q3.
     - Snapshot State Consistency: All operands in a single derivation chain MUST originate from the same
       logical CompanyFacts evaluation snapshot state (identical retrieved_at and payload_hash).
     - Mode & As-Of Isolation: CURRENT_REPORTED and SYSTEM_AS_OF points cannot be mixed; SYSTEM_AS_OF operands
       must share identical as_of timestamps.
-    - Concept & Unit Strictness: Exact match required; no cross-concept or cross-unit arithmetic.
     - Duration Concepts Only: Instant facts (Balance Sheet, Shares Outstanding) are ineligible for quarter subtraction.
-    - Quarter Derivation Eligibility:
-        * Q1: Standalone anchor (no subtraction needed).
-        * Q2: Eligible if Q2 YTD (YTD_DURATION) and Q1 (QUARTER_DURATION) share identical start_date and Q1.end_date < Q2.end_date.
-        * Q3: Eligible if Q3 YTD (YTD_DURATION) and Q2 YTD (YTD_DURATION) share identical start_date and Q2.end_date < Q3.end_date.
-        * Q4 / TTM: Explicitly UNSUPPORTED_PERIOD in Phase 8B.3A.
-    - Original Standalone Priority: If an authoritative QUARTER_DURATION winner already exists, ORIGINAL_AVAILABLE is returned.
-    - Confidence Propagation: Eligibility confidence never exceeds the weakest input operand.
-    - No Arithmetic Yet: Pure eligibility classification; no subtraction or numerical derivations performed in Phase 8B.3A.
+    - Q4 & TTM Out-Of-Scope: Explicitly return UNSUPPORTED_PERIOD in Phase 8B.3A.
+    - No Arithmetic Yet: Pure eligibility classification; no subtraction or numerical derivations performed.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -53,6 +58,13 @@ _CANONICAL_CONCEPTS_MAP: Dict[str, CanonicalSECConceptDefinition] = {
 }
 
 
+class SECFiscalSeriesStatus(Enum):
+    """Overall status of an assembled fiscal series."""
+    VALID = "valid"
+    PARTIAL = "partial"
+    CONFLICTED = "conflicted"
+
+
 class SECDerivationEligibilityStatus(Enum):
     """Detailed deterministic status of quarter derivation eligibility."""
     ORIGINAL_AVAILABLE = "original_available"
@@ -66,8 +78,36 @@ class SECDerivationEligibilityStatus(Enum):
     FISCAL_START_MISMATCH = "fiscal_start_mismatch"
     PERIOD_SEQUENCE_INVALID = "period_sequence_invalid"
     SEMANTIC_QUALITY_RISK = "semantic_quality_risk"
+    SERIES_CONFLICT = "series_conflict"
+    AMBIGUOUS_FISCAL_CHAIN = "ambiguous_fiscal_chain"
+    PERIOD_IDENTITY_UNRESOLVED = "period_identity_unresolved"
     UNSUPPORTED_PERIOD = "unsupported_period"
     UNAVAILABLE = "unavailable"
+
+
+@dataclass
+class SECFiscalSeriesConflict:
+    """
+    Structured conflict record for a period interval with conflicting winner values.
+    """
+    economic_period_kind: SECEconomicPeriodKind
+    start_date: Optional[date]
+    end_date: date
+    values: List[Decimal]
+    winner_result_ids: List[UUID]
+    accession_numbers: List[str]
+    reason: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "economic_period_kind": self.economic_period_kind.value,
+            "start_date": self.start_date.isoformat() if self.start_date else None,
+            "end_date": self.end_date.isoformat(),
+            "values": [str(v) for v in self.values],
+            "winner_result_ids": [str(wid) for wid in self.winner_result_ids],
+            "accession_numbers": self.accession_numbers,
+            "reason": self.reason,
+        }
 
 
 @dataclass
@@ -100,7 +140,7 @@ class SECFiscalSeriesPoint:
         return {
             "economic_period_kind": self.economic_period_kind.value,
             "start_date": self.start_date.isoformat() if self.start_date else None,
-            "end_date": self.end_date.isoformat() if self.end_date else None,
+            "end_date": self.end_date.isoformat(),
             "duration_days": self.duration_days,
             "fiscal_year": self.fiscal_year,
             "fiscal_period": self.fiscal_period,
@@ -132,7 +172,9 @@ class SECFiscalSeries:
     as_of: Optional[datetime] = None
     evaluation_snapshot_retrieved_at: Optional[datetime] = None
     evaluation_snapshot_hash: Optional[str] = None
+    status: SECFiscalSeriesStatus = SECFiscalSeriesStatus.VALID
     points: List[SECFiscalSeriesPoint] = field(default_factory=list)
+    conflicts: List[SECFiscalSeriesConflict] = field(default_factory=list)
     failed_results: List[SECWinnerResolutionResult] = field(default_factory=list)
     diagnostics: List[str] = field(default_factory=list)
 
@@ -145,7 +187,9 @@ class SECFiscalSeries:
             "as_of": self.as_of.isoformat() if self.as_of else None,
             "evaluation_snapshot_retrieved_at": self.evaluation_snapshot_retrieved_at.isoformat() if self.evaluation_snapshot_retrieved_at else None,
             "evaluation_snapshot_hash": self.evaluation_snapshot_hash,
+            "status": self.status.value,
             "points": [p.to_dict() for p in self.points],
+            "conflicts": [c.to_dict() for c in self.conflicts],
             "failed_results_count": len(self.failed_results),
             "diagnostics": self.diagnostics,
         }
@@ -236,6 +280,7 @@ class SECFiscalSeriesAssembler:
                 continue
 
             points: List[SECFiscalSeriesPoint] = []
+            conflicts: List[SECFiscalSeriesConflict] = []
             failed_results: List[SECWinnerResolutionResult] = []
             diagnostics: List[str] = []
 
@@ -249,11 +294,17 @@ class SECFiscalSeriesAssembler:
                     continue
 
                 cand = res.selected_candidate
+                # Guard against missing economic_end_date: NEVER fabricate fallback sentinel dates
+                if cand.economic_end_date is None:
+                    failed_results.append(res)
+                    diagnostics.append(f"Selected winner lacks economic_end_date; excluded from fiscal series (group {res.economic_group_key}).")
+                    continue
+
                 point = SECFiscalSeriesPoint(
                     winner_result=res,
                     economic_period_kind=cand.economic_period_kind,
                     start_date=cand.economic_start_date,
-                    end_date=cand.economic_end_date or date(1970, 1, 1),
+                    end_date=cand.economic_end_date,
                     duration_days=cand.duration_days,
                     fiscal_year=cand.fiscal_year,
                     fiscal_period=cand.fiscal_period,
@@ -274,7 +325,7 @@ class SECFiscalSeriesAssembler:
                 p_key = (point.economic_period_kind, point.start_date, point.end_date)
                 period_point_map.setdefault(p_key, []).append(point)
 
-            # Deduplicate or flag conflicts for each period interval
+            # Deduplicate identical points or record structured conflicts
             for p_key, p_candidates in period_point_map.items():
                 if len(p_candidates) == 1:
                     points.append(p_candidates[0])
@@ -297,7 +348,23 @@ class SECFiscalSeriesAssembler:
                         canonical_point.diagnostics = combined_diag
                         points.append(canonical_point)
                     else:
-                        # Differing values: series conflict fail-closed!
+                        # Differing values: structured series conflict!
+                        w_ids = [
+                            p.winner_result.selected_candidate.id
+                            for p in p_candidates
+                            if p.winner_result.selected_candidate
+                        ]
+                        accs = sorted(list({p.selected_accession for p in p_candidates if p.selected_accession}))
+                        conflict_rec = SECFiscalSeriesConflict(
+                            economic_period_kind=p_key[0],
+                            start_date=p_key[1],
+                            end_date=p_key[2],
+                            values=sorted(list(unique_vals)),
+                            winner_result_ids=w_ids,
+                            accession_numbers=accs,
+                            reason=f"Conflicting selected values {unique_vals} on identical period [{p_key[1]} to {p_key[2]}].",
+                        )
+                        conflicts.append(conflict_rec)
                         diagnostics.append(
                             f"Series conflict on period {p_key[0].value} [{p_key[1]} to {p_key[2]}]: conflicting values {unique_vals}."
                         )
@@ -312,6 +379,14 @@ class SECFiscalSeriesAssembler:
                 )
             )
 
+            # Determine series status
+            if conflicts:
+                series_status = SECFiscalSeriesStatus.CONFLICTED
+            elif failed_results:
+                series_status = SECFiscalSeriesStatus.PARTIAL
+            else:
+                series_status = SECFiscalSeriesStatus.VALID
+
             series_obj = SECFiscalSeries(
                 cik=cik,
                 canonical_concept=concept,
@@ -320,7 +395,9 @@ class SECFiscalSeriesAssembler:
                 as_of=as_of,
                 evaluation_snapshot_retrieved_at=snap_time,
                 evaluation_snapshot_hash=snap_hash,
+                status=series_status,
                 points=points,
+                conflicts=conflicts,
                 failed_results=failed_results,
                 diagnostics=diagnostics,
             )
@@ -388,26 +465,148 @@ class SECFiscalSeriesEvaluator:
                 diagnostics=[f"Unrecognized target quarter: {norm_quarter}."],
             )
 
-        # 3. Target Quarter Q1
+        # 3. Fiscal-Chain Resolution (No arbitrary candidates[0])
+        resolved_fiscal_start: Optional[date] = None
+
+        if target_fiscal_start_date is not None:
+            resolved_fiscal_start = target_fiscal_start_date
+        elif target_fiscal_year is not None:
+            # Gather all points and conflicts with fiscal_year == target_fiscal_year
+            matching_starts = {
+                p.start_date for p in series.points
+                if p.fiscal_year == target_fiscal_year and p.start_date is not None
+            }
+            if len(matching_starts) == 1:
+                resolved_fiscal_start = next(iter(matching_starts))
+            elif len(matching_starts) > 1:
+                return SECQuarterDerivationEligibility(
+                    target_quarter=norm_quarter,
+                    status=SECDerivationEligibilityStatus.AMBIGUOUS_FISCAL_CHAIN,
+                    canonical_concept=series.canonical_concept,
+                    unit=series.unit,
+                    confidence="LOW",
+                    basis=f"Multiple distinct economic start dates {matching_starts} found under fiscal_year {target_fiscal_year}.",
+                    diagnostics=["Ambiguous fiscal chain: multiple start dates for same fiscal_year."],
+                )
+            else:
+                return SECQuarterDerivationEligibility(
+                    target_quarter=norm_quarter,
+                    status=SECDerivationEligibilityStatus.MISSING_OPERAND,
+                    canonical_concept=series.canonical_concept,
+                    unit=series.unit,
+                    confidence="LOW",
+                    basis=f"No fiscal chain points found for fiscal_year {target_fiscal_year}.",
+                    diagnostics=[f"No points for fiscal_year {target_fiscal_year}."],
+                )
+        else:
+            # Deduce candidate fiscal start chains relevant to target_quarter
+            candidate_starts: Set[date] = set()
+
+            # Check points
+            for p in series.points:
+                if p.start_date is None:
+                    continue
+                if norm_quarter == "Q1":
+                    if p.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION and (p.duration_days is None or 70 <= p.duration_days <= 115):
+                        candidate_starts.add(p.start_date)
+                elif norm_quarter == "Q2":
+                    if p.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION and (p.duration_days is None or 150 <= p.duration_days <= 215):
+                        candidate_starts.add(p.start_date)
+                    elif p.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION and (p.duration_days is None or 70 <= p.duration_days <= 115):
+                        candidate_starts.add(p.start_date)
+                elif norm_quarter == "Q3":
+                    if p.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION and (p.duration_days is None or 240 <= p.duration_days <= 305):
+                        candidate_starts.add(p.start_date)
+                    elif p.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION and (p.duration_days is None or 150 <= p.duration_days <= 215):
+                        candidate_starts.add(p.start_date)
+
+            # Check conflicts as well so a conflict in one year doesn't hide candidate chains
+            for c in series.conflicts:
+                if c.start_date is not None:
+                    candidate_starts.add(c.start_date)
+
+            if len(candidate_starts) == 1:
+                resolved_fiscal_start = next(iter(candidate_starts))
+            elif len(candidate_starts) > 1:
+                return SECQuarterDerivationEligibility(
+                    target_quarter=norm_quarter,
+                    status=SECDerivationEligibilityStatus.AMBIGUOUS_FISCAL_CHAIN,
+                    canonical_concept=series.canonical_concept,
+                    unit=series.unit,
+                    confidence="LOW",
+                    basis=f"Multiple fiscal start chains {candidate_starts} exist in series; explicit target_fiscal_start_date or target_fiscal_year required.",
+                    diagnostics=["Ambiguous fiscal chain across multiple fiscal years."],
+                )
+            else:
+                return SECQuarterDerivationEligibility(
+                    target_quarter=norm_quarter,
+                    status=SECDerivationEligibilityStatus.MISSING_OPERAND,
+                    canonical_concept=series.canonical_concept,
+                    unit=series.unit,
+                    confidence="LOW",
+                    basis=f"No fiscal chain found in series for quarter '{norm_quarter}'.",
+                    diagnostics=["No candidate fiscal chain found."],
+                )
+
+        # 4. Target Quarter Q1 Evaluation
         if norm_quarter == "Q1":
+            # Check for conflict on Q1 period
+            q1_conflicts = [
+                c for c in series.conflicts
+                if c.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
+                and c.start_date == resolved_fiscal_start
+            ]
+            if q1_conflicts:
+                return SECQuarterDerivationEligibility(
+                    target_quarter="Q1",
+                    status=SECDerivationEligibilityStatus.SERIES_CONFLICT,
+                    canonical_concept=series.canonical_concept,
+                    unit=series.unit,
+                    confidence="LOW",
+                    basis=f"Series conflict exists on Q1 period: {q1_conflicts[0].reason}",
+                    diagnostics=["Series conflict on Q1 period."],
+                )
+
             q1_points = [
                 p for p in series.points
                 if p.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
-                and (target_fiscal_year is None or p.fiscal_year == target_fiscal_year)
-                and (target_fiscal_start_date is None or p.start_date == target_fiscal_start_date)
+                and p.start_date == resolved_fiscal_start
+                and (p.duration_days is None or 70 <= p.duration_days <= 115)
             ]
-            if q1_points:
+            if len(q1_points) == 1:
+                q1_p = q1_points[0]
+                # Check fp contradiction
+                if q1_p.fiscal_period and q1_p.fiscal_period.upper() in ("Q3", "Q4"):
+                    return SECQuarterDerivationEligibility(
+                        target_quarter="Q1",
+                        status=SECDerivationEligibilityStatus.PERIOD_IDENTITY_UNRESOLVED,
+                        canonical_concept=series.canonical_concept,
+                        unit=series.unit,
+                        confidence="LOW",
+                        basis=f"Period identity unresolved: point dates indicate Q1 [{q1_p.start_date} to {q1_p.end_date}] but fiscal_period is {q1_p.fiscal_period}.",
+                        diagnostics=["Contradiction between dates and fiscal_period metadata."],
+                    )
                 return SECQuarterDerivationEligibility(
                     target_quarter="Q1",
                     status=SECDerivationEligibilityStatus.ORIGINAL_AVAILABLE,
                     canonical_concept=series.canonical_concept,
                     unit=series.unit,
-                    left_operand=q1_points[0],
+                    left_operand=q1_p,
                     snapshot_hash=series.evaluation_snapshot_hash,
                     snapshot_retrieved_at=series.evaluation_snapshot_retrieved_at,
-                    confidence=q1_points[0].selection_confidence,
+                    confidence=q1_p.selection_confidence,
                     basis="Q1 standalone quarter is already available as a primary anchor; no derivation needed.",
                     diagnostics=["Original standalone Q1 available."],
+                )
+            elif len(q1_points) > 1:
+                return SECQuarterDerivationEligibility(
+                    target_quarter="Q1",
+                    status=SECDerivationEligibilityStatus.AMBIGUOUS_FISCAL_CHAIN,
+                    canonical_concept=series.canonical_concept,
+                    unit=series.unit,
+                    confidence="LOW",
+                    basis=f"Multiple Q1 points found for fiscal start {resolved_fiscal_start}.",
+                    diagnostics=["Multiple Q1 points in same fiscal chain."],
                 )
             else:
                 return SECQuarterDerivationEligibility(
@@ -415,55 +614,117 @@ class SECFiscalSeriesEvaluator:
                     status=SECDerivationEligibilityStatus.MISSING_OPERAND,
                     canonical_concept=series.canonical_concept,
                     unit=series.unit,
-                    snapshot_hash=series.evaluation_snapshot_hash,
-                    snapshot_retrieved_at=series.evaluation_snapshot_retrieved_at,
                     confidence="LOW",
-                    basis="Missing Q1 standalone quarter point in fiscal series.",
+                    basis=f"Missing Q1 standalone quarter point for fiscal start {resolved_fiscal_start}.",
                     diagnostics=["Q1 operand missing."],
                 )
 
-        # 4. Target Quarter Q2
+        # 5. Target Quarter Q2 Evaluation
         if norm_quarter == "Q2":
-            # Check if standalone Q2 already exists
-            # Standalone Q2 is a QUARTER_DURATION point whose start_date is after fiscal start
+            # Check for conflict on Q2 standalone or Q2 YTD or Q1
+            q2_ytd_conflicts = [
+                c for c in series.conflicts
+                if c.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
+                and c.start_date == resolved_fiscal_start
+                and (150 <= (c.end_date - c.start_date).days <= 215)
+            ]
+            q1_conflicts = [
+                c for c in series.conflicts
+                if c.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
+                and c.start_date == resolved_fiscal_start
+            ]
+            # Check standalone Q2 conflicts (start > fiscal_start, duration ~90d)
+            q2_standalone_conflicts = [
+                c for c in series.conflicts
+                if c.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
+                and c.start_date is not None
+                and c.start_date > resolved_fiscal_start
+                and (70 <= (c.end_date - c.start_date).days <= 115)
+                and (c.end_date <= resolved_fiscal_start + timedelta(days=215))
+            ]
+
+            if q2_standalone_conflicts:
+                return SECQuarterDerivationEligibility(
+                    target_quarter="Q2",
+                    status=SECDerivationEligibilityStatus.SERIES_CONFLICT,
+                    canonical_concept=series.canonical_concept,
+                    unit=series.unit,
+                    confidence="LOW",
+                    basis=f"Series conflict exists on standalone Q2 period: {q2_standalone_conflicts[0].reason}",
+                    diagnostics=["Series conflict on standalone Q2 period."],
+                )
+
+            # Check if authoritative standalone Q2 exists via interval proof
+            # Standalone Q2 interval: start_date > resolved_fiscal_start and duration ~90d and end_date <= fiscal_start + 215d
             q2_standalone_points = [
                 p for p in series.points
                 if p.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
-                and (target_fiscal_year is None or p.fiscal_year == target_fiscal_year)
-                and (
-                    (target_fiscal_start_date and p.start_date and p.start_date > target_fiscal_start_date)
-                    or (p.fiscal_period == "Q2")
-                    or (p.duration_days and 75 <= p.duration_days <= 110 and p.start_date and target_fiscal_start_date and p.start_date > target_fiscal_start_date)
-                )
+                and p.start_date is not None
+                and p.start_date > resolved_fiscal_start
+                and (p.duration_days is None or 70 <= p.duration_days <= 115)
+                and (p.end_date <= resolved_fiscal_start + timedelta(days=215))
+                and (p.start_date <= resolved_fiscal_start + timedelta(days=125))
             ]
-            if q2_standalone_points:
+
+            if len(q2_standalone_points) == 1:
+                q2_p = q2_standalone_points[0]
+                if q2_p.fiscal_period and q2_p.fiscal_period.upper() in ("Q3", "Q4"):
+                    return SECQuarterDerivationEligibility(
+                        target_quarter="Q2",
+                        status=SECDerivationEligibilityStatus.PERIOD_IDENTITY_UNRESOLVED,
+                        canonical_concept=series.canonical_concept,
+                        unit=series.unit,
+                        confidence="LOW",
+                        basis=f"Period identity unresolved: point dates indicate Q2 [{q2_p.start_date} to {q2_p.end_date}] but fiscal_period is {q2_p.fiscal_period}.",
+                        diagnostics=["Contradiction between dates and fiscal_period metadata."],
+                    )
                 return SECQuarterDerivationEligibility(
                     target_quarter="Q2",
                     status=SECDerivationEligibilityStatus.ORIGINAL_AVAILABLE,
                     canonical_concept=series.canonical_concept,
                     unit=series.unit,
-                    left_operand=q2_standalone_points[0],
+                    left_operand=q2_p,
                     snapshot_hash=series.evaluation_snapshot_hash,
                     snapshot_retrieved_at=series.evaluation_snapshot_retrieved_at,
-                    confidence=q2_standalone_points[0].selection_confidence,
+                    confidence=q2_p.selection_confidence,
                     basis="Original standalone Q2 quarter point is already available in the series.",
                     diagnostics=["Original standalone Q2 available."],
                 )
+            elif len(q2_standalone_points) > 1:
+                return SECQuarterDerivationEligibility(
+                    target_quarter="Q2",
+                    status=SECDerivationEligibilityStatus.AMBIGUOUS_FISCAL_CHAIN,
+                    canonical_concept=series.canonical_concept,
+                    unit=series.unit,
+                    confidence="LOW",
+                    basis=f"Multiple standalone Q2 points found for fiscal start {resolved_fiscal_start}.",
+                    diagnostics=["Multiple standalone Q2 points in same fiscal chain."],
+                )
 
-            # Find Q2 YTD and Q1 points
+            # Standalone not available: check derivation operands
+            if q1_conflicts or q2_ytd_conflicts:
+                conflict_reason = (q1_conflicts or q2_ytd_conflicts)[0].reason
+                return SECQuarterDerivationEligibility(
+                    target_quarter="Q2",
+                    status=SECDerivationEligibilityStatus.SERIES_CONFLICT,
+                    canonical_concept=series.canonical_concept,
+                    unit=series.unit,
+                    confidence="LOW",
+                    basis=f"Series conflict exists on required Q2 derivation operand: {conflict_reason}",
+                    diagnostics=["Series conflict on derivation operand."],
+                )
+
             q2_ytd_candidates = [
                 p for p in series.points
                 if p.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
-                and (target_fiscal_year is None or p.fiscal_year == target_fiscal_year)
-                and (target_fiscal_start_date is None or p.start_date == target_fiscal_start_date)
-                and (p.duration_days is None or 150 <= p.duration_days <= 210 or p.fiscal_period == "Q2")
+                and p.start_date == resolved_fiscal_start
+                and (p.duration_days is None or 150 <= p.duration_days <= 215)
             ]
             q1_candidates = [
                 p for p in series.points
                 if p.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
-                and (target_fiscal_year is None or p.fiscal_year == target_fiscal_year)
-                and (target_fiscal_start_date is None or p.start_date == target_fiscal_start_date)
-                and (p.duration_days is None or 75 <= p.duration_days <= 110 or p.fiscal_period == "Q1")
+                and p.start_date == resolved_fiscal_start
+                and (p.duration_days is None or 70 <= p.duration_days <= 115)
             ]
 
             if not q2_ytd_candidates:
@@ -475,7 +736,7 @@ class SECFiscalSeriesEvaluator:
                     snapshot_hash=series.evaluation_snapshot_hash,
                     snapshot_retrieved_at=series.evaluation_snapshot_retrieved_at,
                     confidence="LOW",
-                    basis="Missing Q2 YTD operand in fiscal series.",
+                    basis=f"Missing Q2 YTD operand for fiscal start {resolved_fiscal_start}.",
                     diagnostics=["Missing Q2 YTD operand."],
                 )
 
@@ -489,8 +750,19 @@ class SECFiscalSeriesEvaluator:
                     snapshot_hash=series.evaluation_snapshot_hash,
                     snapshot_retrieved_at=series.evaluation_snapshot_retrieved_at,
                     confidence="LOW",
-                    basis="Missing Q1 operand for Q2 derivation.",
+                    basis=f"Missing Q1 operand for Q2 derivation (fiscal start {resolved_fiscal_start}).",
                     diagnostics=["Missing Q1 operand."],
+                )
+
+            if len(q2_ytd_candidates) > 1 or len(q1_candidates) > 1:
+                return SECQuarterDerivationEligibility(
+                    target_quarter="Q2",
+                    status=SECDerivationEligibilityStatus.AMBIGUOUS_FISCAL_CHAIN,
+                    canonical_concept=series.canonical_concept,
+                    unit=series.unit,
+                    confidence="LOW",
+                    basis="Multiple distinct candidates for Q1 or Q2 YTD found in resolved fiscal chain.",
+                    diagnostics=["Operand cardinality violation."],
                 )
 
             left = q2_ytd_candidates[0]
@@ -504,45 +776,113 @@ class SECFiscalSeriesEvaluator:
                 series=series,
             )
 
-        # 5. Target Quarter Q3
+        # 6. Target Quarter Q3 Evaluation
         if norm_quarter == "Q3":
-            # Check if standalone Q3 already exists
+            # Check for conflict on standalone Q3, Q3 YTD, or Q2 YTD
+            q3_standalone_conflicts = [
+                c for c in series.conflicts
+                if c.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
+                and c.start_date is not None
+                and c.start_date > resolved_fiscal_start
+                and (70 <= (c.end_date - c.start_date).days <= 115)
+                and (c.start_date >= resolved_fiscal_start + timedelta(days=150))
+                and (c.end_date <= resolved_fiscal_start + timedelta(days=310))
+            ]
+            q3_ytd_conflicts = [
+                c for c in series.conflicts
+                if c.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
+                and c.start_date == resolved_fiscal_start
+                and (240 <= (c.end_date - c.start_date).days <= 305)
+            ]
+            q2_ytd_conflicts = [
+                c for c in series.conflicts
+                if c.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
+                and c.start_date == resolved_fiscal_start
+                and (150 <= (c.end_date - c.start_date).days <= 215)
+            ]
+
+            if q3_standalone_conflicts:
+                return SECQuarterDerivationEligibility(
+                    target_quarter="Q3",
+                    status=SECDerivationEligibilityStatus.SERIES_CONFLICT,
+                    canonical_concept=series.canonical_concept,
+                    unit=series.unit,
+                    confidence="LOW",
+                    basis=f"Series conflict exists on standalone Q3 period: {q3_standalone_conflicts[0].reason}",
+                    diagnostics=["Series conflict on standalone Q3 period."],
+                )
+
+            # Standalone Q3 interval check
             q3_standalone_points = [
                 p for p in series.points
                 if p.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
-                and (target_fiscal_year is None or p.fiscal_year == target_fiscal_year)
-                and (
-                    (target_fiscal_start_date and p.start_date and p.start_date > target_fiscal_start_date)
-                    or (p.fiscal_period == "Q3")
-                )
+                and p.start_date is not None
+                and p.start_date > resolved_fiscal_start
+                and (p.duration_days is None or 70 <= p.duration_days <= 115)
+                and (p.start_date >= resolved_fiscal_start + timedelta(days=150))
+                and (p.end_date <= resolved_fiscal_start + timedelta(days=310))
             ]
-            if q3_standalone_points:
+
+            if len(q3_standalone_points) == 1:
+                q3_p = q3_standalone_points[0]
+                if q3_p.fiscal_period and q3_p.fiscal_period.upper() in ("Q1", "Q2", "Q4"):
+                    return SECQuarterDerivationEligibility(
+                        target_quarter="Q3",
+                        status=SECDerivationEligibilityStatus.PERIOD_IDENTITY_UNRESOLVED,
+                        canonical_concept=series.canonical_concept,
+                        unit=series.unit,
+                        confidence="LOW",
+                        basis=f"Period identity unresolved: point dates indicate Q3 [{q3_p.start_date} to {q3_p.end_date}] but fiscal_period is {q3_p.fiscal_period}.",
+                        diagnostics=["Contradiction between dates and fiscal_period metadata."],
+                    )
                 return SECQuarterDerivationEligibility(
                     target_quarter="Q3",
                     status=SECDerivationEligibilityStatus.ORIGINAL_AVAILABLE,
                     canonical_concept=series.canonical_concept,
                     unit=series.unit,
-                    left_operand=q3_standalone_points[0],
+                    left_operand=q3_p,
                     snapshot_hash=series.evaluation_snapshot_hash,
                     snapshot_retrieved_at=series.evaluation_snapshot_retrieved_at,
-                    confidence=q3_standalone_points[0].selection_confidence,
+                    confidence=q3_p.selection_confidence,
                     basis="Original standalone Q3 quarter point is already available in the series.",
                     diagnostics=["Original standalone Q3 available."],
+                )
+            elif len(q3_standalone_points) > 1:
+                return SECQuarterDerivationEligibility(
+                    target_quarter="Q3",
+                    status=SECDerivationEligibilityStatus.AMBIGUOUS_FISCAL_CHAIN,
+                    canonical_concept=series.canonical_concept,
+                    unit=series.unit,
+                    confidence="LOW",
+                    basis=f"Multiple standalone Q3 points found for fiscal start {resolved_fiscal_start}.",
+                    diagnostics=["Multiple standalone Q3 points in same fiscal chain."],
+                )
+
+            # Standalone not available: check derivation operands
+            if q3_ytd_conflicts or q2_ytd_conflicts:
+                conflict_reason = (q3_ytd_conflicts or q2_ytd_conflicts)[0].reason
+                return SECQuarterDerivationEligibility(
+                    target_quarter="Q3",
+                    status=SECDerivationEligibilityStatus.SERIES_CONFLICT,
+                    canonical_concept=series.canonical_concept,
+                    unit=series.unit,
+                    confidence="LOW",
+                    basis=f"Series conflict exists on required Q3 derivation operand: {conflict_reason}",
+                    diagnostics=["Series conflict on derivation operand."],
                 )
 
             q3_ytd_candidates = [
                 p for p in series.points
                 if p.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
-                and (target_fiscal_year is None or p.fiscal_year == target_fiscal_year)
-                and (target_fiscal_start_date is None or p.start_date == target_fiscal_start_date)
-                and (p.duration_days is None or 240 <= p.duration_days <= 300 or p.fiscal_period == "Q3")
+                and p.start_date == resolved_fiscal_start
+                and (p.duration_days is None or 220 <= p.duration_days <= 320 or (p.fiscal_period and p.fiscal_period.upper() == "Q3"))
             ]
             q2_ytd_candidates = [
                 p for p in series.points
                 if p.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
-                and (target_fiscal_year is None or p.fiscal_year == target_fiscal_year)
-                and (target_fiscal_start_date is None or p.start_date == target_fiscal_start_date)
-                and (p.duration_days is None or 150 <= p.duration_days <= 210 or p.fiscal_period == "Q2")
+                and p.start_date == resolved_fiscal_start
+                and (p.duration_days is None or 140 <= p.duration_days <= 215 or (p.fiscal_period and p.fiscal_period.upper() == "Q2"))
+                and p not in q3_ytd_candidates
             ]
 
             if not q3_ytd_candidates:
@@ -554,7 +894,7 @@ class SECFiscalSeriesEvaluator:
                     snapshot_hash=series.evaluation_snapshot_hash,
                     snapshot_retrieved_at=series.evaluation_snapshot_retrieved_at,
                     confidence="LOW",
-                    basis="Missing Q3 YTD operand in fiscal series.",
+                    basis=f"Missing Q3 YTD operand for fiscal start {resolved_fiscal_start}.",
                     diagnostics=["Missing Q3 YTD operand."],
                 )
 
@@ -568,8 +908,19 @@ class SECFiscalSeriesEvaluator:
                     snapshot_hash=series.evaluation_snapshot_hash,
                     snapshot_retrieved_at=series.evaluation_snapshot_retrieved_at,
                     confidence="LOW",
-                    basis="Missing Q2 YTD operand for Q3 derivation.",
+                    basis=f"Missing Q2 YTD operand for Q3 derivation (fiscal start {resolved_fiscal_start}).",
                     diagnostics=["Missing Q2 YTD operand."],
+                )
+
+            if len(q3_ytd_candidates) > 1 or len(q2_ytd_candidates) > 1:
+                return SECQuarterDerivationEligibility(
+                    target_quarter="Q3",
+                    status=SECDerivationEligibilityStatus.AMBIGUOUS_FISCAL_CHAIN,
+                    canonical_concept=series.canonical_concept,
+                    unit=series.unit,
+                    confidence="LOW",
+                    basis="Multiple distinct candidates for Q2 YTD or Q3 YTD found in resolved fiscal chain.",
+                    diagnostics=["Operand cardinality violation."],
                 )
 
             left = q3_ytd_candidates[0]
@@ -743,7 +1094,6 @@ class SECFiscalSeriesEvaluator:
             )
 
         # Confidence Propagation
-        # Cannot exceed weakest winner confidence
         left_conf = (left.selection_confidence or "LOW").upper()
         right_conf = (right.selection_confidence or "LOW").upper()
 
