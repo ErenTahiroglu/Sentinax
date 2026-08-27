@@ -1138,4 +1138,100 @@ class TestSECSameFilingDeterministicTies:
         assert res2.status == SECWinnerStatus.AMBIGUOUS_WITHIN_FILING
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 21. Chronology Graph Consistency & Cycle Defense (Phase 8B.2B.7 Scenarios 10-16)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSECChronologyGraphAndCycleDefense:
+
+    def test_10_and_11_directed_cycle_fails_closed_across_all_permutations(self):
+        """Scenarios 10 & 11: Mixed metadata produces cyclic chronology A -> C -> B -> A.
+        Must return CHRONOLOGY_CONFLICT with winner=None for all candidate and filing permutations."""
+        # Evaluation snapshot retrieved after all filing/acceptance events
+        s = _make_snapshot(retrieved_at=datetime(2024, 1, 10, 18, 0, 0, tzinfo=timezone.utc))
+
+        f_a = SECFilingRecord(
+            cik="320193",
+            accession_number="0001",
+            form="10-K",
+            is_amendment=False,
+            filing_date=date(2024, 1, 1),
+            acceptance_datetime=datetime(2024, 1, 3, 16, 0, 0, tzinfo=timezone.utc),
+        )
+        f_b = SECFilingRecord(
+            cik="320193",
+            accession_number="0002",
+            form="10-K",
+            is_amendment=False,
+            filing_date=date(2024, 1, 3),
+            acceptance_datetime=datetime(2024, 1, 2, 16, 0, 0, tzinfo=timezone.utc),
+        )
+        f_c = SECFilingRecord(
+            cik="320193",
+            accession_number="0003",
+            form="10-K",
+            is_amendment=False,
+            filing_date=date(2024, 1, 2),
+            acceptance_datetime=None,
+            acceptance_local_datetime=None,
+        )
+
+        group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2023-01-01", "2023-12-31")
+
+        c_a = _make_periodized_candidate(snapshot_id=s.id, accession_number="0001", value=Decimal("100"), start_date=date(2023, 1, 1), end_date=date(2023, 12, 31))
+        c_b = _make_periodized_candidate(snapshot_id=s.id, accession_number="0002", value=Decimal("105"), start_date=date(2023, 1, 1), end_date=date(2023, 12, 31))
+        c_c = _make_periodized_candidate(snapshot_id=s.id, accession_number="0003", value=Decimal("110"), start_date=date(2023, 1, 1), end_date=date(2023, 12, 31))
+
+        # Test all 6 candidate permutations and all 6 filing permutations
+        for p_cands in itertools.permutations([c_a, c_b, c_c]):
+            for p_filings in itertools.permutations([f_a, f_b, f_c]):
+                res = SECWinnerResolver.resolve_winner(group_key, list(p_cands), [s], list(p_filings))
+                assert res.status == SECWinnerStatus.CHRONOLOGY_CONFLICT
+                assert res.selected_candidate is None
+                assert res.selected_value is None
+                assert "cycle across filings" in res.selection_basis
+
+    def test_16_mixed_basis_acyclic_resolves_successfully(self):
+        """Scenario 16: Mixed metadata basis (aware vs filing_date) that is acyclic resolves correctly."""
+        s = _make_snapshot(retrieved_at=datetime(2024, 1, 10, 18, 0, 0, tzinfo=timezone.utc))
+
+        f_a = SECFilingRecord(
+            cik="320193",
+            accession_number="0001",
+            form="10-K",
+            is_amendment=False,
+            filing_date=date(2024, 1, 1),
+            acceptance_datetime=datetime(2024, 1, 1, 16, 0, 0, tzinfo=timezone.utc),
+        )
+        f_b = SECFilingRecord(
+            cik="320193",
+            accession_number="0002",
+            form="10-K",
+            is_amendment=False,
+            filing_date=date(2024, 1, 2),
+            acceptance_datetime=datetime(2024, 1, 2, 16, 0, 0, tzinfo=timezone.utc),
+        )
+        f_c = SECFilingRecord(
+            cik="320193",
+            accession_number="0003",
+            form="10-K",
+            is_amendment=False,
+            filing_date=date(2024, 1, 3),
+            acceptance_datetime=None,
+        )
+
+        group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2023-01-01", "2023-12-31")
+
+        c_a = _make_periodized_candidate(snapshot_id=s.id, accession_number="0001", match_strength="EXACT", value=Decimal("100"), start_date=date(2023, 1, 1), end_date=date(2023, 12, 31))
+        c_b = _make_periodized_candidate(snapshot_id=s.id, accession_number="0002", match_strength="EXACT", value=Decimal("105"), start_date=date(2023, 1, 1), end_date=date(2023, 12, 31))
+        c_c = _make_periodized_candidate(snapshot_id=s.id, accession_number="0003", match_strength="EXACT", value=Decimal("110"), start_date=date(2023, 1, 1), end_date=date(2023, 12, 31))
+
+        # A (Jan 1) < B (Jan 2) < C (Jan 3) is acyclic
+        res = SECWinnerResolver.resolve_winner(group_key, [c_a, c_b, c_c], [s], [f_a, f_b, f_c])
+        assert res.status == SECWinnerStatus.SELECTED
+        assert res.selected_value == Decimal("110")
+        assert res.selected_accession_number == "0003"
+
+
+
 

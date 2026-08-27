@@ -255,6 +255,21 @@ Phase 8B.2B implements deterministic, auditable, and fail-closed winner resoluti
    - Dual identifiers (`accession_number` + `filing_id`) resolve validly when pointing to equivalent logical filing duplicates.
    - Filings sharing the same accession but differing in authority-relevant metadata fail closed as conflicting filing records.
 
+### 11.5 Phase 8B.2B.7 — Disclosure Chronology Graph Consistency & Cycle Fail-Closed Hardening
+
+1. **Strict Directed Chronology Graph Representation**:
+   - Cross-filing disclosure relations are represented as a strict directed graph $G = (V, E)$ where edge $u \to v$ denotes that filing $v$ is strictly later than filing $u$ ($v > u$).
+   - `SAME` and `UNORDERABLE` pairs produce no directed edges.
+2. **Defensive Pair Symmetry & Directed Cycle Detection**:
+   - All filing pairs undergo mutual symmetry validation; asymmetric comparison results fail closed.
+   - The directed graph is analyzed for cycles using DFS cycle detection prior to maximal element computation.
+   - Any directed cycle (e.g. $A \to C \to B \to A$ caused by mixed acceptance vs filing date fallbacks) is classified as data inconsistency and fails closed with status `CHRONOLOGY_CONFLICT`.
+3. **No Arbitrary Cycle Breaking**:
+   - UUID, accession lexicographical sorting, or creation order are NEVER used to break chronology cycles, as they carry no financial statement authority.
+4. **Empty Frontier Guard**:
+   - Frontier computation requires an acyclic graph; any condition producing an empty latest frontier fails closed immediately without runtime exceptions.
+
+
 
 
 

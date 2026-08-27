@@ -1,8 +1,9 @@
 """
 backend/engine/private/sec/winner_resolver.py
 ===============================================
-SEC EDGAR Phase 8B.2B / 8B.2B.5 / 8B.2B.6: Snapshot-Scoped PIT Filing Precedence,
-Restatement Reconciliation, Order-Independent Frontier Selection & Logical Filing Deduplication.
+SEC EDGAR Phase 8B.2B / 8B.2B.5 / 8B.2B.6 / 8B.2B.7: Snapshot-Scoped PIT Filing Precedence,
+Restatement Reconciliation, Order-Independent Frontier Selection, Logical Deduplication,
+and Disclosure Chronology Graph Cycle Fail-Closed Defense.
 
 Core Invariants:
     - Snapshot-Scoped Isolation: Only candidates from the selected evaluation snapshot (or logical snapshot
@@ -16,9 +17,10 @@ Core Invariants:
     - Local Acceptance Semantics: Naive local acceptance timestamps can only be compared chronologically if
       both have verified matching semantics ("SEC_EST_DOCUMENTED").
     - Snapshot Temporal Lineage: A candidate's filing cannot be dated or accepted after the snapshot was retrieved.
-    - Order-Independent Frontier Selection: Cross-filing resolution uses pairwise dominance under the disclosure
-      chronology partial order to extract the latest disclosure frontier. Candidate input list permutations
-      never alter the economic result.
+    - Strict Chronology Graph & Cycle Defense: Cross-filing disclosure relations form a strict directed graph.
+      Any cycle or inconsistency fails closed with CHRONOLOGY_CONFLICT. UUID/accession cannot break cycles.
+    - Order-Independent Frontier Selection: In acyclic chronology graphs, pairwise dominance extracts the
+      latest disclosure frontier. Candidate input list permutations never alter the economic result.
     - Deterministic Mode Semantics:
         * CURRENT_REPORTED: Latest valid full CompanyFacts snapshot locally observed for the CIK.
         * SYSTEM_AS_OF: Latest valid full CompanyFacts snapshot with retrieved_at <= as_of.
@@ -69,6 +71,7 @@ class SECWinnerStatus(Enum):
     UNRESOLVED_FILING = "unresolved_filing"
     AMBIGUOUS_WITHIN_FILING = "ambiguous_within_filing"
     AMBIGUOUS_DISCLOSURE_ORDER = "ambiguous_disclosure_order"
+    CHRONOLOGY_CONFLICT = "chronology_conflict"
     SEMANTIC_SCOPE_CONFLICT = "semantic_scope_conflict"
     UNAVAILABLE_SOURCE_AS_OF = "unavailable_source_as_of"
     INVALID_TEMPORAL_LINEAGE = "invalid_temporal_lineage"
@@ -268,7 +271,7 @@ class SECWinnerResolver:
     """
     Pure deterministic winner resolver for SEC canonical fact candidates.
     Implements Snapshot-Scoped PIT Filing Precedence, Restatement Reconciliation,
-    and Order-Independent Latest Disclosure Frontier Selection.
+    Order-Independent Frontier Selection, and Graph Cycle Fail-Closed Defense.
     """
 
     @classmethod
@@ -759,12 +762,12 @@ class SECWinnerResolver:
             })
 
         # ─────────────────────────────────────────────────────────────────────
-        # 5. Order-Independent Latest Disclosure Frontier Selection
+        # 5. Order-Independent Latest Disclosure Frontier Selection & Cycle Defense
         # ─────────────────────────────────────────────────────────────────────
         if len(filing_representatives) == 1:
             winner_rep = filing_representatives[0]
-            winner_cand: SECPeriodizedFactCandidate = winner_rep["candidate"]
-            winner_filing: SECFilingRecord = winner_rep["filing"]
+            winner_cand = winner_rep["candidate"]
+            winner_filing = winner_rep["filing"]
 
             return SECWinnerResolutionResult(
                 mode=mode,
@@ -805,28 +808,145 @@ class SECWinnerResolver:
             )
         )
 
-        # Compute Pairwise Dominance (Poset Maximal Elements)
-        # Representative i is strictly dominated if there exists j such that j is strictly later than i
-        dominated_indices: Set[int] = set()
         n = len(filing_representatives)
+        # Build strict directed chronology graph: edge u -> v means v is strictly later than u (v > u)
+        adj: Dict[int, Set[int]] = {i: set() for i in range(n)}
+
         for i in range(n):
-            for j in range(n):
-                if i == j:
-                    continue
-                cmp = compare_filing_disclosure_order(
+            for j in range(i + 1, n):
+                cmp_ij = compare_filing_disclosure_order(
                     filing_representatives[i]["filing"],
                     filing_representatives[j]["filing"]
                 )
-                if cmp == FilingDisclosureComparison.B_LATER:
-                    dominated_indices.add(i)
+                cmp_ji = compare_filing_disclosure_order(
+                    filing_representatives[j]["filing"],
+                    filing_representatives[i]["filing"]
+                )
+
+                # Defensive pair symmetry verification
+                if cmp_ij == FilingDisclosureComparison.A_LATER:
+                    if cmp_ji != FilingDisclosureComparison.B_LATER:
+                        return SECWinnerResolutionResult(
+                            mode=mode,
+                            status=SECWinnerStatus.CHRONOLOGY_CONFLICT,
+                            cik=norm_target_cik,
+                            economic_group_key=economic_group_key,
+                            as_of=as_of,
+                            evaluation_snapshot_id=eval_snapshot.id,
+                            evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
+                            evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
+                            evaluation_snapshot_hash=eval_snapshot.payload_hash,
+                            selection_basis="Asymmetric disclosure comparison detected across filings.",
+                            diagnostics=["Asymmetric disclosure comparison detected."],
+                            eligible_candidate_ids=[c.id for c, f in eligible_candidates],
+                            rejected_candidates=rejected_candidates,
+                        )
+                    # i is later than j -> j -> i
+                    adj[j].add(i)
+
+                elif cmp_ij == FilingDisclosureComparison.B_LATER:
+                    if cmp_ji != FilingDisclosureComparison.A_LATER:
+                        return SECWinnerResolutionResult(
+                            mode=mode,
+                            status=SECWinnerStatus.CHRONOLOGY_CONFLICT,
+                            cik=norm_target_cik,
+                            economic_group_key=economic_group_key,
+                            as_of=as_of,
+                            evaluation_snapshot_id=eval_snapshot.id,
+                            evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
+                            evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
+                            evaluation_snapshot_hash=eval_snapshot.payload_hash,
+                            selection_basis="Asymmetric disclosure comparison detected across filings.",
+                            diagnostics=["Asymmetric disclosure comparison detected."],
+                            eligible_candidate_ids=[c.id for c, f in eligible_candidates],
+                            rejected_candidates=rejected_candidates,
+                        )
+                    # j is later than i -> i -> j
+                    adj[i].add(j)
+
+                elif cmp_ij in (FilingDisclosureComparison.SAME, FilingDisclosureComparison.UNORDERABLE):
+                    if cmp_ji != cmp_ij:
+                        return SECWinnerResolutionResult(
+                            mode=mode,
+                            status=SECWinnerStatus.CHRONOLOGY_CONFLICT,
+                            cik=norm_target_cik,
+                            economic_group_key=economic_group_key,
+                            as_of=as_of,
+                            evaluation_snapshot_id=eval_snapshot.id,
+                            evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
+                            evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
+                            evaluation_snapshot_hash=eval_snapshot.payload_hash,
+                            selection_basis="Asymmetric disclosure comparison detected across filings.",
+                            diagnostics=["Asymmetric disclosure comparison detected."],
+                            eligible_candidate_ids=[c.id for c, f in eligible_candidates],
+                            rejected_candidates=rejected_candidates,
+                        )
+                    # No strict directed edge for SAME or UNORDERABLE
+
+        # Detect directed cycles in chronology graph (DFS 3-color)
+        visited = [0] * n  # 0 = unvisited, 1 = in stack, 2 = done
+        has_cycle = False
+
+        def dfs_cycle(u: int) -> bool:
+            visited[u] = 1
+            for v in adj[u]:
+                if visited[v] == 1:
+                    return True
+                if visited[v] == 0:
+                    if dfs_cycle(v):
+                        return True
+            visited[u] = 2
+            return False
+
+        for i in range(n):
+            if visited[i] == 0:
+                if dfs_cycle(i):
+                    has_cycle = True
                     break
 
+        if has_cycle:
+            return SECWinnerResolutionResult(
+                mode=mode,
+                status=SECWinnerStatus.CHRONOLOGY_CONFLICT,
+                cik=norm_target_cik,
+                economic_group_key=economic_group_key,
+                as_of=as_of,
+                evaluation_snapshot_id=eval_snapshot.id,
+                evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
+                evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
+                evaluation_snapshot_hash=eval_snapshot.payload_hash,
+                selection_basis="Disclosure chronology contains a cycle across filings; no authoritative latest disclosure can be established.",
+                diagnostics=["Disclosure chronology contains a cycle across filings; no authoritative latest disclosure can be established."],
+                eligible_candidate_ids=[c.id for c, f in eligible_candidates],
+                rejected_candidates=rejected_candidates,
+            )
+
+        # In an acyclic graph, node u is dominated if it has at least one successor in adj[u] (out-degree > 0)
+        dominated_indices = {u for u in range(n) if len(adj[u]) > 0}
         latest_frontier = [
             filing_representatives[i] for i in range(n) if i not in dominated_indices
         ]
         dominated_reps = [
             filing_representatives[i] for i in range(n) if i in dominated_indices
         ]
+
+        # Defensive empty frontier check
+        if not latest_frontier:
+            return SECWinnerResolutionResult(
+                mode=mode,
+                status=SECWinnerStatus.CHRONOLOGY_CONFLICT,
+                cik=norm_target_cik,
+                economic_group_key=economic_group_key,
+                as_of=as_of,
+                evaluation_snapshot_id=eval_snapshot.id,
+                evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
+                evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
+                evaluation_snapshot_hash=eval_snapshot.payload_hash,
+                selection_basis="Disclosure chronology yielded empty frontier; inconsistent disclosure order.",
+                diagnostics=["Empty latest disclosure frontier detected."],
+                eligible_candidate_ids=[c.id for c, f in eligible_candidates],
+                rejected_candidates=rejected_candidates,
+            )
 
         # ─────────────────────────────────────────────────────────────────────
         # 6. Reconcile Frontier against Dominated/Earlier Disclosures
