@@ -1,7 +1,7 @@
 """
 backend/tests/test_global_eod_resolver.py
 =========================================
-Comprehensive Test Suite for PointInTimeMarketDataResolver Global EOD Resolution (Phase 10E).
+Comprehensive Test Suite for PointInTimeMarketDataResolver Global EOD Resolution (Phase 10E & 10E.5).
 
 Tests all Point-in-Time invariants for Alpha Vantage, Tiingo, and Marketstack EOD:
     1. Tiingo current correction: Later retrieved_at supersedes under CURRENT_REPORTED; earlier selected under SYSTEM_AS_OF.
@@ -17,13 +17,21 @@ Tests all Point-in-Time invariants for Alpha Vantage, Tiingo, and Marketstack EO
     11. Logical duplicate snapshot deduplication: Different snapshot UUIDs with identical content deduplicate safely.
     12. Observation conflict: Multiple differing observations for target date inside authoritative snapshot flag OBSERVATION_CONFLICT.
     13. UUID-independent resolution key: Rebuilding identical economic snapshots with new UUIDs yields identical resolution_key.
-    14. Naive timestamp rejection: Naive retrieved_at or naive as_of flags INVALID_TEMPORAL_LINEAGE.
+    14. Naive timestamp rejection: Naive retrieved_at on covering snapshot or naive as_of flags INVALID_TEMPORAL_LINEAGE.
     15. SOURCE_AS_OF unavailable: Requesting SOURCE_AS_OF returns UNAVAILABLE_SOURCE_AS_OF without approximation.
     16. Adjusted fields preserved: Tiingo / Marketstack adj_close, div_cash, split_factor preserved without modification.
     17. Alpha Vantage raw-only valid: Alpha Vantage observation with close present and adj_close None is valid and selectable.
     18. Input order independence: Reversing snapshot list and observation list produces identical result and resolution key.
     19. Evaluation snapshot IDs: Exposes sorted physical IDs of eligible covering snapshots; excludes future under SYSTEM_AS_OF.
-    20. Zero network calls (pytest-socket active).
+    20. One-sided start does not overclaim: start_date set with end_date None does not cover future target.
+    21. One-sided end does not overclaim: end_date set with start_date None does not cover past target.
+    22. One-sided with actual target: exact observation presence establishes coverage.
+    23. Failed naive snapshot: Failed HTTP 500 snapshot with naive timestamp does not poison resolution of valid snapshot.
+    24. Non-covering naive snapshot: Successful naive snapshot that does not cover target does not poison historical resolution.
+    25. Covering naive snapshot fails closed: Successful covering naive snapshot returns INVALID_TEMPORAL_LINEAGE.
+    26. Scope UUID swap: Swapping physical UUIDs between different scopes at same retrieved_at yields identical resolution key.
+    27. Lineage classification: Observation with mismatched snapshot_id, payload_hash, or provider returns INVALID_TEMPORAL_LINEAGE.
+    28. Zero network calls (pytest-socket active).
 """
 
 from datetime import date, datetime, timezone
@@ -109,7 +117,7 @@ def make_snapshot(
     instrument_id: UUID,
     provider: str,
     provider_symbol: str,
-    retrieved_at: datetime,
+    retrieved_at: Optional[datetime],
     payload_hash: str,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
@@ -197,7 +205,7 @@ class TestGlobalEODPointInTimeResolver:
         obs_valid = make_obs(AAPL_ID, "TIINGO", "AAPL", t_target, Decimal("190.50"))
         snap_valid = make_snapshot(AAPL_ID, "TIINGO", "AAPL", t_1000, "hash_valid", start_date=date(2024, 1, 1), end_date=date(2024, 6, 10), observations=[obs_valid])
 
-        # Conflicting/corrupt snapshot at 11:00
+        # Conflicting snapshot at 11:00
         snap_bad_1 = make_snapshot(AAPL_ID, "TIINGO", "AAPL", t_1100, "hash_bad_1", start_date=date(2024, 1, 1), end_date=date(2024, 6, 10), observations=[make_obs(AAPL_ID, "TIINGO", "AAPL", t_target, Decimal("10.00"))])
         snap_bad_2 = make_snapshot(AAPL_ID, "TIINGO", "AAPL", t_1100, "hash_bad_2", start_date=date(2024, 1, 1), end_date=date(2024, 6, 10), observations=[make_obs(AAPL_ID, "TIINGO", "AAPL", t_target, Decimal("20.00"))])
 
@@ -258,7 +266,7 @@ class TestGlobalEODPointInTimeResolver:
             observations=[obs_old]
         )
 
-        # Newer snapshot explicitly covers 2024-01-01 -> 2024-12-31, but 2024-06-10 is absent (e.g. delisted/cancelled)
+        # Newer snapshot explicitly covers 2024-01-01 -> 2024-12-31, but 2024-06-10 is absent
         obs_other = make_obs(AAPL_ID, "TIINGO", "AAPL", date(2024, 6, 11), Decimal("192.00"))
         snap_new = make_snapshot(
             AAPL_ID, "TIINGO", "AAPL", t_1100, "hash_new",
@@ -498,7 +506,7 @@ class TestGlobalEODPointInTimeResolver:
         assert res_a.resolution_key == res_b.resolution_key
 
     def test_14_naive_timestamp_rejection(self):
-        """Test 14: Naive retrieved_at or naive as_of flags INVALID_TEMPORAL_LINEAGE."""
+        """Test 14: Naive retrieved_at on covering snapshot or naive as_of flags INVALID_TEMPORAL_LINEAGE."""
         t_target = date(2024, 6, 10)
         t_naive = datetime(2024, 6, 11, 10, 0)  # No tzinfo
 
@@ -527,7 +535,6 @@ class TestGlobalEODPointInTimeResolver:
     def test_15_source_as_of_unavailable(self):
         """Test 15: Requesting SOURCE_AS_OF returns UNAVAILABLE_SOURCE_AS_OF for all global providers."""
         t_target = date(2024, 6, 10)
-        t_now = datetime(2024, 6, 11, 10, 0, tzinfo=timezone.utc)
 
         for prov, i_id in [("ALPHA_VANTAGE", AAPL_ID), ("TIINGO", AAPL_ID), ("MARKETSTACK", MBG_ID)]:
             query = GlobalEODQueryKey(instrument_id=i_id, trade_date=t_target, provider=prov)
@@ -574,7 +581,7 @@ class TestGlobalEODPointInTimeResolver:
         obs = make_obs(
             AAPL_ID, "ALPHA_VANTAGE", "AAPL", t_target,
             close=Decimal("190.50"),
-            adj_close=None,  # Alpha Vantage Free raw EOD has no adjusted series
+            adj_close=None,
             div_cash=Decimal("0.0"),
             split_factor=Decimal("1.0"),
         )
@@ -647,3 +654,216 @@ class TestGlobalEODPointInTimeResolver:
             query, [snap_1, snap_2], mode=MarketDataResolutionMode.SYSTEM_AS_OF, as_of=as_of_1030
         )
         assert res_sys.evaluation_snapshot_ids == [str(id_1)]
+
+    def test_20_one_sided_start_does_not_overclaim(self):
+        """Test 20: One-sided start_date without end_date does not overclaim future dates."""
+        t_target = date(2027, 1, 5)
+        t_now = datetime(2026, 8, 27, 10, 0, tzinfo=timezone.utc)
+
+        # Snapshot with start_date=2026-08-20, end_date=None, observations only through 2026-08-27
+        obs = make_obs(AAPL_ID, "TIINGO", "AAPL", date(2026, 8, 27), Decimal("220.00"))
+        snap = make_snapshot(
+            AAPL_ID, "TIINGO", "AAPL", t_now, "hash_one_sided",
+            start_date=date(2026, 8, 20), end_date=None,
+            trade_date_range=(date(2026, 8, 20), None),
+            observations=[obs]
+        )
+
+        query = GlobalEODQueryKey(instrument_id=AAPL_ID, trade_date=t_target, provider="TIINGO")
+        res = PointInTimeMarketDataResolver.resolve_global_eod(query, [snap])
+
+        assert res.status == MarketDataResolutionStatus.NO_SNAPSHOT
+        assert res.selected_observation is None
+
+    def test_21_one_sided_end_does_not_overclaim(self):
+        """Test 21: One-sided end_date without start_date does not overclaim historical dates."""
+        t_target = date(2020, 1, 2)
+        t_now = datetime(2026, 8, 27, 10, 0, tzinfo=timezone.utc)
+
+        obs = make_obs(AAPL_ID, "TIINGO", "AAPL", date(2026, 8, 20), Decimal("220.00"))
+        snap = make_snapshot(
+            AAPL_ID, "TIINGO", "AAPL", t_now, "hash_one_sided_end",
+            start_date=None, end_date=date(2026, 8, 20),
+            trade_date_range=(None, date(2026, 8, 20)),
+            observations=[obs]
+        )
+
+        query = GlobalEODQueryKey(instrument_id=AAPL_ID, trade_date=t_target, provider="TIINGO")
+        res = PointInTimeMarketDataResolver.resolve_global_eod(query, [snap])
+
+        assert res.status == MarketDataResolutionStatus.NO_SNAPSHOT
+        assert res.selected_observation is None
+
+    def test_22_one_sided_with_actual_target(self):
+        """Test 22: One-sided bound with actual observation row on target is covering via observation presence."""
+        t_target = date(2026, 8, 25)
+        t_now = datetime(2026, 8, 27, 10, 0, tzinfo=timezone.utc)
+
+        obs = make_obs(AAPL_ID, "TIINGO", "AAPL", t_target, Decimal("222.50"))
+        snap = make_snapshot(
+            AAPL_ID, "TIINGO", "AAPL", t_now, "hash_has_target",
+            start_date=date(2026, 8, 20), end_date=None,
+            trade_date_range=(date(2026, 8, 20), None),
+            observations=[obs]
+        )
+
+        query = GlobalEODQueryKey(instrument_id=AAPL_ID, trade_date=t_target, provider="TIINGO")
+        res = PointInTimeMarketDataResolver.resolve_global_eod(query, [snap])
+
+        assert res.status == MarketDataResolutionStatus.SELECTED
+        assert res.selected_observation.close == Decimal("222.50")
+
+    def test_23_failed_naive_snapshot_does_not_poison(self):
+        """Test 23: Failed HTTP 500 snapshot with naive timestamp does not poison resolution of valid snapshot."""
+        t_target = date(2024, 6, 10)
+        t_valid = datetime(2024, 6, 11, 10, 0, tzinfo=timezone.utc)
+        t_naive = datetime(2024, 6, 11, 11, 0)  # Naive timestamp on failed snapshot
+
+        snap_valid = make_snapshot(
+            AAPL_ID, "TIINGO", "AAPL", t_valid, "hash_valid",
+            start_date=date(2024, 1, 1), end_date=date(2024, 6, 10),
+            observations=[make_obs(AAPL_ID, "TIINGO", "AAPL", t_target, Decimal("190.50"))]
+        )
+        snap_failed = make_snapshot(
+            AAPL_ID, "TIINGO", "AAPL", t_naive, "hash_failed",
+            start_date=date(2024, 1, 1), end_date=date(2024, 6, 10),
+            http_status=500,
+            observations=[]
+        )
+
+        query = GlobalEODQueryKey(instrument_id=AAPL_ID, trade_date=t_target, provider="TIINGO")
+        res = PointInTimeMarketDataResolver.resolve_global_eod(query, [snap_valid, snap_failed])
+
+        assert res.status == MarketDataResolutionStatus.SELECTED
+        assert res.selected_observation.close == Decimal("190.50")
+        assert res.snapshot_hash == "hash_valid"
+
+    def test_24_non_covering_naive_snapshot_does_not_poison(self):
+        """Test 24: Successful naive snapshot that does not cover target date does not poison historical resolution."""
+        t_hist = date(2024, 6, 10)
+        t_valid = datetime(2024, 6, 11, 10, 0, tzinfo=timezone.utc)
+        t_naive = datetime(2026, 8, 20, 10, 0)  # Naive timestamp on 2026 incremental snapshot
+
+        snap_hist = make_snapshot(
+            AAPL_ID, "TIINGO", "AAPL", t_valid, "hash_hist",
+            start_date=date(2020, 1, 1), end_date=date(2024, 12, 31),
+            observations=[make_obs(AAPL_ID, "TIINGO", "AAPL", t_hist, Decimal("190.50"))]
+        )
+        snap_2026 = make_snapshot(
+            AAPL_ID, "TIINGO", "AAPL", t_naive, "hash_2026",
+            start_date=date(2026, 8, 19), end_date=date(2026, 8, 20),
+            observations=[make_obs(AAPL_ID, "TIINGO", "AAPL", date(2026, 8, 19), Decimal("225.00"))]
+        )
+
+        query = GlobalEODQueryKey(instrument_id=AAPL_ID, trade_date=t_hist, provider="TIINGO")
+        res = PointInTimeMarketDataResolver.resolve_global_eod(query, [snap_hist, snap_2026])
+
+        assert res.status == MarketDataResolutionStatus.SELECTED
+        assert res.selected_observation.close == Decimal("190.50")
+        assert res.snapshot_hash == "hash_hist"
+
+    def test_25_covering_naive_snapshot_fails_closed(self):
+        """Test 25: Successful covering snapshot with naive retrieved_at returns INVALID_TEMPORAL_LINEAGE."""
+        t_target = date(2024, 6, 10)
+        t_naive = datetime(2024, 6, 11, 10, 0)
+
+        snap = make_snapshot(
+            AAPL_ID, "TIINGO", "AAPL", t_naive, "hash_naive",
+            start_date=date(2024, 1, 1), end_date=date(2024, 6, 10),
+            observations=[make_obs(AAPL_ID, "TIINGO", "AAPL", t_target, Decimal("190.50"))]
+        )
+
+        query = GlobalEODQueryKey(instrument_id=AAPL_ID, trade_date=t_target, provider="TIINGO")
+        res = PointInTimeMarketDataResolver.resolve_global_eod(query, [snap])
+
+        assert res.status == MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE
+
+    def test_26_scope_uuid_swap_resolution_key_invariant(self):
+        """Test 26: Swapping physical UUIDs between different scopes at same retrieved_at yields identical resolution key."""
+        t_target = date(2024, 6, 10)
+        t_now = datetime(2024, 6, 11, 10, 0, tzinfo=timezone.utc)
+
+        uuid_1 = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        uuid_2 = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+
+        # Scope 1 (full year)
+        obs_1a = make_obs(AAPL_ID, "TIINGO", "AAPL", t_target, Decimal("190.50"), payload_hash="h1")
+        # Scope 2 (single day)
+        obs_2a = make_obs(AAPL_ID, "TIINGO", "AAPL", t_target, Decimal("190.50"), payload_hash="h2")
+
+        # Run 1: Scope 1 gets uuid_1, Scope 2 gets uuid_2
+        snap_s1_u1 = make_snapshot(
+            AAPL_ID, "TIINGO", "AAPL", t_now, "h1",
+            start_date=date(2024, 1, 1), end_date=date(2024, 12, 31),
+            observations=[obs_1a], snap_id=uuid_1
+        )
+        snap_s2_u2 = make_snapshot(
+            AAPL_ID, "TIINGO", "AAPL", t_now, "h2",
+            start_date=date(2024, 6, 10), end_date=date(2024, 6, 10),
+            observations=[obs_2a], snap_id=uuid_2
+        )
+
+        obs_1b = make_obs(AAPL_ID, "TIINGO", "AAPL", t_target, Decimal("190.50"), payload_hash="h1")
+        obs_2b = make_obs(AAPL_ID, "TIINGO", "AAPL", t_target, Decimal("190.50"), payload_hash="h2")
+
+        # Run 2: Scope 1 gets uuid_2, Scope 2 gets uuid_1
+        snap_s1_u2 = make_snapshot(
+            AAPL_ID, "TIINGO", "AAPL", t_now, "h1",
+            start_date=date(2024, 1, 1), end_date=date(2024, 12, 31),
+            observations=[obs_1b], snap_id=uuid_2
+        )
+        snap_s2_u1 = make_snapshot(
+            AAPL_ID, "TIINGO", "AAPL", t_now, "h2",
+            start_date=date(2024, 6, 10), end_date=date(2024, 6, 10),
+            observations=[obs_2b], snap_id=uuid_1
+        )
+
+        query = GlobalEODQueryKey(instrument_id=AAPL_ID, trade_date=t_target, provider="TIINGO")
+        res_run1 = PointInTimeMarketDataResolver.resolve_global_eod(query, [snap_s1_u1, snap_s2_u2])
+        res_run2 = PointInTimeMarketDataResolver.resolve_global_eod(query, [snap_s1_u2, snap_s2_u1])
+
+        assert res_run1.status == MarketDataResolutionStatus.SELECTED
+        assert res_run2.status == MarketDataResolutionStatus.SELECTED
+        assert res_run1.selected_observation.close == res_run2.selected_observation.close == Decimal("190.50")
+        assert res_run1.resolution_key == res_run2.resolution_key
+
+    def test_27_lineage_classification_status(self):
+        """Test 27: Mismatched snapshot_id, payload_hash, or provider on observation returns INVALID_TEMPORAL_LINEAGE."""
+        t_target = date(2024, 6, 10)
+        t_now = datetime(2024, 6, 11, 10, 0, tzinfo=timezone.utc)
+        snap_id = uuid4()
+
+        # 1. Wrong snapshot_id
+        obs_wrong_sid = make_obs(AAPL_ID, "TIINGO", "AAPL", t_target, Decimal("190.50"), snapshot_id=uuid4(), payload_hash="h1")
+        snap_1 = make_snapshot(
+            AAPL_ID, "TIINGO", "AAPL", t_now, "h1",
+            start_date=date(2024, 1, 1), end_date=date(2024, 6, 10),
+            observations=[obs_wrong_sid], snap_id=snap_id
+        )
+        obs_wrong_sid.snapshot_id = uuid4()
+
+        query = GlobalEODQueryKey(instrument_id=AAPL_ID, trade_date=t_target, provider="TIINGO")
+        res_sid = PointInTimeMarketDataResolver.resolve_global_eod(query, [snap_1])
+        assert res_sid.status == MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE
+
+        # 2. Wrong payload_hash
+        obs_wrong_hash = make_obs(AAPL_ID, "TIINGO", "AAPL", t_target, Decimal("190.50"), snapshot_id=snap_id, payload_hash="corrupt_hash")
+        snap_2 = make_snapshot(
+            AAPL_ID, "TIINGO", "AAPL", t_now, "h1",
+            start_date=date(2024, 1, 1), end_date=date(2024, 6, 10),
+            observations=[obs_wrong_hash], snap_id=snap_id
+        )
+        obs_wrong_hash.payload_hash = "corrupt_hash"
+        res_hash = PointInTimeMarketDataResolver.resolve_global_eod(query, [snap_2])
+        assert res_hash.status == MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE
+
+        # 3. Wrong provider
+        obs_wrong_prov = make_obs(AAPL_ID, "MARKETSTACK", "AAPL", t_target, Decimal("190.50"), snapshot_id=snap_id, payload_hash="h1")
+        snap_3 = make_snapshot(
+            AAPL_ID, "TIINGO", "AAPL", t_now, "h1",
+            start_date=date(2024, 1, 1), end_date=date(2024, 6, 10),
+            observations=[obs_wrong_prov], snap_id=snap_id
+        )
+        obs_wrong_prov.provider = "MARKETSTACK"
+        res_prov = PointInTimeMarketDataResolver.resolve_global_eod(query, [snap_3])
+        assert res_prov.status == MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE

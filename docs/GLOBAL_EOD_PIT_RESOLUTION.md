@@ -16,21 +16,21 @@ The `PointInTimeMarketDataResolver.resolve_global_eod(...)` extension provides d
 2. **Per-Instrument Snapshot Authority:**
    Global market data providers deliver per-instrument time-series snapshots. Snapshots for one instrument (e.g. `SPY`) never supersede or affect another instrument (e.g. `AAPL`).
 3. **Target-Date Coverage Hierarchy:**
-   A snapshot is authoritative for `query.trade_date` if:
-   * **A) Explicit Request Bounds:** `start_date <= target_date <= end_date`
-   * **B) Returned Trade Date Range:** `min_date <= target_date <= max_date`
-   * **C) Explicit Observation Presence:** The snapshot contains a row matching `target_date`.
-   Snapshots that do not cover the target date are disregarded and cannot supersede historical observations.
+   A snapshot is authoritative for `query.trade_date` only if:
+   * **A) Explicit Two-Sided Request Bounds:** Both `start_date` and `end_date` exist, and `start_date <= target_date <= end_date`.
+   * **B) Explicit Two-Sided Date Range:** Both `range_start` and `range_end` exist, and `range_start <= target_date <= range_end`.
+   * **C) Explicit Observation Presence:** The snapshot contains an observation row matching `target_date`.
+   One-sided request/range boundaries alone are insufficient evidence. Non-covering snapshots and failed HTTP transport snapshots are disregarded and cannot poison resolution.
 4. **Incremental Snapshots Do Not Erase History:**
    A recent incremental snapshot (e.g. covering `2026-08-19` to `2026-08-20`) does not cover `2024-06-10` and therefore never invalidates or supersedes an older 5-year history snapshot.
 5. **No-Resurrection Under Covered Scopes:**
    If a newer snapshot explicitly covers `target_date` (e.g. full-year re-pull) but the target date observation is absent or invalid, the resolver fails closed with `NO_ELIGIBLE_OBSERVATION` rather than resurrecting older superseded data.
 6. **Temporal Lineage Modes:**
-   * `CURRENT_REPORTED`: Latest available authoritative snapshot as of current knowledge.
-   * `SYSTEM_AS_OF`: Filters `snapshot.retrieved_at <= as_of` **before** conflict checks and observation evaluation. Future corruptions or conflicts cannot contaminate historical backtests. Requires timezone-aware timestamps.
+   * `CURRENT_REPORTED`: Latest available authoritative covering snapshot as of current knowledge.
+   * `SYSTEM_AS_OF`: Filters `snapshot.retrieved_at <= as_of` on covering snapshots **before** conflict checks and observation evaluation. Future corruptions or conflicts cannot contaminate historical backtests. Requires timezone-aware timestamps.
    * `SOURCE_AS_OF`: Returns `UNAVAILABLE_SOURCE_AS_OF` because global EOD aggregators do not supply immutable historical first-publication timestamps.
 7. **Observation Lineage & Deduplication:**
-   * Lineage invariants require matching `provider`, `snapshot_id`, and `payload_hash`.
+   * Lineage invariants require matching `provider`, `snapshot_id`, and `payload_hash`; provenance mismatches fail closed with `INVALID_TEMPORAL_LINEAGE`.
    * Multiple rows with differing fingerprints flag `OBSERVATION_CONFLICT`. Identical logical fingerprints deduplicate deterministically.
    * `resolution_key` is calculated via SHA-256 over economic and logical attributes, completely independent of memory object UUIDs and input list order.
 8. **Raw vs Adjusted Preservation:**

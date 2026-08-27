@@ -55,38 +55,34 @@ def _global_observation_fingerprint(obs: GlobalEODObservation) -> str:
         f"{obs.currency.value if obs.currency else 'None'}:{obs.exchange}:{obs.instrument_type.value if obs.instrument_type else 'None'}:"
         f"{obs.open}:{obs.high}:{obs.low}:{obs.close}:{obs.volume}:"
         f"{obs.adj_open}:{obs.adj_high}:{obs.adj_low}:{obs.adj_close}:{obs.adj_volume}:"
-        f"{obs.div_cash}:{obs.split_factor}:{obs.status.value}:{obs.payload_hash}"
+        f"{obs.div_cash}:{obs.split_factor}:{obs.status.value}"
     )
 
 
 def _snapshot_covers_target_date(snap: GlobalEODSnapshot, target: date) -> bool:
     """
     Determines whether a per-instrument snapshot has authority over target trade_date.
-    Order of evaluation:
-    A) Explicit requested bounds: start_date <= target <= end_date
-    B) trade_date_range boundaries: range_start <= target <= range_end
-    C) Snapshot contains at least one observation with trade_date == target.
+    Snapshot covers target ONLY if ONE of:
+    A) start_date AND end_date both exist: start_date <= target <= end_date
+    OR
+    B) trade_date_range start AND end both exist: range_start <= target <= range_end
+    OR
+    C) Snapshot contains an observation with: trade_date == target.
+
+    One-sided request/range boundary ALONE is insufficient evidence for authority.
     """
-    # A) Explicit requested bounds
+    # A) Explicit requested two-sided bounds
     if snap.start_date is not None and snap.end_date is not None:
         if snap.start_date <= target <= snap.end_date:
             return True
-    elif snap.start_date is not None and snap.start_date <= target and snap.end_date is None:
-        return True
-    elif snap.end_date is not None and target <= snap.end_date and snap.start_date is None:
-        return True
 
-    # B) trade_date_range
+    # B) trade_date_range two-sided boundaries
     r_start, r_end = snap.trade_date_range
     if r_start is not None and r_end is not None:
         if r_start <= target <= r_end:
             return True
-    elif r_start is not None and r_start <= target and r_end is None:
-        return True
-    elif r_end is not None and target <= r_end and r_start is None:
-        return True
 
-    # C) Contains observation matching target
+    # C) Contains exact observation matching target
     if any(o.trade_date == target for o in snap.observations):
         return True
 
@@ -716,48 +712,10 @@ class PointInTimeMarketDataResolver:
                 diagnostics=[f"No {provider_name} snapshots found for canonical instrument {inst_id}."],
             )
 
-        # 3. Validate Snapshot retrieved_at Timezone Awareness
-        for s in relevant_snaps:
-            if s.retrieved_at is None or s.retrieved_at.tzinfo is None:
-                eval_ids = sorted([str(snap.id) for snap in relevant_snaps])
-                return MarketObservationResolutionResult(
-                    status=MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE,
-                    resolution_mode=mode,
-                    as_of=as_of,
-                    observation_type=obs_type,
-                    effective_date=target_date,
-                    canonical_instrument_id=inst_id,
-                    provider=provider_name,
-                    originating_source=provider_name,
-                    semantic_key=sem_str,
-                    evaluation_snapshot_ids=eval_ids,
-                    diagnostics=[f"Snapshot {s.id} contains naive or missing retrieved_at timestamp."],
-                )
-
-        # 4. SYSTEM_AS_OF Temporal Filtering BEFORE anything else
-        if mode == MarketDataResolutionMode.SYSTEM_AS_OF:
-            assert as_of is not None
-            temporal_snaps = [s for s in relevant_snaps if s.retrieved_at <= as_of]
-            if not temporal_snaps:
-                return MarketObservationResolutionResult(
-                    status=MarketDataResolutionStatus.NO_SNAPSHOT_AS_OF,
-                    resolution_mode=mode,
-                    as_of=as_of,
-                    observation_type=obs_type,
-                    effective_date=target_date,
-                    canonical_instrument_id=inst_id,
-                    provider=provider_name,
-                    originating_source=provider_name,
-                    semantic_key=sem_str,
-                    diagnostics=[f"No {provider_name} snapshots retrieved as of {as_of.isoformat()} for instrument {inst_id}."],
-                )
-        else:
-            temporal_snaps = relevant_snaps
-
-        # 5. Retain Successful Snapshots Only (HTTP 200 with non-empty payload_hash)
-        successful_snaps = [s for s in temporal_snaps if s.http_status == 200 and s.payload_hash]
+        # 3. Discard Failed / Non-Authoritative Transport Snapshots (HTTP != 200 or missing payload_hash)
+        successful_snaps = [s for s in relevant_snaps if s.http_status == 200 and s.payload_hash]
         if not successful_snaps:
-            eval_ids = sorted([str(s.id) for s in temporal_snaps])
+            eval_ids = sorted([str(s.id) for s in relevant_snaps])
             return MarketObservationResolutionResult(
                 status=MarketDataResolutionStatus.INVALID_SNAPSHOT,
                 resolution_mode=mode,
@@ -772,7 +730,7 @@ class PointInTimeMarketDataResolver:
                 diagnostics=[f"No successful HTTP 200 snapshots available for {provider_name}:{inst_id}."],
             )
 
-        # 6. Filter by Target-Date Coverage
+        # 4. Filter by Target-Date Coverage (Non-covering snapshots ignored and cannot poison resolution)
         covering_snaps = [s for s in successful_snaps if _snapshot_covers_target_date(s, target_date)]
         if not covering_snaps:
             eval_ids = sorted([str(s.id) for s in successful_snaps])
@@ -790,11 +748,49 @@ class PointInTimeMarketDataResolver:
                 diagnostics=[f"No {provider_name} snapshots cover target trade_date {target_date.isoformat()} for instrument {inst_id}."],
             )
 
-        eval_ids = sorted([str(s.id) for s in covering_snaps])
+        # 5. Validate retrieved_at Timezone Awareness on Successful Covering Snapshots ONLY
+        for s in covering_snaps:
+            if s.retrieved_at is None or s.retrieved_at.tzinfo is None:
+                eval_ids = sorted([str(snap.id) for snap in covering_snaps])
+                return MarketObservationResolutionResult(
+                    status=MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE,
+                    resolution_mode=mode,
+                    as_of=as_of,
+                    observation_type=obs_type,
+                    effective_date=target_date,
+                    canonical_instrument_id=inst_id,
+                    provider=provider_name,
+                    originating_source=provider_name,
+                    semantic_key=sem_str,
+                    evaluation_snapshot_ids=eval_ids,
+                    diagnostics=[f"Covering snapshot {s.id} contains naive or missing retrieved_at timestamp."],
+                )
+
+        # 6. SYSTEM_AS_OF Temporal Filtering BEFORE conflict checks & authority selection
+        if mode == MarketDataResolutionMode.SYSTEM_AS_OF:
+            assert as_of is not None
+            temporal_snaps = [s for s in covering_snaps if s.retrieved_at <= as_of]
+            if not temporal_snaps:
+                return MarketObservationResolutionResult(
+                    status=MarketDataResolutionStatus.NO_SNAPSHOT_AS_OF,
+                    resolution_mode=mode,
+                    as_of=as_of,
+                    observation_type=obs_type,
+                    effective_date=target_date,
+                    canonical_instrument_id=inst_id,
+                    provider=provider_name,
+                    originating_source=provider_name,
+                    semantic_key=sem_str,
+                    diagnostics=[f"No {provider_name} snapshots retrieved as of {as_of.isoformat()} for instrument {inst_id}."],
+                )
+        else:
+            temporal_snaps = covering_snaps
+
+        eval_ids = sorted([str(s.id) for s in temporal_snaps])
 
         # 7. Deduplicate Logical Snapshots Deterministically
         logical_groups: Dict[Tuple[Any, ...], List[GlobalEODSnapshot]] = {}
-        for s in covering_snaps:
+        for s in temporal_snaps:
             log_key = (
                 s.provider.strip().upper(),
                 s.instrument_id,
@@ -809,9 +805,7 @@ class PointInTimeMarketDataResolver:
             )
             logical_groups.setdefault(log_key, []).append(s)
 
-        deduped_snaps: List[GlobalEODSnapshot] = [
-            min(grp, key=lambda s: str(s.id)) for grp in logical_groups.values()
-        ]
+        deduped_snaps: List[GlobalEODSnapshot] = [grp[0] for grp in logical_groups.values()]
 
         # 8. Check Conflicts at Latest retrieved_at Frontier
         max_retrieved = max(s.retrieved_at for s in deduped_snaps)
@@ -866,21 +860,30 @@ class PointInTimeMarketDataResolver:
                         evaluation_snapshot_ids=eval_ids,
                         diagnostics=["SNAPSHOT_CONFLICT: Differing scopes at same retrieved_at produce conflicting target observations."],
                     )
-                auth_snap = min(frontier_snaps, key=lambda s: str(s.id))
+                def _stable_scope_key(s: GlobalEODSnapshot):
+                    return (
+                        str(s.payload_hash),
+                        str(s.start_date),
+                        str(s.end_date),
+                        str(s.trade_date_range),
+                        str(s.endpoint),
+                        str(s.output_size),
+                    )
+                auth_snap = min(frontier_snaps, key=_stable_scope_key)
         else:
             auth_snap = frontier_snaps[0]
 
-        # 9. Extract Target Observations from Authoritative Snapshot
+        # 9. Extract Target Observations from Authoritative Snapshot & Lineage Checks
         matching_obs = [
             o for o in auth_snap.observations
             if o.trade_date == target_date and o.instrument_id == inst_id
         ]
 
-        # Lineage checks
+        # Lineage checks: provenance failures return INVALID_TEMPORAL_LINEAGE
         for o in matching_obs:
             if o.provider.strip().upper() != auth_snap.provider.strip().upper():
                 return MarketObservationResolutionResult(
-                    status=MarketDataResolutionStatus.OBSERVATION_CONFLICT,
+                    status=MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE,
                     resolution_mode=mode,
                     as_of=as_of,
                     observation_type=obs_type,
@@ -893,11 +896,11 @@ class PointInTimeMarketDataResolver:
                     originating_source=provider_name,
                     semantic_key=sem_str,
                     evaluation_snapshot_ids=eval_ids,
-                    diagnostics=[f"OBSERVATION_CONFLICT: Observation provider '{o.provider}' mismatches snapshot provider '{auth_snap.provider}'."],
+                    diagnostics=[f"INVALID_TEMPORAL_LINEAGE: Observation provider '{o.provider}' mismatches snapshot provider '{auth_snap.provider}'."],
                 )
             if o.snapshot_id and o.snapshot_id != auth_snap.id:
                 return MarketObservationResolutionResult(
-                    status=MarketDataResolutionStatus.OBSERVATION_CONFLICT,
+                    status=MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE,
                     resolution_mode=mode,
                     as_of=as_of,
                     observation_type=obs_type,
@@ -910,11 +913,11 @@ class PointInTimeMarketDataResolver:
                     originating_source=provider_name,
                     semantic_key=sem_str,
                     evaluation_snapshot_ids=eval_ids,
-                    diagnostics=[f"OBSERVATION_CONFLICT: Observation snapshot_id '{o.snapshot_id}' mismatches snapshot id '{auth_snap.id}'."],
+                    diagnostics=[f"INVALID_TEMPORAL_LINEAGE: Observation snapshot_id '{o.snapshot_id}' mismatches snapshot id '{auth_snap.id}'."],
                 )
             if o.payload_hash and o.payload_hash != auth_snap.payload_hash:
                 return MarketObservationResolutionResult(
-                    status=MarketDataResolutionStatus.OBSERVATION_CONFLICT,
+                    status=MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE,
                     resolution_mode=mode,
                     as_of=as_of,
                     observation_type=obs_type,
@@ -927,7 +930,7 @@ class PointInTimeMarketDataResolver:
                     originating_source=provider_name,
                     semantic_key=sem_str,
                     evaluation_snapshot_ids=eval_ids,
-                    diagnostics=["OBSERVATION_CONFLICT: Observation payload_hash mismatches snapshot payload_hash."],
+                    diagnostics=["INVALID_TEMPORAL_LINEAGE: Observation payload_hash mismatches snapshot payload_hash."],
                 )
 
         if not matching_obs:
@@ -969,7 +972,7 @@ class PointInTimeMarketDataResolver:
                 diagnostics=[f"OBSERVATION_CONFLICT: Multiple valid observations with differing fingerprints for {target_date.isoformat()} in snapshot {auth_snap.id}."],
             )
 
-        selected_obs = min(matching_obs, key=lambda o: str(o.id))
+        selected_obs = matching_obs[0]
 
         # 11. Validate Selected Observation Eligibility
         if (
