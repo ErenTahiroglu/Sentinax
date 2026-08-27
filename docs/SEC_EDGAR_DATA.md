@@ -264,10 +264,66 @@ Phase 8B.2B implements deterministic, auditable, and fail-closed winner resoluti
    - All filing pairs undergo mutual symmetry validation; asymmetric comparison results fail closed.
    - The directed graph is analyzed for cycles using DFS cycle detection prior to maximal element computation.
    - Any directed cycle (e.g. $A \to C \to B \to A$ caused by mixed acceptance vs filing date fallbacks) is classified as data inconsistency and fails closed with status `CHRONOLOGY_CONFLICT`.
-3. **No Arbitrary Cycle Breaking**:
-   - UUID, accession lexicographical sorting, or creation order are NEVER used to break chronology cycles, as they carry no financial statement authority.
-4. **Empty Frontier Guard**:
-   - Frontier computation requires an acyclic graph; any condition producing an empty latest frontier fails closed immediately without runtime exceptions.
+## 12. Phase 8B.3A — PIT Fiscal Series & Derivation Eligibility
+
+### 12.1 Explicit Data Pipeline Architecture
+
+```
+Raw SEC Fact
+  ↓
+Canonical Concept Candidate (8B.1)
+  ↓
+Periodized Fact Candidate (8B.2A)
+  ↓
+PIT Winner Resolution Result (8B.2B)
+  ↓
+SECFiscalSeries Point & Series Assembly (8B.3A)
+  ↓
+SECQuarterDerivationEligibility Classification (8B.3A)
+  ↓ [Phase 8B.3B: Arithmetic Derivation]
+Derived Standalone Quarter Fact
+```
+
+### 12.2 Fiscal Series Assembly Principles
+
+1. **Strict Series Identity & Isolation**:
+   - `SECFiscalSeries` groups verified `SECWinnerStatus.SELECTED` facts sharing exact `(CIK, canonical_concept, unit, resolution_mode, as_of, evaluation_snapshot_retrieved_at, evaluation_snapshot_hash)`.
+   - `CURRENT_REPORTED` and `SYSTEM_AS_OF` points are strictly isolated and never combined in the same series.
+   - `SYSTEM_AS_OF` operands must share identical `as_of` query timestamps.
+2. **Evaluation Snapshot State Consistency**:
+   - All operands in a derivation chain must originate from the same logical CompanyFacts evaluation state (`evaluation_snapshot_hash` and `evaluation_snapshot_retrieved_at`).
+   - Cross-snapshot mix-and-match arithmetic is strictly prohibited to prevent restatement distortion.
+3. **Duplicate Points & Conflict Defense**:
+   - Multiple winner results claiming identical economic intervals `(kind, start_date, end_date)` with identical values are deterministically deduplicated.
+   - Differing values on identical economic intervals trigger fail-closed series conflict diagnostics.
+
+### 12.3 Quarter Derivation Eligibility Rules
+
+1. **Duration Concepts Only**:
+   - Instant concepts (Balance Sheet items, Shares Outstanding) are ineligible for duration subtraction and return `CONCEPT_MISMATCH`.
+2. **Original Standalone Priority (`ORIGINAL_AVAILABLE`)**:
+   - If an authoritative `QUARTER_DURATION` fact already exists in the series for the target quarter interval, `ORIGINAL_AVAILABLE` is returned, preventing redundant or destructive derivation.
+3. **Q2 Standalone Derivation**:
+   - Formula: `Q2_YTD - Q1`.
+   - Left operand: `YTD_DURATION` (duration ~180 days).
+   - Right operand: `QUARTER_DURATION` (duration ~90 days).
+   - Requirements: `left.start_date == right.start_date` (fiscal year start match) and `right.end_date < left.end_date`.
+4. **Q3 Standalone Derivation**:
+   - Formula: `Q3_YTD - Q2_YTD`.
+   - Left operand: `YTD_DURATION` (duration ~270 days).
+   - Right operand: `YTD_DURATION` (duration ~180 days).
+   - Requirements: `left.start_date == right.start_date` and `right.end_date < left.end_date`.
+5. **Non-Calendar & 52/53-Week Fiscal Years**:
+   - Derivation logic relies on classified period kinds, economic start date equality, and chronological progression rather than calendar-year assumptions or rigid 90/180/270-day intervals.
+6. **Semantic Quality & Confidence Propagation**:
+   - Both operands `EXACT` with `HIGH` winner confidence $\to$ `HIGH` eligibility confidence.
+   - Any operand with `COMPATIBLE` match strength or `MEDIUM` winner confidence $\to$ `MEDIUM` eligibility confidence.
+   - Any `LEGACY_COMPATIBLE` operand mixed with modern concepts $\to$ `SEMANTIC_QUALITY_RISK`.
+   - Eligibility confidence never exceeds the weakest input winner operand.
+7. **Explicit Out-Of-Scope Guards**:
+   - `Q4` derivation and `TTM` formulas return `UNSUPPORTED_PERIOD` in Phase 8B.3A.
+   - No numerical subtraction or derived values are produced in this phase.
+
 
 
 
