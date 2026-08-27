@@ -53,10 +53,20 @@ class AlphaVantageCapability(Enum):
     FREE_COMPACT_HISTORY = "free_compact_history"
 
 
+class TiingoCapability(Enum):
+    """Capability indicators for Tiingo data access."""
+    STARTER_FREE = "starter_free"
+    EOD_PRICES = "eod_prices"
+    ADJUSTED_SERIES = "adjusted_series"
+    CORPORATE_ACTIONS = "corporate_actions"
+    LONG_HISTORY = "long_history"
+
+
 @dataclass
 class GlobalEODObservation:
     """
     Normalized Point-in-Time EOD market observation for a US or European equity/ETF.
+    Supports both raw as-traded and corporate-action-adjusted price series.
     """
     provider_symbol: str
     trade_date: date
@@ -65,6 +75,13 @@ class GlobalEODObservation:
     high: Optional[Decimal] = None
     low: Optional[Decimal] = None
     volume: Optional[Decimal] = None
+    adj_open: Optional[Decimal] = None
+    adj_high: Optional[Decimal] = None
+    adj_low: Optional[Decimal] = None
+    adj_close: Optional[Decimal] = None
+    adj_volume: Optional[Decimal] = None
+    div_cash: Optional[Decimal] = None
+    split_factor: Optional[Decimal] = None
     currency: Optional[Currency] = None
     exchange: Optional[str] = None
     instrument_id: Optional[UUID] = None
@@ -93,6 +110,28 @@ class GlobalEODObservation:
         data_status = (
             DataStatus.COMPLETE if self.status == GlobalObservationStatus.VALID else DataStatus.UNAVAILABLE
         )
+        obs_data: Dict[str, Any] = {
+            "provider_symbol": self.provider_symbol,
+            "exchange": self.exchange,
+            "open": str(self.open) if self.open is not None else None,
+            "high": str(self.high) if self.high is not None else None,
+            "low": str(self.low) if self.low is not None else None,
+            "close": str(self.close) if self.close is not None else None,
+            "volume": str(self.volume) if self.volume is not None else None,
+        }
+        if self.adj_close is not None:
+            obs_data.update({
+                "adj_open": str(self.adj_open) if self.adj_open is not None else None,
+                "adj_high": str(self.adj_high) if self.adj_high is not None else None,
+                "adj_low": str(self.adj_low) if self.adj_low is not None else None,
+                "adj_close": str(self.adj_close) if self.adj_close is not None else None,
+                "adj_volume": str(self.adj_volume) if self.adj_volume is not None else None,
+            })
+        if self.div_cash is not None:
+            obs_data["div_cash"] = str(self.div_cash)
+        if self.split_factor is not None:
+            obs_data["split_factor"] = str(self.split_factor)
+
         return NormalizedObservationRecord(
             id=self.id,
             snapshot_id=self.snapshot_id,
@@ -100,15 +139,7 @@ class GlobalEODObservation:
             asset_class=asset_class,
             instrument_type=self.instrument_type,
             observation_type="GLOBAL_EOD_PRICE",
-            observation_data={
-                "provider_symbol": self.provider_symbol,
-                "exchange": self.exchange,
-                "open": str(self.open) if self.open is not None else None,
-                "high": str(self.high) if self.high is not None else None,
-                "low": str(self.low) if self.low is not None else None,
-                "close": str(self.close) if self.close is not None else None,
-                "volume": str(self.volume) if self.volume is not None else None,
-            },
+            observation_data=obs_data,
             data_status=data_status,
             confidence_level=self.confidence_level,
             source_tier=SourceTier.TIER_3_AGGREGATOR,
@@ -133,6 +164,13 @@ class GlobalEODObservation:
             "low": str(self.low) if self.low is not None else None,
             "close": str(self.close) if self.close is not None else None,
             "volume": str(self.volume) if self.volume is not None else None,
+            "adj_open": str(self.adj_open) if self.adj_open is not None else None,
+            "adj_high": str(self.adj_high) if self.adj_high is not None else None,
+            "adj_low": str(self.adj_low) if self.adj_low is not None else None,
+            "adj_close": str(self.adj_close) if self.adj_close is not None else None,
+            "adj_volume": str(self.adj_volume) if self.adj_volume is not None else None,
+            "div_cash": str(self.div_cash) if self.div_cash is not None else None,
+            "split_factor": str(self.split_factor) if self.split_factor is not None else None,
             "currency": self.currency.value if self.currency else None,
             "instrument_type": self.instrument_type.value if self.instrument_type else None,
             "provider": self.provider,
@@ -157,8 +195,12 @@ class GlobalEODSnapshot:
     http_status: int
     payload_hash: str
     raw_payload: str
-    output_size: str = "compact"
+    output_size: Optional[str] = "compact"
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    parser_version: str = "1.0.0"
     is_rate_limited: bool = False
+    history_refresh_required: bool = False
     trade_date_range: Tuple[Optional[date], Optional[date]] = (None, None)
     observations: List[GlobalEODObservation] = field(default_factory=list)
     diagnostics: List[str] = field(default_factory=list)
@@ -166,14 +208,19 @@ class GlobalEODSnapshot:
 
     def to_raw_provider_snapshot_record(self) -> RawProviderSnapshotRecord:
         """Converts to canonical PIT raw snapshot record."""
+        req_params: Dict[str, Any] = {"symbol": self.provider_symbol}
+        if self.output_size:
+            req_params["outputsize"] = self.output_size
+        if self.start_date:
+            req_params["startDate"] = self.start_date.isoformat()
+        if self.end_date:
+            req_params["endDate"] = self.end_date.isoformat()
+
         return RawProviderSnapshotRecord(
             id=self.id,
             provider=self.provider,
-            endpoint="TIME_SERIES_DAILY",
-            request_params={
-                "symbol": self.provider_symbol,
-                "outputsize": self.output_size,
-            },
+            endpoint="TIME_SERIES_DAILY" if self.provider == "ALPHA_VANTAGE" else "DAILY_PRICES",
+            request_params=req_params,
             retrieved_at=self.retrieved_at,
             http_status=self.http_status,
             content_type="application/json",
@@ -181,6 +228,7 @@ class GlobalEODSnapshot:
             payload_hash=self.payload_hash,
             response_metadata={
                 "is_rate_limited": self.is_rate_limited,
+                "history_refresh_required": self.history_refresh_required,
                 "observation_count": len(self.observations),
                 "trade_date_range": [
                     self.trade_date_range[0].isoformat() if self.trade_date_range[0] else None,
@@ -198,7 +246,11 @@ class GlobalEODSnapshot:
             "http_status": self.http_status,
             "payload_hash": self.payload_hash,
             "output_size": self.output_size,
+            "start_date": self.start_date.isoformat() if self.start_date else None,
+            "end_date": self.end_date.isoformat() if self.end_date else None,
+            "parser_version": self.parser_version,
             "is_rate_limited": self.is_rate_limited,
+            "history_refresh_required": self.history_refresh_required,
             "trade_date_range": [
                 self.trade_date_range[0].isoformat() if self.trade_date_range[0] else None,
                 self.trade_date_range[1].isoformat() if self.trade_date_range[1] else None,

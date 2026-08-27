@@ -9,6 +9,7 @@ from backend.engine.private.market_data.global_models import (
     GlobalEODObservation,
     GlobalEODSnapshot,
     GlobalObservationStatus,
+    TiingoCapability,
 )
 from backend.engine.private.market_data.models import (
     BISTInstrumentQueryKey,
@@ -30,6 +31,7 @@ __all__ = [
     "PointInTimeMarketDataResolver",
     "GlobalObservationStatus",
     "AlphaVantageCapability",
+    "TiingoCapability",
     "GlobalEODObservation",
     "GlobalEODSnapshot",
 ]

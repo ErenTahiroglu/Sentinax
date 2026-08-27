@@ -1,0 +1,770 @@
+"""
+backend/engine/private/providers/tiingo_eod.py
+=============================================
+Tiingo Starter (Free Tier) US Equities & ETFs Daily EOD and Historical Prices Adapter.
+
+Access Classification:
+    - Provider Access: YELLOW (Commercial API, Starter Free Tier: 500 unique symbols/mo, 50 req/hr, 1,000 req/day, 1 GB/mo).
+    - Source Quality: TIER_3_AGGREGATOR (commercial market data aggregator; not an official exchange authority).
+    - Capabilities: STARTER_FREE, EOD_PRICES, ADJUSTED_SERIES, CORPORATE_ACTIONS, LONG_HISTORY.
+
+Hardening Invariants:
+    - US scope only: strictly supports InstrumentType.US_STOCK and InstrumentType.US_ETF.
+    - Zero float usage: all OHLC prices, adjusted prices, and volumes are exact Decimal; Python floats are rejected.
+    - Missing fields remain None (missing != zero).
+    - All OHLC prices non-negative: open, high, low, close, adjOpen, adjHigh, adjLow, adjClose >= 0.
+    - Non-finite values (NaN, Infinity, -Infinity) rejected as invalid observations.
+    - Strict Point-in-Time semantics: trade_date (economic date) vs retrieved_at (network UTC).
+    - published_at is None (unfabricated).
+    - Corporate actions: captures divCash and splitFactor. Sets history_refresh_required=True when splitFactor != 1 or divCash > 0.
+    - Request identity binding: FetchContext with conflicting (canonical_instrument_id, provider_symbol) fails closed before network.
+    - Token security: TIINGO_API_TOKEN authenticated via Authorization header; token is never stored, logged, or serialized.
+    - Aggregate status calculation:
+        * 0 observations or 0 VALID -> UNAVAILABLE
+        * All observations VALID -> COMPLETE
+        * Mix of VALID and invalid/unresolved -> PARTIAL
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import logging
+import os
+from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
+from typing import Any, Dict, List, Optional, Set, Tuple
+from uuid import UUID, uuid4
+
+import httpx
+
+from backend.engine.private.domain import (
+    Currency,
+    DataConfidenceLevel,
+    DataStatus,
+    InstrumentType,
+    ProviderAccessStatus,
+    SourceTier,
+)
+from backend.engine.private.identity import InstrumentResolverService
+from backend.engine.private.market_data.global_models import (
+    GlobalEODObservation,
+    GlobalEODSnapshot,
+    GlobalObservationStatus,
+    TiingoCapability,
+)
+from backend.engine.private.provider_contract import (
+    DataProviderContract,
+    FetchContext,
+    ProviderProvenance,
+    ProviderResponse,
+)
+from backend.infrastructure.http_client import get_http_client
+
+logger = logging.getLogger(__name__)
+
+TIINGO_PROVIDER_NAME = "TIINGO"
+TIINGO_PROVIDER_VERSION = "1.0.0"
+TIINGO_BASE_URL = "https://api.tiingo.com/tiingo/daily/{ticker}/prices"
+
+
+def _parse_finite_decimal(value: Any) -> Optional[Decimal]:
+    """
+    Parses a string or integer value into an exact finite Decimal.
+    STRICT: Rejects Python float inputs to prevent loss-of-precision contamination.
+    """
+    if value is None:
+        return None
+    if isinstance(value, float):
+        return None
+    if isinstance(value, Decimal):
+        return value if value.is_finite() else None
+    if isinstance(value, int):
+        return Decimal(value)
+    if isinstance(value, str):
+        val_str = value.strip().replace(",", "")
+        if not val_str or val_str.lower() in ("none", "null", "nan", "inf", "-inf", "infinity", "-infinity"):
+            return None
+        try:
+            d = Decimal(val_str)
+            if not d.is_finite():
+                return None
+            return d
+        except (InvalidOperation, ValueError, TypeError):
+            return None
+    return None
+
+
+def _check_non_finite_raw(value: Any) -> bool:
+    """Returns True if the raw value explicitly represents a non-finite number."""
+    if value is None:
+        return False
+    if isinstance(value, float):
+        import math
+        return math.isnan(value) or math.isinf(value)
+    val_str = str(value).strip().lower()
+    return val_str in ("nan", "snan", "infinity", "+infinity", "-infinity", "inf", "-inf")
+
+
+class TiingoEODProvider(DataProviderContract):
+    """
+    Data provider adapter for Tiingo US equity and ETF daily EOD and long-history price series.
+    """
+    provider_name: str = TIINGO_PROVIDER_NAME
+    provider_version: str = TIINGO_PROVIDER_VERSION
+    source_quality: SourceTier = SourceTier.TIER_3_AGGREGATOR
+    access_status: ProviderAccessStatus = ProviderAccessStatus.YELLOW
+
+    official_source: bool = False
+    developer_api: bool = True
+    sla_guaranteed: bool = False
+
+    capabilities: List[TiingoCapability] = [
+        TiingoCapability.STARTER_FREE,
+        TiingoCapability.EOD_PRICES,
+        TiingoCapability.ADJUSTED_SERIES,
+        TiingoCapability.CORPORATE_ACTIONS,
+        TiingoCapability.LONG_HISTORY,
+    ]
+
+    def __init__(self, api_token: Optional[str] = None) -> None:
+        self._api_token = api_token or os.getenv("TIINGO_API_TOKEN") or os.getenv("TIINGO_TOKEN")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Parsing & Normalization
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @classmethod
+    def parse_daily_prices(
+        cls,
+        raw_json: Any,
+        provider_symbol: str,
+        retrieved_at: datetime,
+        http_status: int = 200,
+        resolver: Optional[InstrumentResolverService] = None,
+        snapshot_id: Optional[UUID] = None,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+    ) -> GlobalEODSnapshot:
+        """
+        Parses raw Tiingo daily prices JSON response into a GlobalEODSnapshot
+        and normalized GlobalEODObservation instances.
+        """
+        snap_id = snapshot_id or uuid4()
+        clean_symbol = provider_symbol.strip().upper()
+
+        if isinstance(raw_json, str):
+            raw_str = raw_json
+            try:
+                data = json.loads(raw_json, parse_float=Decimal)
+            except json.JSONDecodeError as err:
+                payload_hash = hashlib.sha256(raw_str.encode("utf-8")).hexdigest()
+                return GlobalEODSnapshot(
+                    id=snap_id,
+                    provider=TIINGO_PROVIDER_NAME,
+                    provider_symbol=clean_symbol,
+                    retrieved_at=retrieved_at,
+                    http_status=http_status,
+                    payload_hash=payload_hash,
+                    raw_payload=raw_str,
+                    start_date=start_date,
+                    end_date=end_date,
+                    output_size=None,
+                    diagnostics=[f"MALFORMED_JSON: Failed to decode Tiingo response: {err}"],
+                )
+        else:
+            data = raw_json
+            raw_str = json.dumps(raw_json, sort_keys=True, ensure_ascii=False, default=str)
+
+        payload_hash = hashlib.sha256(raw_str.encode("utf-8")).hexdigest()
+        diagnostics: List[str] = []
+        is_rate_limited = False
+        history_refresh_required = False
+
+        if isinstance(data, dict):
+            # Check for error / detail messages (e.g. detail: "Not found." or message)
+            if "detail" in data:
+                detail_msg = str(data["detail"])
+                if "rate limit" in detail_msg.lower() or "too many requests" in detail_msg.lower():
+                    is_rate_limited = True
+                    diagnostics.append(f"RATE_LIMIT_EXHAUSTED: {detail_msg}")
+                else:
+                    diagnostics.append(f"PROVIDER_ERROR: {detail_msg}")
+                return GlobalEODSnapshot(
+                    id=snap_id,
+                    provider=TIINGO_PROVIDER_NAME,
+                    provider_symbol=clean_symbol,
+                    retrieved_at=retrieved_at,
+                    http_status=http_status,
+                    payload_hash=payload_hash,
+                    raw_payload=raw_str,
+                    start_date=start_date,
+                    end_date=end_date,
+                    output_size=None,
+                    is_rate_limited=is_rate_limited,
+                    diagnostics=diagnostics,
+                )
+            if "message" in data:
+                diagnostics.append(f"PROVIDER_MESSAGE: {data['message']}")
+
+        if not isinstance(data, list):
+            diagnostics.append("INVALID_ROOT: Expected JSON list of daily price objects at root of Tiingo response.")
+            return GlobalEODSnapshot(
+                id=snap_id,
+                provider=TIINGO_PROVIDER_NAME,
+                provider_symbol=clean_symbol,
+                retrieved_at=retrieved_at,
+                http_status=http_status,
+                payload_hash=payload_hash,
+                raw_payload=raw_str,
+                start_date=start_date,
+                end_date=end_date,
+                output_size=None,
+                is_rate_limited=is_rate_limited,
+                diagnostics=diagnostics,
+            )
+
+        parsed_observations: List[GlobalEODObservation] = []
+        raw_rows_by_date: Dict[date, List[Dict[str, Any]]] = {}
+
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            date_str = item.get("date")
+            if not date_str:
+                continue
+            try:
+                # Tiingo dates are ISO formatted strings e.g. "2024-10-01T00:00:00.000Z" or "2024-10-01"
+                t_date_str = str(date_str).split("T")[0].strip()
+                t_date = date.fromisoformat(t_date_str)
+            except ValueError:
+                diagnostics.append(f"MALFORMED_DATE: Invalid ISO date format '{date_str}'.")
+                continue
+
+            raw_rows_by_date.setdefault(t_date, []).append(item)
+
+        for t_date, rows in raw_rows_by_date.items():
+            for row_dict in rows:
+                row_diags: List[str] = []
+                status = GlobalObservationStatus.VALID
+
+                # Check for explicit non-finite values in raw fields
+                has_non_finite = any(
+                    _check_non_finite_raw(row_dict.get(k))
+                    for k in (
+                        "open", "high", "low", "close", "volume",
+                        "adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume",
+                        "divCash", "splitFactor"
+                    )
+                )
+                if has_non_finite:
+                    status = GlobalObservationStatus.INVALID_OBSERVATION
+                    row_diags.append("NON_FINITE_DECIMAL: Non-finite value (NaN/Infinity) encountered in price or volume.")
+
+                open_val = _parse_finite_decimal(row_dict.get("open"))
+                high_val = _parse_finite_decimal(row_dict.get("high"))
+                low_val = _parse_finite_decimal(row_dict.get("low"))
+                close_val = _parse_finite_decimal(row_dict.get("close"))
+                volume_val = _parse_finite_decimal(row_dict.get("volume"))
+
+                adj_open_val = _parse_finite_decimal(row_dict.get("adjOpen"))
+                adj_high_val = _parse_finite_decimal(row_dict.get("adjHigh"))
+                adj_low_val = _parse_finite_decimal(row_dict.get("adjLow"))
+                adj_close_val = _parse_finite_decimal(row_dict.get("adjClose"))
+                adj_volume_val = _parse_finite_decimal(row_dict.get("adjVolume"))
+
+                div_cash_val = _parse_finite_decimal(row_dict.get("divCash"))
+                split_factor_val = _parse_finite_decimal(row_dict.get("splitFactor"))
+
+                # Corporate Action / History Refresh Signal
+                if split_factor_val is not None and split_factor_val != Decimal("1"):
+                    history_refresh_required = True
+                if div_cash_val is not None and div_cash_val > Decimal("0"):
+                    history_refresh_required = True
+
+                # Validate Raw OHLC Prices
+                if open_val is not None and open_val < Decimal("0"):
+                    status = GlobalObservationStatus.INVALID_OBSERVATION
+                    row_diags.append(f"NEGATIVE_PRICE: Negative open price {open_val}.")
+                if high_val is not None and high_val < Decimal("0"):
+                    status = GlobalObservationStatus.INVALID_OBSERVATION
+                    row_diags.append(f"NEGATIVE_PRICE: Negative high price {high_val}.")
+                if low_val is not None and low_val < Decimal("0"):
+                    status = GlobalObservationStatus.INVALID_OBSERVATION
+                    row_diags.append(f"NEGATIVE_PRICE: Negative low price {low_val}.")
+                if close_val is not None and close_val < Decimal("0"):
+                    status = GlobalObservationStatus.INVALID_OBSERVATION
+                    row_diags.append(f"NEGATIVE_PRICE: Negative close price {close_val}.")
+
+                # Validate Close Price Presence
+                if close_val is None:
+                    status = GlobalObservationStatus.INVALID_OBSERVATION
+                    row_diags.append("MISSING_CLOSE: Close price is missing, null, or non-finite.")
+
+                # Validate Raw OHLC Envelope
+                if high_val is not None and low_val is not None:
+                    if high_val < low_val:
+                        status = GlobalObservationStatus.INVALID_OBSERVATION
+                        row_diags.append(f"OHLC_ENVELOPE_VIOLATION: High {high_val} is less than Low {low_val}.")
+                    if open_val is not None:
+                        if high_val < open_val or low_val > open_val:
+                            status = GlobalObservationStatus.INVALID_OBSERVATION
+                            row_diags.append(f"OHLC_ENVELOPE_VIOLATION: Open {open_val} outside High/Low range [{low_val}, {high_val}].")
+                    if close_val is not None:
+                        if high_val < close_val or low_val > close_val:
+                            status = GlobalObservationStatus.INVALID_OBSERVATION
+                            row_diags.append(f"OHLC_ENVELOPE_VIOLATION: Close {close_val} outside High/Low range [{low_val}, {high_val}].")
+
+                # Validate Adjusted OHLC Prices
+                if adj_open_val is not None and adj_open_val < Decimal("0"):
+                    status = GlobalObservationStatus.INVALID_OBSERVATION
+                    row_diags.append(f"NEGATIVE_ADJUSTED_PRICE: Negative adjusted open price {adj_open_val}.")
+                if adj_high_val is not None and adj_high_val < Decimal("0"):
+                    status = GlobalObservationStatus.INVALID_OBSERVATION
+                    row_diags.append(f"NEGATIVE_ADJUSTED_PRICE: Negative adjusted high price {adj_high_val}.")
+                if adj_low_val is not None and adj_low_val < Decimal("0"):
+                    status = GlobalObservationStatus.INVALID_OBSERVATION
+                    row_diags.append(f"NEGATIVE_ADJUSTED_PRICE: Negative adjusted low price {adj_low_val}.")
+                if adj_close_val is not None and adj_close_val < Decimal("0"):
+                    status = GlobalObservationStatus.INVALID_OBSERVATION
+                    row_diags.append(f"NEGATIVE_ADJUSTED_PRICE: Negative adjusted close price {adj_close_val}.")
+
+                # Validate Adjusted OHLC Envelope
+                if adj_high_val is not None and adj_low_val is not None:
+                    if adj_high_val < adj_low_val:
+                        status = GlobalObservationStatus.INVALID_OBSERVATION
+                        row_diags.append(f"ADJUSTED_OHLC_ENVELOPE_VIOLATION: Adj High {adj_high_val} is less than Adj Low {adj_low_val}.")
+                    if adj_open_val is not None:
+                        if adj_high_val < adj_open_val or adj_low_val > adj_open_val:
+                            status = GlobalObservationStatus.INVALID_OBSERVATION
+                            row_diags.append(f"ADJUSTED_OHLC_ENVELOPE_VIOLATION: Adj Open {adj_open_val} outside Adj High/Low range [{adj_low_val}, {adj_high_val}].")
+                    if adj_close_val is not None:
+                        if adj_high_val < adj_close_val or adj_low_val > adj_close_val:
+                            status = GlobalObservationStatus.INVALID_OBSERVATION
+                            row_diags.append(f"ADJUSTED_OHLC_ENVELOPE_VIOLATION: Adj Close {adj_close_val} outside Adj High/Low range [{adj_low_val}, {adj_high_val}].")
+
+                # Validate Volume
+                if volume_val is not None and volume_val < Decimal("0"):
+                    status = GlobalObservationStatus.INVALID_OBSERVATION
+                    row_diags.append(f"NEGATIVE_VOLUME: Negative volume {volume_val}.")
+
+                # Validate Split Factor
+                if split_factor_val is not None and split_factor_val <= Decimal("0"):
+                    status = GlobalObservationStatus.INVALID_OBSERVATION
+                    row_diags.append(f"INVALID_SPLIT_FACTOR: Split factor must be positive: {split_factor_val}.")
+
+                # Instrument Master Resolution
+                instrument_id: Optional[UUID] = None
+                instrument_type: Optional[InstrumentType] = None
+                currency: Optional[Currency] = None
+                exchange_mic: Optional[str] = None
+
+                if resolver:
+                    instrument_id = resolver.resolve_provider_symbol_to_instrument_id(
+                        TIINGO_PROVIDER_NAME, clean_symbol, as_of_date=t_date
+                    )
+                    if instrument_id:
+                        inst = resolver.get_instrument_by_id(instrument_id)
+                        if inst:
+                            instrument_type = inst.instrument_type
+                            currency = inst.currency
+                            exchange_mic = inst.mic
+
+                            # Check US instrument type restriction
+                            if instrument_type not in (InstrumentType.US_STOCK, InstrumentType.US_ETF):
+                                status = GlobalObservationStatus.INVALID_OBSERVATION
+                                row_diags.append(
+                                    f"UNSUPPORTED_INSTRUMENT_TYPE: Tiingo adapter only supports US_STOCK and US_ETF, got {instrument_type}."
+                                )
+                    else:
+                        if status == GlobalObservationStatus.VALID:
+                            status = GlobalObservationStatus.UNRESOLVED_IDENTITY
+                        row_diags.append(f"UNRESOLVED_IDENTITY: No master instrument mapped for alias TIINGO:{clean_symbol} on {t_date.isoformat()}.")
+                else:
+                    if status == GlobalObservationStatus.VALID:
+                        status = GlobalObservationStatus.UNRESOLVED_IDENTITY
+                    row_diags.append(f"UNRESOLVED_IDENTITY: No InstrumentResolverService provided for alias TIINGO:{clean_symbol}.")
+
+                obs = GlobalEODObservation(
+                    provider_symbol=clean_symbol,
+                    trade_date=t_date,
+                    close=close_val,
+                    open=open_val,
+                    high=high_val,
+                    low=low_val,
+                    volume=volume_val,
+                    adj_open=adj_open_val,
+                    adj_high=adj_high_val,
+                    adj_low=adj_low_val,
+                    adj_close=adj_close_val,
+                    adj_volume=adj_volume_val,
+                    div_cash=div_cash_val,
+                    split_factor=split_factor_val,
+                    currency=currency,
+                    exchange=exchange_mic,
+                    instrument_id=instrument_id,
+                    instrument_type=instrument_type,
+                    provider=TIINGO_PROVIDER_NAME,
+                    snapshot_id=snap_id,
+                    payload_hash=payload_hash,
+                    retrieved_at=retrieved_at,
+                    published_at=None,
+                    status=status,
+                    confidence_level=DataConfidenceLevel.MEDIUM if status == GlobalObservationStatus.VALID else DataConfidenceLevel.NONE,
+                    diagnostics=row_diags,
+                )
+                parsed_observations.append(obs)
+
+        # Handle Duplicate Rows within Snapshot
+        grouped_by_date: Dict[date, List[GlobalEODObservation]] = {}
+        for obs in parsed_observations:
+            grouped_by_date.setdefault(obs.trade_date, []).append(obs)
+
+        final_observations: List[GlobalEODObservation] = []
+        for t_date, obs_list in grouped_by_date.items():
+            if len(obs_list) == 1:
+                final_observations.append(obs_list[0])
+            else:
+                fingerprints = {
+                    (
+                        o.instrument_id, o.trade_date, o.provider_symbol,
+                        o.open, o.high, o.low, o.close, o.volume,
+                        o.adj_open, o.adj_high, o.adj_low, o.adj_close, o.adj_volume,
+                        o.div_cash, o.split_factor, o.currency, o.status
+                    )
+                    for o in obs_list
+                }
+                if len(fingerprints) == 1:
+                    selected = min(obs_list, key=lambda o: str(o.id))
+                    final_observations.append(selected)
+                else:
+                    for o in obs_list:
+                        o.status = GlobalObservationStatus.DUPLICATE_CONFLICT
+                        o.confidence_level = DataConfidenceLevel.NONE
+                        o.diagnostics.append("DUPLICATE_CONFLICT: Differing observation rows encountered for identical trade date.")
+                        final_observations.append(o)
+
+        final_observations.sort(key=lambda o: (o.trade_date, str(o.id)))
+
+        min_date = final_observations[0].trade_date if final_observations else None
+        max_date = final_observations[-1].trade_date if final_observations else None
+
+        return GlobalEODSnapshot(
+            id=snap_id,
+            provider=TIINGO_PROVIDER_NAME,
+            provider_symbol=clean_symbol,
+            retrieved_at=retrieved_at,
+            http_status=http_status,
+            payload_hash=payload_hash,
+            raw_payload=raw_str,
+            output_size=None,
+            start_date=start_date,
+            end_date=end_date,
+            is_rate_limited=is_rate_limited,
+            history_refresh_required=history_refresh_required,
+            trade_date_range=(min_date, max_date),
+            observations=final_observations,
+            diagnostics=diagnostics,
+        )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Async Fetch Implementation (DataProviderContract)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def fetch(
+        self,
+        context: FetchContext,
+        resolver: Optional[InstrumentResolverService] = None,
+    ) -> ProviderResponse:
+        """
+        Retrieves daily EOD / historical price data asynchronously for a provider_symbol or canonical instrument.
+        """
+        retrieved_at = datetime.now(timezone.utc)
+        provider_symbol = context.provider_symbol
+        canonical_id = context.canonical_instrument_id
+
+        # 1. Preflight: Dual Identity Binding Verification
+        if canonical_id and provider_symbol and resolver:
+            resolved_id = resolver.resolve_provider_symbol_to_instrument_id(
+                TIINGO_PROVIDER_NAME, provider_symbol, as_of_date=context.effective_date
+            )
+            if resolved_id != canonical_id:
+                return ProviderResponse(
+                    provider_name=self.provider_name,
+                    source_quality=self.source_quality,
+                    retrieved_at=retrieved_at,
+                    published_at=None,
+                    effective_date=context.effective_date,
+                    status=DataStatus.UNAVAILABLE,
+                    raw=None,
+                    warnings=[
+                        f"IDENTITY_MISMATCH: FetchContext provider_symbol '{provider_symbol}' resolves to {resolved_id}, "
+                        f"which mismatches canonical_instrument_id '{canonical_id}'."
+                    ],
+                    canonical_instrument_id=None,
+                    provider_symbol=provider_symbol,
+                )
+
+        # 2. Resolve provider_symbol if only canonical_instrument_id provided
+        if not provider_symbol and canonical_id and resolver:
+            provider_symbol = resolver.resolve_instrument_id_to_provider_symbol(
+                canonical_id, TIINGO_PROVIDER_NAME, as_of_date=context.effective_date
+            )
+
+        if not provider_symbol:
+            return ProviderResponse(
+                provider_name=self.provider_name,
+                source_quality=self.source_quality,
+                retrieved_at=retrieved_at,
+                published_at=None,
+                effective_date=context.effective_date,
+                status=DataStatus.UNAVAILABLE,
+                raw=None,
+                warnings=["UNRESOLVED_SYMBOL: No provider_symbol supplied or resolved for Tiingo request."],
+                canonical_instrument_id=canonical_id,
+                provider_symbol=None,
+            )
+
+        clean_symbol = provider_symbol.strip().upper()
+
+        # 3. Validate canonical ID and Instrument Type
+        if not canonical_id and resolver:
+            canonical_id = resolver.resolve_provider_symbol_to_instrument_id(
+                TIINGO_PROVIDER_NAME, clean_symbol, as_of_date=context.effective_date
+            )
+
+        if canonical_id and resolver:
+            inst = resolver.get_instrument_by_id(canonical_id)
+            if inst and inst.instrument_type not in (InstrumentType.US_STOCK, InstrumentType.US_ETF):
+                return ProviderResponse(
+                    provider_name=self.provider_name,
+                    source_quality=self.source_quality,
+                    retrieved_at=retrieved_at,
+                    published_at=None,
+                    effective_date=context.effective_date,
+                    status=DataStatus.UNAVAILABLE,
+                    raw=None,
+                    warnings=[
+                        f"UNSUPPORTED_INSTRUMENT_TYPE: Tiingo adapter only supports US_STOCK and US_ETF, got {inst.instrument_type}."
+                    ],
+                    canonical_instrument_id=canonical_id,
+                    provider_symbol=clean_symbol,
+                )
+
+        # 4. Check API Token
+        api_token = self._api_token or os.getenv("TIINGO_API_TOKEN") or os.getenv("TIINGO_TOKEN")
+        if not api_token:
+            return ProviderResponse(
+                provider_name=self.provider_name,
+                source_quality=self.source_quality,
+                retrieved_at=retrieved_at,
+                published_at=None,
+                effective_date=context.effective_date,
+                status=DataStatus.UNAVAILABLE,
+                raw=None,
+                warnings=["AUTH_ERROR: TIINGO_API_TOKEN is not configured in environment or provider instance."],
+                canonical_instrument_id=canonical_id,
+                provider_symbol=clean_symbol,
+            )
+
+        # 5. Build URL, Params & Auth Headers
+        url = TIINGO_BASE_URL.format(ticker=clean_symbol.lower())
+        params: Dict[str, str] = {}
+
+        # Dates from context request_parameters or effective date
+        start_date_val: Optional[date] = None
+        end_date_val: Optional[date] = None
+
+        if "startDate" in context.request_parameters:
+            try:
+                start_date_val = date.fromisoformat(str(context.request_parameters["startDate"]))
+                params["startDate"] = start_date_val.isoformat()
+            except ValueError:
+                pass
+        if "endDate" in context.request_parameters:
+            try:
+                end_date_val = date.fromisoformat(str(context.request_parameters["endDate"]))
+                params["endDate"] = end_date_val.isoformat()
+            except ValueError:
+                pass
+
+        headers = {
+            "Authorization": f"Token {api_token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            client = get_http_client()
+            resp = await client.get(url, params=params, headers=headers)
+            retrieved_at = datetime.now(timezone.utc)
+            http_status = resp.status_code
+
+            if http_status in (401, 403):
+                return ProviderResponse(
+                    provider_name=self.provider_name,
+                    source_quality=self.source_quality,
+                    retrieved_at=retrieved_at,
+                    published_at=None,
+                    effective_date=context.effective_date,
+                    status=DataStatus.UNAVAILABLE,
+                    raw=None,
+                    warnings=[f"AUTH_ERROR: HTTP {http_status} authentication failure from Tiingo."],
+                    canonical_instrument_id=canonical_id,
+                    provider_symbol=clean_symbol,
+                )
+
+            if http_status == 404:
+                return ProviderResponse(
+                    provider_name=self.provider_name,
+                    source_quality=self.source_quality,
+                    retrieved_at=retrieved_at,
+                    published_at=None,
+                    effective_date=context.effective_date,
+                    status=DataStatus.UNAVAILABLE,
+                    raw=None,
+                    warnings=[f"NOT_FOUND: Symbol '{clean_symbol}' not found on Tiingo."],
+                    canonical_instrument_id=canonical_id,
+                    provider_symbol=clean_symbol,
+                )
+
+            if http_status == 429:
+                return ProviderResponse(
+                    provider_name=self.provider_name,
+                    source_quality=self.source_quality,
+                    retrieved_at=retrieved_at,
+                    published_at=None,
+                    effective_date=context.effective_date,
+                    status=DataStatus.UNAVAILABLE,
+                    raw=None,
+                    warnings=["RATE_LIMITED: HTTP 429 Too Many Requests from Tiingo."],
+                    canonical_instrument_id=canonical_id,
+                    provider_symbol=clean_symbol,
+                )
+
+            if http_status >= 500:
+                return ProviderResponse(
+                    provider_name=self.provider_name,
+                    source_quality=self.source_quality,
+                    retrieved_at=retrieved_at,
+                    published_at=None,
+                    effective_date=context.effective_date,
+                    status=DataStatus.UNAVAILABLE,
+                    raw=None,
+                    warnings=[f"SERVER_ERROR: HTTP {http_status} server error from Tiingo."],
+                    canonical_instrument_id=canonical_id,
+                    provider_symbol=clean_symbol,
+                )
+
+            raw_text = resp.text
+            snapshot = self.parse_daily_prices(
+                raw_text,
+                clean_symbol,
+                retrieved_at,
+                http_status=http_status,
+                resolver=resolver,
+                start_date=start_date_val,
+                end_date=end_date_val,
+            )
+
+            obs_count = len(snapshot.observations)
+            valid_count = sum(1 for o in snapshot.observations if o.status == GlobalObservationStatus.VALID)
+            invalid_count = sum(1 for o in snapshot.observations if o.status == GlobalObservationStatus.INVALID_OBSERVATION)
+            unresolved_count = sum(1 for o in snapshot.observations if o.status == GlobalObservationStatus.UNRESOLVED_IDENTITY)
+            conflict_count = sum(1 for o in snapshot.observations if o.status == GlobalObservationStatus.DUPLICATE_CONFLICT)
+
+            if snapshot.is_rate_limited:
+                status = DataStatus.UNAVAILABLE
+            elif obs_count == 0:
+                status = DataStatus.UNAVAILABLE
+            elif valid_count == 0:
+                status = DataStatus.UNAVAILABLE
+            elif valid_count == obs_count:
+                status = DataStatus.COMPLETE
+            else:
+                status = DataStatus.PARTIAL
+
+            return ProviderResponse(
+                provider_name=self.provider_name,
+                source_quality=self.source_quality,
+                retrieved_at=retrieved_at,
+                published_at=None,
+                effective_date=context.effective_date,
+                status=status,
+                raw=snapshot,
+                warnings=list(snapshot.diagnostics),
+                canonical_instrument_id=canonical_id,
+                provider_symbol=clean_symbol,
+                source_metadata={
+                    "payload_hash": snapshot.payload_hash,
+                    "is_rate_limited": snapshot.is_rate_limited,
+                    "history_refresh_required": snapshot.history_refresh_required,
+                    "observation_count": obs_count,
+                    "valid_count": valid_count,
+                    "invalid_count": invalid_count,
+                    "unresolved_count": unresolved_count,
+                    "conflict_count": conflict_count,
+                },
+            )
+
+        except (httpx.TimeoutException, asyncio.TimeoutError) as err:
+            return ProviderResponse(
+                provider_name=self.provider_name,
+                source_quality=self.source_quality,
+                retrieved_at=datetime.now(timezone.utc),
+                published_at=None,
+                effective_date=context.effective_date,
+                status=DataStatus.UNAVAILABLE,
+                raw=None,
+                warnings=[f"TIMEOUT: Tiingo request timed out: {err}"],
+                canonical_instrument_id=canonical_id,
+                provider_symbol=clean_symbol,
+            )
+        except Exception as err:
+            return ProviderResponse(
+                provider_name=self.provider_name,
+                source_quality=self.source_quality,
+                retrieved_at=datetime.now(timezone.utc),
+                published_at=None,
+                effective_date=context.effective_date,
+                status=DataStatus.UNAVAILABLE,
+                raw=None,
+                warnings=[f"NETWORK_ERROR: Network or connection error: {err}"],
+                canonical_instrument_id=canonical_id,
+                provider_symbol=clean_symbol,
+            )
+
+    def normalize(self, raw: Any) -> Dict[str, Any]:
+        """Maps raw snapshot or observation to a canonical field dict."""
+        if isinstance(raw, GlobalEODSnapshot):
+            return raw.to_dict()
+        if isinstance(raw, GlobalEODObservation):
+            return raw.to_dict()
+        if isinstance(raw, dict):
+            return raw
+        return {"raw": str(raw)}
+
+    def validate(self, normalized: Dict[str, Any]) -> List[str]:
+        """Returns warnings for anomalies or missing fields."""
+        warnings: List[str] = []
+        if "close" in normalized and normalized["close"] is None:
+            warnings.append("Missing close price.")
+        if normalized.get("status") == GlobalObservationStatus.UNRESOLVED_IDENTITY.value:
+            warnings.append("Unresolved instrument identity.")
+        if normalized.get("status") == GlobalObservationStatus.INVALID_OBSERVATION.value:
+            warnings.append("Invalid observation.")
+        return warnings
+
+    def provenance(self, response: ProviderResponse) -> ProviderProvenance:
+        """Returns provenance audit trail for a ProviderResponse."""
+        return ProviderProvenance(
+            provider_name=self.provider_name,
+            provider_version=self.provider_version,
+            endpoint="DAILY_PRICES",
+            retrieved_at=response.retrieved_at,
+            source_quality=self.source_quality,
+            canonical_instrument_id=response.canonical_instrument_id,
+            provider_symbol=response.provider_symbol,
+            effective_date=response.effective_date,
+            metadata=response.source_metadata,
+        )

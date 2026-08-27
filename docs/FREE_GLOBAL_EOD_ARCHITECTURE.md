@@ -13,12 +13,12 @@ Sentinax implements a **Zero-Cost ($0/month recurring)** market data architectur
 
 ## 2. Global Source Mosaic Matrix
 
-| Source / Provider | Plan / Tier | Recurring Cost | Primary Role | Free Quota | History Depth | Geographic Scope | Semantic Output | Confidence Tier |
+| Source / Provider | Plan / Tier | Recurring Cost | Primary Role | Free Quota | History Depth | Geographic Scope | Semantic Output | Source Classification |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Tiingo** | Starter (Free) | **$0 / mo** | **US Primary EOD & Risk History** | 500 symbols/mo<br>50 req/hour<br>1,000 req/day<br>1 GB/mo | **30+ Years** (>=5Y target met) | US Equities & US ETFs | Raw OHLCV + Split & Dividend Adjusted (`adjClose`, `divCash`, `splitFactor`) | `TIER_3_AGGREGATOR` (High Confidence) |
-| **Alpha Vantage** | Free Standard | **$0 / mo** | **EU Current Daily Valuation** | 25 req/day<br>5 req/min | Latest 100 days (`compact`) | Global (including XETRA, LSE, Euronext) | Raw as-traded OHLCV | `TIER_3_AGGREGATOR` (Medium Confidence) |
-| **Marketstack** | Free Tier | **$0 / mo** | **EU Rolling 1Y History & Corporate Actions** | 100 req/month | Up to 1 Year | Global (70+ exchanges) | Raw + Adjusted OHLCV + Splits/Dividends metadata | `TIER_3_AGGREGATOR` (Medium Confidence) |
-| **Kaggle / Open Data / Manual CSV** | Open / CC0 / CC BY / User CSV | **$0** | **EU Deep History Bootstrap (>= 5Y)** | On-demand / File import | Multi-year archive (5Y–20Y) | Selected European Indices / Stocks / ETFs | Historical OHLCV (subject to audit) | `TIER_4_SCRAPED_FALLBACK` (Bootstrap Only) |
+| **Tiingo** | Starter (Free) | **$0 / mo** | **US Primary EOD & Risk History** | 500 symbols/mo<br>50 req/hour<br>1,000 req/day<br>1 GB/mo | **60+ Years Aggregate** (per-ticker listing history; >=5Y target met) | US Equities & US ETFs | Raw OHLCV + Split & Dividend Adjusted (`adjClose`, `divCash`, `splitFactor`) | `TIER_3_AGGREGATOR` |
+| **Alpha Vantage** | Free Standard | **$0 / mo** | **EU Current Daily Valuation** | 25 req/day standard limit | Latest 100 days (`compact`) | Global (including XETRA, LSE, Euronext) | Raw as-traded OHLCV | `TIER_3_AGGREGATOR` |
+| **Marketstack** | Free Tier | **$0 / mo** | **EU Rolling 1Y History & Corporate Actions** | 100 req/month | Up to 1 Year | Global (70+ exchanges) | Raw + Adjusted OHLCV + Splits/Dividends metadata | `TIER_3_AGGREGATOR` |
+| **Open Data / Manual CSV** | User / Open Data Import | **$0** | **EU Deep History Bootstrap (>= 5Y)** | On-demand / File import | Multi-year archive (5Y–20Y) | Selected European Stocks / ETFs | Historical OHLCV (`EU_DEEP_HISTORY_BOOTSTRAP = OPEN`) | `TIER_4_SCRAPED_FALLBACK` (Bootstrap Only) |
 | **Twelve Data** (Auxiliary) | Basic (Free) | **$0 / mo** | **Spot Cross-Check & Diagnostics** | 8 credits/min<br>800 credits/day | Limited trial | US + Global trial | Raw spot/EOD cross-check | `TIER_3_AGGREGATOR` (Auxiliary) |
 
 ---
