@@ -19,7 +19,7 @@ import itertools
 import pytest
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Optional, List
+from typing import Any, List, Optional
 from uuid import UUID, uuid4
 
 from backend.engine.private.sec.models import PeriodType

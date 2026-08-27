@@ -172,7 +172,7 @@ class BISTEODObservation:
             confidence_level=self.confidence_level,
             source_tier=self.source_tier,
             effective_date=self.trade_date,
-            observed_at=self.retrieved_at or datetime.now(timezone.utc),
+            observed_at=self.retrieved_at,
             currency=self.currency,
             published_at=self.source_as_of,
             ingested_at=datetime.now(timezone.utc),
