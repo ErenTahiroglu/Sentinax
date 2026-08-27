@@ -62,13 +62,36 @@ class PreciousMetalCrossSourceComparator:
         if obs_a.price_type != obs_b.price_type:
             reasons.append(f"PRICE_TYPE_MISMATCH: {obs_a.price_type.value} vs {obs_b.price_type.value}")
 
-        # 7. Purity (both must be equal, or both None)
-        if obs_a.purity != obs_b.purity:
-            reasons.append(f"PURITY_MISMATCH: {obs_a.purity} vs {obs_b.purity}")
+        # 7. Purity / Fineness Semantics
+        # If canonical fineness is available on both, compare fineness_per_mille
+        if obs_a.fineness_per_mille is not None and obs_b.fineness_per_mille is not None:
+            if obs_a.fineness_per_mille != obs_b.fineness_per_mille:
+                reasons.append(
+                    f"PURITY_FINENESS_MISMATCH: {obs_a.fineness_per_mille}‰ vs {obs_b.fineness_per_mille}‰"
+                )
+        else:
+            # Fallback to raw purity value, scale, and legacy purity
+            if (
+                obs_a.raw_purity_value != obs_b.raw_purity_value
+                or obs_a.purity_scale != obs_b.purity_scale
+                or obs_a.purity != obs_b.purity
+            ):
+                reasons.append(
+                    f"PURITY_MISMATCH: val={obs_a.raw_purity_value or obs_a.purity} (scale={obs_a.purity_scale}) vs "
+                    f"val={obs_b.raw_purity_value or obs_b.purity} (scale={obs_b.purity_scale})"
+                )
 
-        # 8. Settlement / Value Date Term
-        if (obs_a.settlement_term or "T+0") != (obs_b.settlement_term or "T+0"):
-            reasons.append(f"SETTLEMENT_MISMATCH: {obs_a.settlement_term} vs {obs_b.settlement_term}")
+        # 8. Settlement Term (Strict exact comparison; None is UNKNOWN, never defaulted to T+0)
+        if obs_a.settlement_term != obs_b.settlement_term:
+            reasons.append(
+                f"SETTLEMENT_MISMATCH: '{obs_a.settlement_term}' vs '{obs_b.settlement_term}'"
+            )
+
+        # 9. Value Date (if specified on either side)
+        if obs_a.value_date != obs_b.value_date:
+            reasons.append(
+                f"VALUE_DATE_MISMATCH: {obs_a.value_date} vs {obs_b.value_date}"
+            )
 
         # If any dimension differs, the observations are NOT_COMPARABLE
         if reasons:

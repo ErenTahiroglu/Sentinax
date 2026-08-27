@@ -71,6 +71,13 @@ class ComparabilityResult:
         }
 
 
+class SeriesVerificationStatus(Enum):
+    """Verification status of series contracts against official metadata evidence."""
+    VERIFIED = "verified"
+    UNVERIFIED = "unverified"
+    DEPRECATED = "deprecated"
+
+
 @dataclass
 class PreciousMetalMarketObservation:
     """
@@ -87,9 +94,14 @@ class PreciousMetalMarketObservation:
     price_type: PreciousMetalPriceType
 
     price_quantity: Decimal = Decimal("1")
-    purity: Optional[Decimal] = None                 # e.g. Decimal("995.0") for 995/1000 or Decimal("99.90") for 99.9%
+    purity: Optional[Decimal] = None                 # Deprecated / legacy alias for fineness or raw purity
+    raw_purity_value: Optional[Decimal] = None       # e.g. Decimal("995"), Decimal("99.9")
+    raw_purity_text: Optional[str] = None           # e.g. "995", "99.9", "99.90"
+    purity_scale: Optional[str] = None              # "PER_MILLE", "PERCENT", or "UNKNOWN"
+    fineness_per_mille: Optional[Decimal] = None    # Canonical per-mille fineness if unambiguously verified
+
     value_date: Optional[date] = None               # Explicit settlement/value date
-    settlement_term: Optional[str] = "T+0"          # Settlement term (e.g. "T+0", "T+1")
+    settlement_term: Optional[str] = None           # Explicit settlement term (e.g. "T+0", "T+1", None if unknown)
 
     volume: Optional[Decimal] = None                # Physical transaction quantity in quantity_unit or bars
     turnover: Optional[Decimal] = None              # Monetary turnover value in price_currency
@@ -121,6 +133,10 @@ class PreciousMetalMarketObservation:
             "quantity_unit": self.quantity_unit.value,
             "price_type": self.price_type.value,
             "purity": str(self.purity) if self.purity is not None else None,
+            "raw_purity_value": str(self.raw_purity_value) if self.raw_purity_value is not None else None,
+            "raw_purity_text": self.raw_purity_text,
+            "purity_scale": self.purity_scale,
+            "fineness_per_mille": str(self.fineness_per_mille) if self.fineness_per_mille is not None else None,
             "value_date": self.value_date.isoformat() if self.value_date else None,
             "settlement_term": self.settlement_term,
             "volume": str(self.volume) if self.volume is not None else None,
@@ -141,6 +157,7 @@ class PreciousMetalMarketObservation:
     def to_normalized_observation_record(self) -> NormalizedObservationRecord:
         """
         Converts to generic Sentinax NormalizedObservationRecord.
+        Preserves snapshot_id strictly from raw snapshot (no fake UUID generation).
         """
         obs_status: DataStatus
         if self.status == PreciousMetalObservationStatus.VALID:
@@ -160,6 +177,10 @@ class PreciousMetalMarketObservation:
             "price_quantity": str(self.price_quantity),
             "price_type": self.price_type.value,
             "purity": str(self.purity) if self.purity is not None else None,
+            "raw_purity_value": str(self.raw_purity_value) if self.raw_purity_value is not None else None,
+            "raw_purity_text": self.raw_purity_text,
+            "purity_scale": self.purity_scale,
+            "fineness_per_mille": str(self.fineness_per_mille) if self.fineness_per_mille is not None else None,
             "value_date": self.value_date.isoformat() if self.value_date else None,
             "settlement_term": self.settlement_term,
             "provider": self.provider,
@@ -172,7 +193,7 @@ class PreciousMetalMarketObservation:
 
         return NormalizedObservationRecord(
             id=self.id,
-            snapshot_id=self.snapshot_id or uuid4(),
+            snapshot_id=self.snapshot_id,  # Strictly preserve lineage; None if no snapshot
             instrument_id=None,  # Market reference rate; not bound to a single client portfolio instrument
             asset_class=AssetClass.COMMODITY,
             instrument_type=inst_type,
@@ -204,7 +225,12 @@ class PreciousMetalSeriesDefinition:
     quantity_unit: PreciousMetalUnit
     price_type: PreciousMetalPriceType
     purity: Optional[Decimal] = None
-    settlement_term: Optional[str] = "T+0"
+    purity_scale: Optional[str] = None
+    fineness_per_mille: Optional[Decimal] = None
+    settlement_term: Optional[str] = None
+    verification_status: SeriesVerificationStatus = SeriesVerificationStatus.UNVERIFIED
+    verification_notes: str = ""
+    verified_metadata_hash: Optional[str] = None
     notes: str = ""
     is_active: bool = True
     verified_at: Optional[date] = None
@@ -223,7 +249,12 @@ class PreciousMetalSeriesDefinition:
             "quantity_unit": self.quantity_unit.value,
             "price_type": self.price_type.value,
             "purity": str(self.purity) if self.purity is not None else None,
+            "purity_scale": self.purity_scale,
+            "fineness_per_mille": str(self.fineness_per_mille) if self.fineness_per_mille is not None else None,
             "settlement_term": self.settlement_term,
+            "verification_status": self.verification_status.value,
+            "verification_notes": self.verification_notes,
+            "verified_metadata_hash": self.verified_metadata_hash,
             "notes": self.notes,
             "is_active": self.is_active,
             "verified_at": self.verified_at.isoformat() if self.verified_at else None,

@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -68,24 +69,35 @@ class TCMBEVDSProvider(DataProviderContract):
         api_key: Optional[str] = None,
         http_client: Optional[httpx.AsyncClient] = None,
     ) -> None:
+        """
+        Initializes EVDS provider.
+        Key is read from argument or environment variable `TCMB_EVDS_API_KEY`.
+        """
         self._api_key = api_key or os.getenv("TCMB_EVDS_API_KEY")
-        self._http_client = http_client
+        self._client: Optional[httpx.AsyncClient] = http_client
 
     def _get_client(self) -> httpx.AsyncClient:
-        return self._http_client or get_http_client()
+        if self._client is None or getattr(self._client, "is_closed", False) is True:
+            self._client = get_http_client()
+        return self._client
 
     async def fetch(self, context: FetchContext) -> ProviderResponse:
         """
-        Fetches macro observation(s) from EVDS via official REST service.
+        Executes HTTP request against EVDS official JSON API.
+        Enforces:
+            - Header authentication
+            - Bounded date formatting
+            - Point-in-time retrieved timestamps
+            - Non-zero status checks
+            - Series verification checks before issuing requests
         """
         # Resolve series code from canonical registry or context
         series_code = context.provider_symbol
-        canonical_def = None
-
+        is_pm = False
         if context.provider_symbol and context.provider_symbol.startswith("TR_"):
             canonical_def = MacroSeriesRegistry.get(context.provider_symbol)
-            if canonical_def:
-                if not canonical_def.is_active or canonical_def.contract_status != ContractStatus.VERIFIED:
+            if canonical_def and canonical_def.provider == self.provider_name:
+                if canonical_def.contract_status == ContractStatus.DISABLED or not canonical_def.is_active:
                     return ProviderResponse(
                         provider_name=self.provider_name,
                         source_quality=self.source_quality,
@@ -94,27 +106,31 @@ class TCMBEVDSProvider(DataProviderContract):
                         effective_date=None,
                         status=DataStatus.UNAVAILABLE,
                         raw=None,
-                        warnings=[f"Series {context.provider_symbol} is unverified or disabled in registry ({canonical_def.verification_notes})."],
+                        warnings=[f"Series {context.provider_symbol} is disabled."],
                         canonical_instrument_id=context.canonical_instrument_id,
                         provider_symbol=context.provider_symbol,
                     )
                 series_code = canonical_def.provider_series_code
         elif context.provider_symbol:
+            from backend.engine.private.precious_metals.models import SeriesVerificationStatus
             from backend.engine.private.precious_metals.registry import PreciousMetalSeriesRegistry
             pm_def = PreciousMetalSeriesRegistry.get(context.provider_symbol)
-            if pm_def and not pm_def.is_active:
-                return ProviderResponse(
-                    provider_name=self.provider_name,
-                    source_quality=self.source_quality,
-                    retrieved_at=datetime.now(timezone.utc),
-                    published_at=None,
-                    effective_date=None,
-                    status=DataStatus.UNAVAILABLE,
-                    raw=None,
-                    warnings=[f"Precious metals series {context.provider_symbol} is disabled in registry."],
-                    canonical_instrument_id=context.canonical_instrument_id,
-                    provider_symbol=context.provider_symbol,
-                )
+            if pm_def:
+                is_pm = True
+                if pm_def.verification_status != SeriesVerificationStatus.VERIFIED or not pm_def.is_active:
+                    return ProviderResponse(
+                        provider_name=self.provider_name,
+                        source_quality=self.source_quality,
+                        retrieved_at=datetime.now(timezone.utc),
+                        published_at=None,
+                        effective_date=None,
+                        status=DataStatus.UNAVAILABLE,
+                        raw=None,
+                        warnings=[f"Precious metals series '{context.provider_symbol}' is unverified or disabled in registry."],
+                        canonical_instrument_id=context.canonical_instrument_id,
+                        provider_symbol=context.provider_symbol,
+                    )
+                series_code = pm_def.series_code
 
         if not series_code:
             return ProviderResponse(
@@ -255,7 +271,7 @@ class TCMBEVDSProvider(DataProviderContract):
                 provider_symbol=context.provider_symbol,
             )
 
-        normalized = self.normalize(payload)
+        normalized = self.normalize(payload, is_precious_metal=is_pm)
         is_multi = "-" in series_code
 
         if is_multi:
@@ -281,9 +297,10 @@ class TCMBEVDSProvider(DataProviderContract):
             provider_symbol=context.provider_symbol,
         )
 
-    def normalize(self, raw: Any) -> Dict[str, Any]:
+    def normalize(self, raw: Any, is_precious_metal: bool = False) -> Dict[str, Any]:
         """
-        Normalizes raw EVDS payload to canonical macro fields.
+        Normalizes raw EVDS payload to canonical macro or precious metal fields.
+        For precious metals, parses values as exact Decimal (no float conversion).
         Differentiates single-series (returns 'value') vs multi-series (returns 'values' dict).
         """
         if not isinstance(raw, dict):
@@ -300,10 +317,13 @@ class TCMBEVDSProvider(DataProviderContract):
         }
 
         # Extract series fields
-        series_fields: Dict[str, Optional[float]] = {}
+        series_fields: Dict[str, Any] = {}
         for k, v in latest_item.items():
             if k not in ("Tarih", "UNIXTIME"):
-                parsed = self._parse_decimal(v)
+                if is_precious_metal:
+                    parsed = self._parse_exact_decimal(v)
+                else:
+                    parsed = self._parse_decimal(v)
                 series_fields[k] = parsed
 
         if len(series_fields) == 1:
@@ -372,6 +392,18 @@ class TCMBEVDSProvider(DataProviderContract):
             # 0 and 0.0 are valid observations
             return float(cleaned.replace(",", "."))
         except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _parse_exact_decimal(val_str: Any) -> Optional[Decimal]:
+        if val_str is None:
+            return None
+        cleaned = str(val_str).strip()
+        if cleaned in ("", "-", "null", "None"):
+            return None
+        try:
+            return Decimal(cleaned.replace(",", "."))
+        except (InvalidOperation, ValueError, TypeError):
             return None
 
     @staticmethod

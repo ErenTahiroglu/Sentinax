@@ -29,6 +29,7 @@ from backend.engine.private.precious_metals.models import (
     PreciousMetalObservationStatus,
     PreciousMetalSeriesDefinition,
     PreciousMetalSnapshot,
+    SeriesVerificationStatus,
 )
 from backend.engine.private.precious_metals.parser import (
     BISTKMTPBulletinParser,

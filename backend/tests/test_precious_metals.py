@@ -377,17 +377,23 @@ class TestBISTKMTPParser:
         assert silver_usd.quantity_unit == PreciousMetalUnit.TROY_OZ
 
     def test_07_purity_preserved_from_series(self):
-        """Scenario 7: Purity (Ayar) preserved as exact Decimal."""
+        """Scenario 7: Purity (Ayar) preserved with raw representation, scale, and canonical fineness."""
         xlsx_bytes = build_mock_kmtp_xlsx()
         observations = BISTKMTPBulletinParser.parse_xlsx_bytes(xlsx_bytes, trade_date=date(2024, 10, 1))
 
         gold_series = [o for o in observations if o.raw_symbol and "AU_TL" in o.raw_symbol]
         assert len(gold_series) >= 1
-        assert gold_series[0].purity == Decimal("995")
+        assert gold_series[0].raw_purity_value == Decimal("995")
+        assert gold_series[0].raw_purity_text == "995"
+        assert gold_series[0].purity_scale == "PER_MILLE"
+        assert gold_series[0].fineness_per_mille == Decimal("995")
 
         silver_series = [o for o in observations if o.raw_symbol and "AG_TL" in o.raw_symbol]
         assert len(silver_series) >= 1
-        assert silver_series[0].purity == Decimal("99.9")
+        assert silver_series[0].raw_purity_value == Decimal("99.9")
+        assert silver_series[0].raw_purity_text == "99.9"
+        assert silver_series[0].purity_scale == "PERCENT"
+        assert silver_series[0].fineness_per_mille == Decimal("999.0")
 
     def test_08_zero_float_conversion_rejected(self):
         """Scenario 8: Float input to parse_kmtp_decimal strictly raises TypeError."""
@@ -445,6 +451,52 @@ class TestBISTKMTPParser:
         assert len(observations) == 4  # 2 AOF + 2 Close
         assert all(o.status == PreciousMetalObservationStatus.CONFLICT_QUARANTINED for o in observations)
 
+    def test_11b_historical_date_from_kmp_filename(self):
+        """Scenario 11b: Date parsed from KMPYYYYMMDD.zip when trade_date is None (never system today)."""
+        xlsx_bytes = build_mock_kmtp_xlsx()
+        observations = BISTKMTPBulletinParser.parse_xlsx_bytes(
+            xlsx_bytes=xlsx_bytes,
+            filename="KMP20241001.zip",
+            trade_date=None,
+        )
+        assert len(observations) > 0
+        for obs in observations:
+            assert obs.effective_date == date(2024, 10, 1)
+
+    def test_11c_date_mismatch_fails_closed(self):
+        """Scenario 11c: Mismatch between requested trade_date and filename date fails closed."""
+        xlsx_bytes = build_mock_kmtp_xlsx()
+        with pytest.raises(BISTKMTPSchemaDriftError, match="does not match verified filename date"):
+            BISTKMTPBulletinParser.parse_xlsx_bytes(
+                xlsx_bytes=xlsx_bytes,
+                filename="KMP20241001.zip",
+                trade_date=date(2024, 10, 2),
+            )
+
+    def test_11d_no_date_fails_closed(self):
+        """Scenario 11d: Missing both trade_date and filename date fails closed (no fallback to today)."""
+        xlsx_bytes = build_mock_kmtp_xlsx()
+        with pytest.raises(BISTKMTPSchemaDriftError, match="MISSING_EFFECTIVE_DATE"):
+            BISTKMTPBulletinParser.parse_xlsx_bytes(
+                xlsx_bytes=xlsx_bytes,
+                filename="unrelated_file.xlsx",
+                trade_date=None,
+            )
+
+    def test_11e_summary_benchmarks_have_none_purity_and_settlement(self):
+        """Scenario 11e: Summary benchmarks from 'Fiyatlar' sheet have purity=None and settlement_term=None."""
+        xlsx_bytes = build_mock_kmtp_xlsx()
+        observations = BISTKMTPBulletinParser.parse_xlsx_bytes(xlsx_bytes, trade_date=date(2024, 10, 1))
+
+        benchmarks = [o for o in observations if o.price_type in (PreciousMetalPriceType.REFERENCE, PreciousMetalPriceType.METAL_PRICE)]
+        assert len(benchmarks) > 0
+        for b in benchmarks:
+            assert b.purity is None
+            assert b.raw_purity_value is None
+            assert b.purity_scale is None
+            assert b.fineness_per_mille is None
+            assert b.settlement_term is None
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Provider Fetch, PIT & Error Handling Tests
@@ -454,7 +506,7 @@ class TestBISTKMTPProvider:
 
     @pytest.mark.asyncio
     async def test_12_fetch_daily_bulletin_success(self):
-        """Scenario 12: Provider fetches manifest and bulletin, creating valid snapshot."""
+        """Scenario 12: Successful discovery, download, and parsing of daily KMTP bulletin."""
         mock_manifest_zip = build_mock_data_file_paths_zip({
             "Kıymetli Madenler Piyasası Günlük Bülten": ("/data/kmpbltn/YYYY/AA/", "KMPYYYYAAGG.zip")
         })
@@ -472,30 +524,38 @@ class TestBISTKMTPProvider:
         mock_client.get = AsyncMock(side_effect=mock_get)
 
         provider = BISTKMTPProvider(http_client=mock_client)
-        snapshot, observations = await provider.fetch_daily_bulletin(trade_date=date(2024, 10, 1))
+        ctx = FetchContext(
+            observation_type="PRECIOUS_METAL_MARKET_REFERENCE",
+            effective_date=date(2024, 10, 1),
+        )
+        response = await provider.fetch(ctx)
 
-        assert snapshot.http_status == 200
-        assert snapshot.file_name == "KMP20241001.zip"
-        assert len(observations) > 0
-        assert snapshot.retrieved_at is not None
-        assert snapshot.trade_date == date(2024, 10, 1)
+        assert response.status == DataStatus.COMPLETE
+        assert response.provider_name == "BIST_KMTP"
+        assert response.effective_date == date(2024, 10, 1)
+        assert len(response.raw) > 0
 
     @pytest.mark.asyncio
     async def test_13_weekend_non_trading_day_no_network(self):
-        """Scenario 13: Weekend returns NON_TRADING_DAY with 0 network calls."""
+        """Scenario 13: Requesting a weekend date immediately returns UNAVAILABLE with 0 network calls."""
         mock_client = MagicMock(spec=httpx.AsyncClient)
-        provider = BISTKMTPProvider(http_client=mock_client)
+        mock_client.get = AsyncMock()
 
-        # 2024-10-05 is Saturday
-        snapshot, observations = await provider.fetch_daily_bulletin(trade_date=date(2024, 10, 5))
-        assert snapshot.http_status == 200
-        assert len(observations) == 0
-        assert any("NON_TRADING_DAY" in d for d in snapshot.diagnostics)
+        provider = BISTKMTPProvider(http_client=mock_client)
+        # 2024-10-06 is Sunday
+        ctx = FetchContext(
+            observation_type="PRECIOUS_METAL_MARKET_REFERENCE",
+            effective_date=date(2024, 10, 6),
+        )
+        response = await provider.fetch(ctx)
+
+        assert response.status == DataStatus.UNAVAILABLE
+        assert any("Weekend" in w for w in response.warnings)
         mock_client.get.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_14_fetch_single_metal_via_context(self):
-        """Scenario 14: fetch(context) returns exact observation for requested metal."""
+        """Scenario 14: Requesting a specific registered provider_symbol filters observations."""
         mock_manifest_zip = build_mock_data_file_paths_zip({
             "Kıymetli Madenler Piyasası Günlük Bülten": ("/data/kmpbltn/YYYY/AA/", "KMPYYYYAAGG.zip")
         })
@@ -532,52 +592,96 @@ class TestBISTKMTPProvider:
 
 class TestTCMBEVDSPreciousMetals:
 
-    def test_15_exact_verified_gold_series_codes_registered(self):
-        """Scenario 15: Exact verified EVDS Gold series codes registered in registry."""
-        gold_usd = PreciousMetalSeriesRegistry.get("TP.MK.G.ALTIN.USD")
-        assert gold_usd is not None
-        assert gold_usd.metal == PreciousMetalType.GOLD
-        assert gold_usd.currency == Currency.USD
-        assert gold_usd.quantity_unit == PreciousMetalUnit.TROY_OZ
-        assert gold_usd.price_type == PreciousMetalPriceType.WEIGHTED_AVERAGE
-        assert gold_usd.provider == "TCMB_EVDS"
-        assert gold_usd.originating_source == "BIST"
-        assert gold_usd.purity == Decimal("995.0")
+    def test_15_unverified_evds_series_are_disabled_and_unverified(self):
+        """Scenario 15: Unverified EVDS precious-metals series definitions are marked UNVERIFIED and is_active=False."""
+        from backend.engine.private.precious_metals.models import SeriesVerificationStatus
 
-        gold_try = PreciousMetalSeriesRegistry.get("TP.MK.G.ALTIN.TRY")
-        assert gold_try is not None
-        assert gold_try.metal == PreciousMetalType.GOLD
-        assert gold_try.currency == Currency.TRY
-        assert gold_try.quantity_unit == PreciousMetalUnit.KG
-
-    def test_16_exact_verified_silver_series_code_registered(self):
-        """Scenario 16: Exact verified EVDS Silver series code registered in registry."""
-        silver_usd = PreciousMetalSeriesRegistry.get("TP.MK.G.GUMUS.USD")
-        assert silver_usd is not None
-        assert silver_usd.metal == PreciousMetalType.SILVER
-        assert silver_usd.currency == Currency.USD
-        assert silver_usd.quantity_unit == PreciousMetalUnit.TROY_OZ
-        assert silver_usd.provider == "TCMB_EVDS"
-        assert silver_usd.originating_source == "BIST"
+        for code in ("TP.MK.G.ALTIN.USD", "TP.MK.G.ALTIN.TRY", "TP.MK.G.GUMUS.USD"):
+            defn = PreciousMetalSeriesRegistry.get(code)
+            assert defn is not None
+            assert defn.verification_status == SeriesVerificationStatus.UNVERIFIED
+            assert defn.is_active is False
+            assert PreciousMetalSeriesRegistry.is_verified(code) is False
+            assert PreciousMetalSeriesRegistry.get_verified(code) is None
 
     @pytest.mark.asyncio
-    async def test_17_evds_provider_provenance_contains_bist_originating_source(self):
-        """Scenario 17: EVDS Provider sets originating_source=BIST for precious metal series."""
-        provider = TCMBEVDSProvider(api_key="test_key")
-        resp = ProviderResponse(
-            provider_name="TCMB_EVDS",
-            source_quality=SourceTier.TIER_1_REGULATORY,
-            retrieved_at=datetime.now(timezone.utc),
-            published_at=None,
-            effective_date=date(2024, 10, 1),
-            status=DataStatus.COMPLETE,
-            raw={"value": 4615.96},
+    async def test_16_tcmb_evds_provider_refuses_unverified_precious_metals_no_network(self):
+        """Scenario 16: TCMBEVDSProvider refuses unverified precious-metals series with 0 HTTP calls."""
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock()
+
+        provider = TCMBEVDSProvider(api_key="test_key", http_client=mock_client)
+        ctx = FetchContext(
+            observation_type="PRECIOUS_METAL_MARKET_REFERENCE",
             provider_symbol="TP.MK.G.ALTIN.USD",
+            effective_date=date(2024, 10, 1),
         )
-        prov = provider.provenance(resp)
-        assert prov.metadata.get("originating_source") == "BIST"
-        assert prov.metadata.get("metal") == "GOLD"
-        assert prov.metadata.get("currency") == "USD"
+        res = await provider.fetch(ctx)
+
+        assert res.status == DataStatus.UNAVAILABLE
+        assert any("unverified or disabled" in w for w in res.warnings)
+        mock_client.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_17_verified_evds_precious_metal_exact_decimal_normalization(self):
+        """Scenario 17: A verified EVDS precious-metal series parses price as exact Decimal (zero float)."""
+        from backend.engine.private.precious_metals.models import SeriesVerificationStatus
+
+        # Register a verified test-only definition
+        test_defn = PreciousMetalSeriesDefinition(
+            series_code="TP.MK.G.TEST_GOLD.USD",
+            canonical_name="Test Verified Gold Series",
+            metal=PreciousMetalType.GOLD,
+            provider="TCMB_EVDS",
+            originating_source="BIST",
+            frequency="DAILY",
+            value_unit="USD/ONS",
+            currency=Currency.USD,
+            quantity_unit=PreciousMetalUnit.TROY_OZ,
+            price_type=PreciousMetalPriceType.WEIGHTED_AVERAGE,
+            verification_status=SeriesVerificationStatus.VERIFIED,
+            is_active=True,
+        )
+        PreciousMetalSeriesRegistry.register(test_defn)
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_resp = httpx.Response(
+            status_code=200,
+            json={
+                "items": [
+                    {
+                        "Tarih": "01-10-2024",
+                        "UNIXTIME": "1727740800",
+                        "TP_MK_G_TEST_GOLD_USD": "4615.960000",
+                    }
+                ]
+            },
+        )
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        provider = TCMBEVDSProvider(api_key="test_key", http_client=mock_client)
+        ctx = FetchContext(
+            observation_type="PRECIOUS_METAL_MARKET_REFERENCE",
+            provider_symbol="TP.MK.G.TEST_GOLD.USD",
+            effective_date=date(2024, 10, 1),
+        )
+        res = await provider.fetch(ctx)
+
+        assert res.status == DataStatus.COMPLETE
+        # Normalize directly for precious metal series returns exact Decimal
+        norm = provider.normalize(mock_resp.json(), is_precious_metal=True)
+        assert isinstance(norm["value"], Decimal)
+        assert norm["value"] == Decimal("4615.960000")
+
+        # Zero is valid Decimal("0")
+        zero_payload = {"items": [{"Tarih": "01-10-2024", "VAL": "0"}]}
+        norm_zero = provider.normalize(zero_payload, is_precious_metal=True)
+        assert norm_zero["value"] == Decimal("0")
+
+        # Malformed becomes None
+        bad_payload = {"items": [{"Tarih": "01-10-2024", "VAL": "BAD"}]}
+        norm_bad = provider.normalize(bad_payload, is_precious_metal=True)
+        assert norm_bad["value"] is None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -597,7 +701,9 @@ class TestPreciousMetalCrossSourceComparator:
             price_currency=Currency.USD,
             quantity_unit=PreciousMetalUnit.TROY_OZ,
             price_type=PreciousMetalPriceType.WEIGHTED_AVERAGE,
-            purity=Decimal("995.0"),
+            raw_purity_value=Decimal("995.0"),
+            purity_scale="PER_MILLE",
+            fineness_per_mille=Decimal("995.0"),
             settlement_term="T+0",
             provider="BIST_KMTP",
         )
@@ -609,7 +715,9 @@ class TestPreciousMetalCrossSourceComparator:
             price_currency=Currency.USD,
             quantity_unit=PreciousMetalUnit.TROY_OZ,
             price_type=PreciousMetalPriceType.WEIGHTED_AVERAGE,
-            purity=Decimal("995.0"),
+            raw_purity_value=Decimal("995.0"),
+            purity_scale="PER_MILLE",
+            fineness_per_mille=Decimal("995.0"),
             settlement_term="T+0",
             provider="TCMB_EVDS",
         )
@@ -630,7 +738,9 @@ class TestPreciousMetalCrossSourceComparator:
             price_currency=Currency.USD,
             quantity_unit=PreciousMetalUnit.TROY_OZ,
             price_type=PreciousMetalPriceType.WEIGHTED_AVERAGE,
-            purity=Decimal("995.0"),
+            raw_purity_value=Decimal("995.0"),
+            purity_scale="PER_MILLE",
+            fineness_per_mille=Decimal("995.0"),
             settlement_term="T+0",
         )
         obs_b = PreciousMetalMarketObservation(
@@ -641,7 +751,9 @@ class TestPreciousMetalCrossSourceComparator:
             price_currency=Currency.USD,
             quantity_unit=PreciousMetalUnit.TROY_OZ,
             price_type=PreciousMetalPriceType.WEIGHTED_AVERAGE,
-            purity=Decimal("995.0"),
+            raw_purity_value=Decimal("995.0"),
+            purity_scale="PER_MILLE",
+            fineness_per_mille=Decimal("995.0"),
             settlement_term="T+0",
         )
 
@@ -704,8 +816,8 @@ class TestPreciousMetalCrossSourceComparator:
         assert res.is_comparable is False
         assert any("UNIT_MISMATCH" in r for r in res.reasons)
 
-    def test_22_different_purity_is_not_comparable(self):
-        """Scenario 22: Differing purity (995 vs 99.90) => NOT_COMPARABLE."""
+    def test_22_different_purity_or_unknown_purity_is_not_comparable(self):
+        """Scenario 22: Differing or unknown purity => NOT_COMPARABLE."""
         t_date = date(2024, 10, 1)
         obs_995 = PreciousMetalMarketObservation(
             metal=PreciousMetalType.GOLD,
@@ -715,9 +827,11 @@ class TestPreciousMetalCrossSourceComparator:
             price_currency=Currency.USD,
             quantity_unit=PreciousMetalUnit.TROY_OZ,
             price_type=PreciousMetalPriceType.WEIGHTED_AVERAGE,
-            purity=Decimal("995.0"),
+            raw_purity_value=Decimal("995.0"),
+            purity_scale="PER_MILLE",
+            fineness_per_mille=Decimal("995.0"),
         )
-        obs_999 = PreciousMetalMarketObservation(
+        obs_none = PreciousMetalMarketObservation(
             metal=PreciousMetalType.GOLD,
             market=PreciousMetalMarket.TCMB_EVDS,
             effective_date=t_date,
@@ -725,17 +839,19 @@ class TestPreciousMetalCrossSourceComparator:
             price_currency=Currency.USD,
             quantity_unit=PreciousMetalUnit.TROY_OZ,
             price_type=PreciousMetalPriceType.WEIGHTED_AVERAGE,
-            purity=Decimal("999.0"),
+            raw_purity_value=None,
+            purity_scale=None,
+            fineness_per_mille=None,
         )
 
-        res = PreciousMetalCrossSourceComparator.compare(obs_995, obs_999)
+        res = PreciousMetalCrossSourceComparator.compare(obs_995, obs_none)
         assert res.status == ComparabilityStatus.NOT_COMPARABLE
-        assert any("PURITY_MISMATCH" in r for r in res.reasons)
+        assert any("PURITY" in r for r in res.reasons)
 
-    def test_23_different_price_type_is_not_comparable(self):
-        """Scenario 23: Differing price type (REFERENCE vs WEIGHTED_AVERAGE) => NOT_COMPARABLE."""
+    def test_23_different_settlement_or_unknown_settlement_is_not_comparable(self):
+        """Scenario 23: Differing settlement term (None vs T+0) => NOT_COMPARABLE."""
         t_date = date(2024, 10, 1)
-        obs_ref = PreciousMetalMarketObservation(
+        obs_none = PreciousMetalMarketObservation(
             metal=PreciousMetalType.GOLD,
             market=PreciousMetalMarket.BIST_KMTP,
             effective_date=t_date,
@@ -743,23 +859,27 @@ class TestPreciousMetalCrossSourceComparator:
             price_currency=Currency.TRY,
             quantity_unit=PreciousMetalUnit.KG,
             price_type=PreciousMetalPriceType.REFERENCE,
+            settlement_term=None,
         )
-        obs_wap = PreciousMetalMarketObservation(
+        obs_t0 = PreciousMetalMarketObservation(
             metal=PreciousMetalType.GOLD,
             market=PreciousMetalMarket.BIST_KMTP,
             effective_date=t_date,
-            price=Decimal("7140695.59"),
+            price=Decimal("7135618.04"),
             price_currency=Currency.TRY,
             quantity_unit=PreciousMetalUnit.KG,
-            price_type=PreciousMetalPriceType.WEIGHTED_AVERAGE,
+            price_type=PreciousMetalPriceType.REFERENCE,
+            settlement_term="T+0",
         )
 
-        res = PreciousMetalCrossSourceComparator.compare(obs_ref, obs_wap)
+        res = PreciousMetalCrossSourceComparator.compare(obs_none, obs_t0)
         assert res.status == ComparabilityStatus.NOT_COMPARABLE
-        assert any("PRICE_TYPE_MISMATCH" in r for r in res.reasons)
+        assert any("SETTLEMENT_MISMATCH" in r for r in res.reasons)
 
-    def test_24_serialization_to_generic_pit_records(self):
-        """Scenario 24: Precious metals models cleanly serialize to Generic PIT storage records."""
+    def test_24_serialization_to_generic_pit_records_preserves_lineage(self):
+        """Scenario 24: Precious metals models preserve snapshot lineage without generating fake UUIDs."""
+        # 1. Observation with explicit snapshot_id
+        snap_id = uuid4()
         obs = PreciousMetalMarketObservation(
             metal=PreciousMetalType.GOLD,
             market=PreciousMetalMarket.BIST_KMTP,
@@ -768,10 +888,12 @@ class TestPreciousMetalCrossSourceComparator:
             price_currency=Currency.TRY,
             quantity_unit=PreciousMetalUnit.KG,
             price_type=PreciousMetalPriceType.REFERENCE,
-            purity=Decimal("995.0"),
+            raw_purity_value=None,
             raw_symbol="BIST_KMTP_GOLD_REF_TRY_KG",
+            snapshot_id=snap_id,
         )
         norm_rec = obs.to_normalized_observation_record()
+        assert norm_rec.snapshot_id == snap_id
         assert norm_rec.observation_type == "PRECIOUS_METAL_MARKET_REFERENCE"
         assert norm_rec.asset_class == AssetClass.COMMODITY
         assert norm_rec.instrument_type == InstrumentType.GOLD
@@ -779,6 +901,21 @@ class TestPreciousMetalCrossSourceComparator:
         assert norm_rec.observation_data["value"] == "7135618.04"
         assert norm_rec.currency == Currency.TRY
 
+        # 2. Observation without snapshot_id preserves None (no fabricated UUID)
+        obs_no_snap = PreciousMetalMarketObservation(
+            metal=PreciousMetalType.GOLD,
+            market=PreciousMetalMarket.BIST_KMTP,
+            effective_date=date(2024, 10, 1),
+            price=Decimal("7135618.04"),
+            price_currency=Currency.TRY,
+            quantity_unit=PreciousMetalUnit.KG,
+            price_type=PreciousMetalPriceType.REFERENCE,
+            snapshot_id=None,
+        )
+        norm_rec_2 = obs_no_snap.to_normalized_observation_record()
+        assert norm_rec_2.snapshot_id is None
+
+        # 3. Snapshot record conversion
         snap = PreciousMetalSnapshot(
             trade_date=date(2024, 10, 1),
             retrieved_at=datetime(2024, 10, 1, 18, 0, tzinfo=timezone.utc),

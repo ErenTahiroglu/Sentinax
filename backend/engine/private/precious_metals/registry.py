@@ -18,11 +18,13 @@ from backend.engine.private.precious_metals.constants import (
 )
 from backend.engine.private.precious_metals.models import (
     PreciousMetalSeriesDefinition,
+    SeriesVerificationStatus,
 )
 
 _PREDEFINED_SERIES: List[PreciousMetalSeriesDefinition] = [
     # ─────────────────────────────────────────────────────────────────────────
     # Borsa İstanbul KMTP Benchmark References (Originating Exchange Source)
+    # Summary benchmarks from 'Fiyatlar' do not define explicit purity/settlement; purity=None, settlement=None
     # ─────────────────────────────────────────────────────────────────────────
     PreciousMetalSeriesDefinition(
         series_code="BIST_KMTP_GOLD_REF_TRY_KG",
@@ -35,8 +37,9 @@ _PREDEFINED_SERIES: List[PreciousMetalSeriesDefinition] = [
         currency=Currency.TRY,
         quantity_unit=PreciousMetalUnit.KG,
         price_type=PreciousMetalPriceType.REFERENCE,
-        purity=Decimal("995.0"),
-        settlement_term="T+0",
+        purity=None,
+        settlement_term=None,
+        verification_status=SeriesVerificationStatus.VERIFIED,
         notes="BIST KMTP daily official standard gold reference benchmark price in TRY per KG.",
         is_active=True,
         verified_at=date(2026, 8, 27),
@@ -53,8 +56,9 @@ _PREDEFINED_SERIES: List[PreciousMetalSeriesDefinition] = [
         currency=Currency.TRY,
         quantity_unit=PreciousMetalUnit.KG,
         price_type=PreciousMetalPriceType.METAL_PRICE,
-        purity=Decimal("995.0"),
-        settlement_term="T+0",
+        purity=None,
+        settlement_term=None,
+        verification_status=SeriesVerificationStatus.VERIFIED,
         notes="BIST KMTP daily gold metal price benchmark in TRY per KG.",
         is_active=True,
         verified_at=date(2026, 8, 27),
@@ -71,8 +75,9 @@ _PREDEFINED_SERIES: List[PreciousMetalSeriesDefinition] = [
         currency=Currency.USD,
         quantity_unit=PreciousMetalUnit.TROY_OZ,
         price_type=PreciousMetalPriceType.METAL_PRICE,
-        purity=Decimal("995.0"),
-        settlement_term="T+0",
+        purity=None,
+        settlement_term=None,
+        verification_status=SeriesVerificationStatus.VERIFIED,
         notes="BIST KMTP daily gold metal price benchmark in USD per Troy Ounce.",
         is_active=True,
         verified_at=date(2026, 8, 27),
@@ -89,8 +94,9 @@ _PREDEFINED_SERIES: List[PreciousMetalSeriesDefinition] = [
         currency=Currency.EUR,
         quantity_unit=PreciousMetalUnit.TROY_OZ,
         price_type=PreciousMetalPriceType.METAL_PRICE,
-        purity=Decimal("995.0"),
-        settlement_term="T+0",
+        purity=None,
+        settlement_term=None,
+        verification_status=SeriesVerificationStatus.VERIFIED,
         notes="BIST KMTP daily gold metal price benchmark in EUR per Troy Ounce.",
         is_active=True,
         verified_at=date(2026, 8, 27),
@@ -107,8 +113,9 @@ _PREDEFINED_SERIES: List[PreciousMetalSeriesDefinition] = [
         currency=Currency.USD,
         quantity_unit=PreciousMetalUnit.TROY_OZ,
         price_type=PreciousMetalPriceType.WEIGHTED_AVERAGE,
-        purity=Decimal("995.0"),
-        settlement_term="T+0",
+        purity=None,
+        settlement_term=None,
+        verification_status=SeriesVerificationStatus.VERIFIED,
         notes="BIST KMTP daily volume-weighted average price (AOF) for standard gold in USD per Troy Ounce.",
         is_active=True,
         verified_at=date(2026, 8, 27),
@@ -125,8 +132,9 @@ _PREDEFINED_SERIES: List[PreciousMetalSeriesDefinition] = [
         currency=Currency.TRY,
         quantity_unit=PreciousMetalUnit.KG,
         price_type=PreciousMetalPriceType.WEIGHTED_AVERAGE,
-        purity=Decimal("995.0"),
-        settlement_term="T+0",
+        purity=None,
+        settlement_term=None,
+        verification_status=SeriesVerificationStatus.VERIFIED,
         notes="BIST KMTP daily volume-weighted average price (AOF) for standard gold in TRY per KG.",
         is_active=True,
         verified_at=date(2026, 8, 27),
@@ -144,8 +152,9 @@ _PREDEFINED_SERIES: List[PreciousMetalSeriesDefinition] = [
         currency=Currency.TRY,
         quantity_unit=PreciousMetalUnit.KG,
         price_type=PreciousMetalPriceType.REFERENCE,
-        purity=Decimal("99.90"),
-        settlement_term="T+0",
+        purity=None,
+        settlement_term=None,
+        verification_status=SeriesVerificationStatus.VERIFIED,
         notes="BIST KMTP daily official standard silver reference benchmark price in TRY per KG.",
         is_active=True,
         verified_at=date(2026, 8, 27),
@@ -162,8 +171,9 @@ _PREDEFINED_SERIES: List[PreciousMetalSeriesDefinition] = [
         currency=Currency.TRY,
         quantity_unit=PreciousMetalUnit.KG,
         price_type=PreciousMetalPriceType.METAL_PRICE,
-        purity=Decimal("99.90"),
-        settlement_term="T+0",
+        purity=None,
+        settlement_term=None,
+        verification_status=SeriesVerificationStatus.VERIFIED,
         notes="BIST KMTP daily silver metal price benchmark in TRY per KG.",
         is_active=True,
         verified_at=date(2026, 8, 27),
@@ -180,8 +190,9 @@ _PREDEFINED_SERIES: List[PreciousMetalSeriesDefinition] = [
         currency=Currency.USD,
         quantity_unit=PreciousMetalUnit.TROY_OZ,
         price_type=PreciousMetalPriceType.METAL_PRICE,
-        purity=Decimal("99.90"),
-        settlement_term="T+0",
+        purity=None,
+        settlement_term=None,
+        verification_status=SeriesVerificationStatus.VERIFIED,
         notes="BIST KMTP daily silver metal price benchmark in USD per Troy Ounce.",
         is_active=True,
         verified_at=date(2026, 8, 27),
@@ -190,6 +201,7 @@ _PREDEFINED_SERIES: List[PreciousMetalSeriesDefinition] = [
 
     # ─────────────────────────────────────────────────────────────────────────
     # TCMB EVDS Dissemination Series (BIST-Originating Market Series)
+    # Marked UNVERIFIED & is_active=False pending authenticated official metadata verification
     # ─────────────────────────────────────────────────────────────────────────
     PreciousMetalSeriesDefinition(
         series_code="TP.MK.G.ALTIN.USD",
@@ -202,11 +214,13 @@ _PREDEFINED_SERIES: List[PreciousMetalSeriesDefinition] = [
         currency=Currency.USD,
         quantity_unit=PreciousMetalUnit.TROY_OZ,
         price_type=PreciousMetalPriceType.WEIGHTED_AVERAGE,
-        purity=Decimal("995.0"),
-        settlement_term="T+0",
-        notes="TCMB EVDS dissemination of BIST Gold Market Weighted Average Price in USD per Troy Ounce.",
-        is_active=True,
-        verified_at=date(2026, 8, 27),
+        purity=None,
+        settlement_term=None,
+        verification_status=SeriesVerificationStatus.UNVERIFIED,
+        verification_notes="EVDS precious-metal series unverified pending authenticated official TCMB metadata response.",
+        notes="TCMB EVDS dissemination candidate of BIST Gold Market Weighted Average Price in USD per Troy Ounce.",
+        is_active=False,
+        verified_at=None,
         source_catalog_url="https://evds3.tcmb.gov.tr/",
     ),
     PreciousMetalSeriesDefinition(
@@ -220,11 +234,13 @@ _PREDEFINED_SERIES: List[PreciousMetalSeriesDefinition] = [
         currency=Currency.TRY,
         quantity_unit=PreciousMetalUnit.KG,
         price_type=PreciousMetalPriceType.WEIGHTED_AVERAGE,
-        purity=Decimal("995.0"),
-        settlement_term="T+0",
-        notes="TCMB EVDS dissemination of BIST Gold Market Weighted Average Price in TRY per KG.",
-        is_active=True,
-        verified_at=date(2026, 8, 27),
+        purity=None,
+        settlement_term=None,
+        verification_status=SeriesVerificationStatus.UNVERIFIED,
+        verification_notes="EVDS precious-metal series unverified pending authenticated official TCMB metadata response.",
+        notes="TCMB EVDS dissemination candidate of BIST Gold Market Weighted Average Price in TRY per KG.",
+        is_active=False,
+        verified_at=None,
         source_catalog_url="https://evds3.tcmb.gov.tr/",
     ),
     PreciousMetalSeriesDefinition(
@@ -238,11 +254,13 @@ _PREDEFINED_SERIES: List[PreciousMetalSeriesDefinition] = [
         currency=Currency.USD,
         quantity_unit=PreciousMetalUnit.TROY_OZ,
         price_type=PreciousMetalPriceType.WEIGHTED_AVERAGE,
-        purity=Decimal("99.90"),
-        settlement_term="T+0",
-        notes="TCMB EVDS dissemination of BIST Silver Market Weighted Average Price in USD per Troy Ounce.",
-        is_active=True,
-        verified_at=date(2026, 8, 27),
+        purity=None,
+        settlement_term=None,
+        verification_status=SeriesVerificationStatus.UNVERIFIED,
+        verification_notes="EVDS precious-metal series unverified pending authenticated official TCMB metadata response.",
+        notes="TCMB EVDS dissemination candidate of BIST Silver Market Weighted Average Price in USD per Troy Ounce.",
+        is_active=False,
+        verified_at=None,
         source_catalog_url="https://evds3.tcmb.gov.tr/",
     ),
 ]
@@ -263,9 +281,21 @@ class PreciousMetalSeriesRegistry:
         return cls._registry.get(series_code)
 
     @classmethod
+    def get_verified(cls, series_code: str) -> Optional[PreciousMetalSeriesDefinition]:
+        defn = cls._registry.get(series_code)
+        if defn and defn.verification_status == SeriesVerificationStatus.VERIFIED and defn.is_active:
+            return defn
+        return None
+
+    @classmethod
+    def is_verified(cls, series_code: str) -> bool:
+        return cls.get_verified(series_code) is not None
+
+    @classmethod
     def list_by_metal(cls, metal: PreciousMetalType) -> List[PreciousMetalSeriesDefinition]:
         return [s for s in cls._registry.values() if s.metal == metal and s.is_active]
 
     @classmethod
     def list_all(cls) -> List[PreciousMetalSeriesDefinition]:
         return list(cls._registry.values())
+

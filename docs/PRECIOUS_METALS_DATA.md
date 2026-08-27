@@ -44,28 +44,49 @@ The workbook `KMP_Bulten_BISTECH.xlsx` contains the following sheets:
 
 ---
 
-## 3. TCMB EVDS Dissemination Series
+## 3. TCMB EVDS Dissemination Series (Unverified Status)
 
-TCMB EVDS disseminates official BIST-originating precious metals market series under "Döviz Kurları ve Kıymetli Madenler":
+> [!IMPORTANT]
+> **EVDS Verification Status**: EVDS precious-metal series (`TP.MK.G.ALTIN.USD`, `TP.MK.G.ALTIN.TRY`, `TP.MK.G.GUMUS.USD`) are marked **`UNVERIFIED`** and **`is_active = False`**.
+> They are disabled in production runtime pending authenticated official metadata response verification from TCMB EVDS API. `TCMBEVDSProvider` refuses requests for unverified precious metal series and returns `DataStatus.UNAVAILABLE` without making unverified network requests.
 
-| Series Code | Canonical Name | Metal | Currency | Quantity Unit | Price Type | Purity | Originating Source |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `TP.MK.G.ALTIN.USD` | Altın Piyasası (BİST) AOF (USD/ONS) | GOLD | USD | TROY_OZ | WEIGHTED_AVERAGE | 995.0 | BIST |
-| `TP.MK.G.ALTIN.TRY` | Altın Piyasası (BİST) AOF (TRY/KG) | GOLD | TRY | KG | WEIGHTED_AVERAGE | 995.0 | BIST |
-| `TP.MK.G.GUMUS.USD` | Gümüş Piyasası (BİST) AOF (USD/ONS) | SILVER | USD | TROY_OZ | WEIGHTED_AVERAGE | 99.90 | BIST |
+Candidate definitions (subject to authenticated metadata proof):
+
+| Series Code | Canonical Name | Metal | Currency | Quantity Unit | Price Type | Verification Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `TP.MK.G.ALTIN.USD` | Altın Piyasası (BİST) AOF (USD/ONS) | GOLD | USD | TROY_OZ | WEIGHTED_AVERAGE | `UNVERIFIED` (Disabled) |
+| `TP.MK.G.ALTIN.TRY` | Altın Piyasası (BİST) AOF (TRY/KG) | GOLD | TRY | KG | WEIGHTED_AVERAGE | `UNVERIFIED` (Disabled) |
+| `TP.MK.G.GUMUS.USD` | Gümüş Piyasası (BİST) AOF (USD/ONS) | SILVER | USD | TROY_OZ | WEIGHTED_AVERAGE | `UNVERIFIED` (Disabled) |
 
 ---
 
-## 4. Cross-Source Semantic Comparability
+## 4. Purity, Settlement & PIT Semantics Hardening
+
+1. **Economic Date Resolution (Zero `date.today()` Fallback)**:
+   - Economic date MUST originate from either explicit `trade_date` or verified outer filename (`KMPYYYYAAGG.zip`).
+   - If both are supplied and mismatch, parser fails closed with `BISTKMTPSchemaDriftError`.
+   - If neither exists, parsing fails closed with `MISSING_EFFECTIVE_DATE`. System clock is never used.
+2. **Purity Representation & Scale**:
+   - Summary benchmarks (`Fiyatlar` sheet): Purity is `None` (summary benchmarks do not declare purity).
+   - Granular transaction series (`Seri İstatistikleri`): Raw purity text and value are preserved. Purity scale is classified as `"PER_MILLE"` (e.g. `995.0`) or `"PERCENT"` (e.g. `99.9%`), with `fineness_per_mille` calculated strictly where verified.
+3. **Settlement Term Semantics (No Default `T+0`)**:
+   - `settlement_term` is `None` (unknown) unless explicitly established by source data.
+   - `None` (unknown settlement) and `"T+0"` (explicit T+0 settlement) are strictly non-equivalent.
+4. **Snapshot Lineage**:
+   - `to_normalized_observation_record()` preserves `snapshot_id` from raw snapshot record. No synthetic UUIDs are generated during conversion.
+
+---
+
+## 5. Cross-Source Semantic Comparability
 
 To prevent invalid financial comparisons, `PreciousMetalCrossSourceComparator` enforces strict 8-dimensional equivalence:
 
 ```
-(metal, price_currency, quantity_unit, price_quantity, price_type, purity, settlement_term, effective_date)
+(metal, price_currency, quantity_unit, price_quantity, price_type, purity_semantics, settlement_term, effective_date)
 ```
 
 1. **`CONSISTENT`**: All 8 dimensions match AND `price_a == price_b`.
 2. **`DIVERGENT`**: All 8 dimensions match BUT `price_a != price_b`.
-3. **`NOT_COMPARABLE`**: Any dimension differs (e.g. `TRY/KG` vs `USD/OZ`, `995` vs `999.9`, `REFERENCE` vs `WEIGHTED_AVERAGE`, or `T+0` vs `T+1`).
+3. **`NOT_COMPARABLE`**: Any dimension differs (e.g. `TRY/KG` vs `USD/OZ`, `995‰` vs `None`, `REFERENCE` vs `WEIGHTED_AVERAGE`, or `None` vs `T+0`).
 
 Cross-source comparison never fabricates an average or reconciles differing units silently.
