@@ -218,12 +218,27 @@ Phase 8B.2B implements deterministic, auditable, and fail-closed winner resoluti
 
 ### 11.2 Critical Invariants
 
-1. **Strict Snapshot Membership & Isolation**: Candidates from different CompanyFacts snapshots are NEVER mixed in a single winner pool. Older snapshot facts are never resurrected if removed in the latest snapshot.
-2. **Disclosure Chronology Hierarchy**: Timezone-aware UTC `acceptance_datetime` > SEC local naive `acceptance_local_datetime` > `filing_date` fallback. Accession lexicographical order, UUID, or database `created_at` are NEVER used as economic authority.
-3. **Acceptance Time != First Public Availability**: Acceptance timestamps reflect internal SEC ingestion events, not exact SEC.gov public availability.
-4. **Current View != Original Reported View**: `CURRENT_REPORTED` presents the most authoritative current restated figure (e.g. later comparative disclosure or amendment), not the original historical filing view.
-5. **Fail-Closed Semantic Quality Conflicts**: A later disclosure with lower semantic quality (e.g. `COMPATIBLE` alias) cannot overwrite an earlier `EXACT` fact with a different value (`SEMANTIC_SCOPE_CONFLICT`).
-6. **No Metric Calculation**: Phase 8B.2B strictly selects raw canonical facts. No YTD subtraction, no Q4 derivation, no TTM calculation, and no ratio arithmetic.
+### 11.3 Phase 8B.2B.5 — PIT Lineage, Acceptance Semantics & Snapshot Determinism Hardening
+
+1. **Dual Filing Identifier Consistency**:
+   - Candidates may identify their containing filing by `accession_number`, `filing_id`, or both.
+   - When both identifiers are present, **BOTH** must resolve against the supplied filings collection and both must resolve to the exact same filing (`accession_map` filing == `id_map` filing).
+   - Any collision, mismatch, or partial resolution fails closed (`NO_ELIGIBLE_CANDIDATE`).
+2. **Local Acceptance Semantics Hardening**:
+   - Naive local acceptance timestamps (`acceptance_local_datetime`) can only be compared chronologically if both filings share verified, trusted semantics (`acceptance_timezone_semantics == "SEC_EST_DOCUMENTED"`).
+   - If semantics is `None`, empty, or mismatched, local naive comparison is forbidden and the resolver falls back to `filing_date` (or `UNORDERABLE` if filing dates are identical).
+3. **Snapshot Temporal Lineage Boundary**:
+   - The evaluation snapshot's `retrieved_at` timestamp is the local system knowledge boundary for **BOTH** `CURRENT_REPORTED` and `SYSTEM_AS_OF`.
+   - Any candidate whose resolved filing has `filing_date > eval_snapshot.retrieved_at.date()` or `acceptance_datetime > eval_snapshot.retrieved_at` returns `INVALID_TEMPORAL_LINEAGE`.
+4. **Logical Duplicate Snapshot Equivalence**:
+   - If multiple valid snapshots exist at the latest `retrieved_at` boundary with identical `payload_hash`, they are treated as a single logical snapshot equivalence class.
+   - Candidates belonging to any snapshot ID in the equivalence class are eligible.
+   - Deterministic canonical representative selection (e.g. `min(..., key=lambda s: str(s.id))`) ensures identical results regardless of input snapshot list ordering (`[S1, S2]` vs `[S2, S1]`).
+   - If differing `payload_hash` values exist at the same boundary timestamp, resolution fails closed with `SNAPSHOT_CONFLICT`.
+5. **Cover-Date Defense-In-Depth**:
+   - Only `dei:EntityCommonStockSharesOutstanding` under canonical concept `SHARES_OUTSTANDING` is eligible for `COVER_DATE_CONTEXT`.
+   - Any other concept or taxonomy claiming `COVER_DATE_CONTEXT` is rejected.
+
 
 
 

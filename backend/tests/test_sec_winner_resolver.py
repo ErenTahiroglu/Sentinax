@@ -97,6 +97,7 @@ def _make_periodized_candidate(
     form: str = "10-K",
     match_strength: str = "EXACT",
     variant_priority: int = 10,
+    taxonomy: str = "us-gaap",
     source_concept: str = "RevenueFromContractWithCustomerExcludingAssessedTax",
     is_amendment: bool = False,
     is_comparative: bool = False,
@@ -129,7 +130,7 @@ def _make_periodized_candidate(
         diagnostics=[],
         value=value,
         unit=unit,
-        taxonomy="us-gaap",
+        taxonomy=taxonomy,
         source_concept=source_concept,
         match_strength=match_strength,
         variant_priority=variant_priority,
@@ -137,6 +138,7 @@ def _make_periodized_candidate(
         filed_date=end_date,
         frame=None,
     )
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -433,8 +435,8 @@ class TestSECDisclosureChronologyComparator:
         assert compare_filing_disclosure_order(f_late, f_early) == FilingDisclosureComparison.A_LATER
 
         # 37. Local naive acceptance timestamps
-        f_loc1 = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, acceptance_local_datetime=datetime(2024, 10, 1, 16, 0, 0))
-        f_loc2 = SECFilingRecord(cik="320193", accession_number="0002", form="10-K/A", is_amendment=True, acceptance_local_datetime=datetime(2024, 10, 1, 17, 0, 0))
+        f_loc1 = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, acceptance_local_datetime=datetime(2024, 10, 1, 16, 0, 0), acceptance_timezone_semantics="SEC_EST_DOCUMENTED")
+        f_loc2 = SECFilingRecord(cik="320193", accession_number="0002", form="10-K/A", is_amendment=True, acceptance_local_datetime=datetime(2024, 10, 1, 17, 0, 0), acceptance_timezone_semantics="SEC_EST_DOCUMENTED")
         assert compare_filing_disclosure_order(f_loc1, f_loc2) == FilingDisclosureComparison.B_LATER
 
         # 38. Different filing dates fallback
@@ -456,7 +458,7 @@ class TestSECSameFilingSemanticReconciliation:
 
     def test_43_to_47_same_filing_semantic_ranking(self):
         """Scenarios 43-47: EXACT vs COMPATIBLE, conflicting EXACT, corroborating duplicates."""
-        s = _make_snapshot()
+        s = _make_snapshot(retrieved_at=datetime(2024, 10, 1, 18, 0, 0, tzinfo=timezone.utc))
         f = SECFilingRecord(cik="320193", accession_number="0000320193-24-000106", form="10-K", is_amendment=False, filing_date=date(2024, 9, 28))
         group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2023-10-01", "2024-09-28")
 
@@ -488,7 +490,7 @@ class TestSECAmendmentPrecedence:
 
     def test_48_to_52_amendment_supersedes_original(self):
         """Scenarios 48-52: 10-K/A amendment overrides original 10-K when later."""
-        s = _make_snapshot()
+        s = _make_snapshot(retrieved_at=datetime(2024, 12, 1, 12, 0, 0, tzinfo=timezone.utc))
         f_orig = SECFilingRecord(cik="320193", accession_number="0000320193-24-000100", form="10-K", is_amendment=False, filing_date=date(2024, 10, 1), acceptance_datetime=datetime(2024, 10, 1, 16, 0, 0, tzinfo=timezone.utc))
         f_amend = SECFilingRecord(cik="320193", accession_number="0000320193-24-000105", form="10-K/A", is_amendment=True, filing_date=date(2024, 11, 1), acceptance_datetime=datetime(2024, 11, 1, 16, 0, 0, tzinfo=timezone.utc))
 
@@ -511,7 +513,7 @@ class TestSECComparativeRestatementPrecedence:
 
     def test_53_to_57_later_comparative_restatement_wins_in_current_reported(self):
         """Scenarios 53-57: 2024 10-K comparative restatement of 2023 figures wins over original 2023 10-K."""
-        s = _make_snapshot()
+        s = _make_snapshot(retrieved_at=datetime(2024, 10, 1, 18, 0, 0, tzinfo=timezone.utc))
         f_2023 = SECFilingRecord(cik="320193", accession_number="0000320193-23-000100", form="10-K", is_amendment=False, filing_date=date(2023, 10, 1), acceptance_datetime=datetime(2023, 10, 1, 16, 0, 0, tzinfo=timezone.utc))
         f_2024 = SECFilingRecord(cik="320193", accession_number="0000320193-24-000100", form="10-K", is_amendment=False, filing_date=date(2024, 10, 1), acceptance_datetime=datetime(2024, 10, 1, 16, 0, 0, tzinfo=timezone.utc))
 
@@ -534,7 +536,7 @@ class TestSECCrossFilingSemanticQualityPolicy:
 
     def test_58_to_62_semantic_quality_hierarchy(self):
         """Scenarios 58-62: Older EXACT vs later COMPATIBLE conflict policy."""
-        s = _make_snapshot()
+        s = _make_snapshot(retrieved_at=datetime(2024, 10, 1, 18, 0, 0, tzinfo=timezone.utc))
         f_old = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, filing_date=date(2023, 10, 1), acceptance_datetime=datetime(2023, 10, 1, 16, 0, 0, tzinfo=timezone.utc))
         f_new = SECFilingRecord(cik="320193", accession_number="0002", form="10-K", is_amendment=False, filing_date=date(2024, 10, 1), acceptance_datetime=datetime(2024, 10, 1, 16, 0, 0, tzinfo=timezone.utc))
 
@@ -556,6 +558,7 @@ class TestSECCrossFilingSemanticQualityPolicy:
         c_compat_110 = _make_periodized_candidate(snapshot_id=s.id, accession_number="0002", match_strength="COMPATIBLE", start_date=date(2022, 10, 1), end_date=date(2023, 9, 30), value=Decimal("110"))
         res_diff_val = SECWinnerResolver.resolve_winner(group_key, [c_exact_100, c_compat_110], [s], [f_old, f_new])
         assert res_diff_val.status == SECWinnerStatus.SEMANTIC_SCOPE_CONFLICT
+
 
 
 
@@ -655,3 +658,259 @@ class TestSECResultAuditability:
         assert d["status"] == "selected"
         assert d["evaluation_snapshot_hash"] == s.payload_hash
         assert d["selected_value"] == "100000.00"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 13. Dual Filing Identifiers Hardening (Phase 8B.2B.5 Scenarios 1-8)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSECDualFilingIdentifiersHardening:
+
+    def test_01_to_03_valid_identifier_patterns(self):
+        """Scenarios 1-3: Accession only, filing_id only, and both exact same filing are selected."""
+        s = _make_snapshot()
+        f_id = uuid4()
+        f = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, id=f_id, filing_date=date(2024, 9, 28))
+        group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2023-10-01", "2024-09-28")
+
+        # 1. Accession only
+        c_acc = _make_periodized_candidate(snapshot_id=s.id, accession_number="0001", filing_id=None)
+        assert SECWinnerResolver.resolve_winner(group_key, [c_acc], [s], [f]).status == SECWinnerStatus.SELECTED
+
+        # 2. Filing ID only
+        c_id = _make_periodized_candidate(snapshot_id=s.id, accession_number=None, filing_id=f_id)
+        assert SECWinnerResolver.resolve_winner(group_key, [c_id], [s], [f]).status == SECWinnerStatus.SELECTED
+
+        # 3. Both exact matching
+        c_both = _make_periodized_candidate(snapshot_id=s.id, accession_number="0001", filing_id=f_id)
+        assert SECWinnerResolver.resolve_winner(group_key, [c_both], [s], [f]).status == SECWinnerStatus.SELECTED
+
+    def test_04_to_06_mismatching_or_partially_unresolved_identifiers_fail_closed(self):
+        """Scenarios 4-6: Accession -> Filing A and filing_id -> Filing B or unresolvable identifier rejects candidate."""
+        s = _make_snapshot()
+        f_a_id = uuid4()
+        f_b_id = uuid4()
+        f_a = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, id=f_a_id, filing_date=date(2024, 9, 28))
+        f_b = SECFilingRecord(cik="320193", accession_number="0002", form="10-K", is_amendment=False, id=f_b_id, filing_date=date(2024, 9, 28))
+        group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2023-10-01", "2024-09-28")
+
+        # 4. Accession 0001 (Filing A) vs filing_id f_b_id (Filing B)
+        c_conflict = _make_periodized_candidate(snapshot_id=s.id, accession_number="0001", filing_id=f_b_id)
+        res_conf = SECWinnerResolver.resolve_winner(group_key, [c_conflict], [s], [f_a, f_b])
+        assert res_conf.status == SECWinnerStatus.NO_ELIGIBLE_CANDIDATE
+        assert any("resolve to different filings" in r["reason"] for r in res_conf.rejected_candidates)
+
+        # 5. Accession resolves to f_a, but filing_id is unknown UUID
+        c_unres_id = _make_periodized_candidate(snapshot_id=s.id, accession_number="0001", filing_id=uuid4())
+        res_unres_id = SECWinnerResolver.resolve_winner(group_key, [c_unres_id], [s], [f_a])
+        assert res_unres_id.status == SECWinnerStatus.NO_ELIGIBLE_CANDIDATE
+
+        # 6. Filing ID resolves to f_a, but accession is unknown string
+        c_unres_acc = _make_periodized_candidate(snapshot_id=s.id, accession_number="0099", filing_id=f_a_id)
+        res_unres_acc = SECWinnerResolver.resolve_winner(group_key, [c_unres_acc], [s], [f_a])
+        assert res_unres_acc.status == SECWinnerStatus.NO_ELIGIBLE_CANDIDATE
+
+    def test_07_and_08_duplicate_colliding_filings_fail_closed(self):
+        """Scenarios 7 & 8: Duplicate conflicting filings for same accession or id fail closed."""
+        s = _make_snapshot()
+        group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2023-10-01", "2024-09-28")
+
+        # 7. Same accession "0001" with different forms
+        f_dup1 = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, filing_date=date(2024, 9, 28))
+        f_dup2 = SECFilingRecord(cik="320193", accession_number="0001", form="8-K", is_amendment=False, filing_date=date(2024, 9, 28))
+
+        c = _make_periodized_candidate(snapshot_id=s.id, accession_number="0001", filing_id=None)
+        res = SECWinnerResolver.resolve_winner(group_key, [c], [s], [f_dup1, f_dup2])
+        assert res.status == SECWinnerStatus.NO_ELIGIBLE_CANDIDATE
+        assert any("Conflicting duplicate filings" in r["reason"] for r in res.rejected_candidates)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 14. Local Acceptance Semantics Hardening (Phase 8B.2B.5 Scenarios 9-14)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSECLocalAcceptanceSemanticsHardening:
+
+    def test_09_to_14_local_acceptance_semantics_rules(self):
+        """Scenarios 9-14: Local acceptance requires verified SEC_EST_DOCUMENTED semantics."""
+        # 9. Two local datetimes + both SEC_EST_DOCUMENTED -> Chronological compare allowed
+        f1 = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, acceptance_local_datetime=datetime(2024, 10, 1, 16, 0, 0), acceptance_timezone_semantics="SEC_EST_DOCUMENTED")
+        f2 = SECFilingRecord(cik="320193", accession_number="0002", form="10-K/A", is_amendment=True, acceptance_local_datetime=datetime(2024, 10, 1, 17, 0, 0), acceptance_timezone_semantics="SEC_EST_DOCUMENTED")
+        assert compare_filing_disclosure_order(f1, f2) == FilingDisclosureComparison.B_LATER
+
+        # 10. Both local datetimes + semantics None -> NOT direct compare
+        f1_none = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, acceptance_local_datetime=datetime(2024, 10, 1, 16, 0, 0), acceptance_timezone_semantics=None, filing_date=date(2024, 10, 1))
+        f2_none = SECFilingRecord(cik="320193", accession_number="0002", form="10-K/A", is_amendment=True, acceptance_local_datetime=datetime(2024, 10, 1, 17, 0, 0), acceptance_timezone_semantics=None, filing_date=date(2024, 10, 1))
+        assert compare_filing_disclosure_order(f1_none, f2_none) == FilingDisclosureComparison.UNORDERABLE
+
+        # 11. One SEC_EST_DOCUMENTED / one None -> no direct local ordering
+        f1_doc = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, acceptance_local_datetime=datetime(2024, 10, 1, 16, 0, 0), acceptance_timezone_semantics="SEC_EST_DOCUMENTED", filing_date=date(2024, 10, 1))
+        assert compare_filing_disclosure_order(f1_doc, f2_none) == FilingDisclosureComparison.UNORDERABLE
+
+        # 13. Uncomparable local semantics with different filing dates -> filing_date fallback
+        f1_diff_date = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, acceptance_local_datetime=datetime(2024, 10, 1, 16, 0, 0), acceptance_timezone_semantics=None, filing_date=date(2024, 1, 15))
+        f2_diff_date = SECFilingRecord(cik="320193", accession_number="0002", form="10-K/A", is_amendment=True, acceptance_local_datetime=datetime(2024, 10, 1, 17, 0, 0), acceptance_timezone_semantics=None, filing_date=date(2024, 2, 20))
+        assert compare_filing_disclosure_order(f1_diff_date, f2_diff_date) == FilingDisclosureComparison.B_LATER
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 15. Snapshot Temporal Lineage Hardening (Phase 8B.2B.5 Scenarios 15-19)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSECSnapshotTemporalLineageHardening:
+
+    def test_15_aware_acceptance_after_snapshot_in_current_reported_is_invalid_temporal(self):
+        """Scenario 15: Aware acceptance after snapshot retrieved_at in CURRENT_REPORTED -> INVALID_TEMPORAL_LINEAGE."""
+        s = _make_snapshot(retrieved_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc))
+        f_future_acc = SECFilingRecord(
+            cik="320193",
+            accession_number="0001",
+            form="10-K",
+            is_amendment=False,
+            filing_date=date(2024, 1, 1),
+            acceptance_datetime=datetime(2024, 1, 2, 12, 0, 0, tzinfo=timezone.utc),  # After snapshot!
+        )
+        c = _make_periodized_candidate(snapshot_id=s.id, accession_number="0001")
+        group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2023-10-01", "2024-09-28")
+
+        res = SECWinnerResolver.resolve_winner(group_key, [c], [s], [f_future_acc], mode=SECWinnerResolutionMode.CURRENT_REPORTED)
+        assert res.status == SECWinnerStatus.INVALID_TEMPORAL_LINEAGE
+
+    def test_16_aware_acceptance_after_snapshot_in_system_as_of_even_if_before_as_of(self):
+        """Scenario 16: Acceptance > snapshot retrieved_at is invalid even if acceptance < as_of."""
+        s = _make_snapshot(retrieved_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc))
+        f_future_acc = SECFilingRecord(
+            cik="320193",
+            accession_number="0001",
+            form="10-K",
+            is_amendment=False,
+            filing_date=date(2024, 1, 1),
+            acceptance_datetime=datetime(2024, 1, 2, 12, 0, 0, tzinfo=timezone.utc),
+        )
+        c = _make_periodized_candidate(snapshot_id=s.id, accession_number="0001")
+        group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2023-10-01", "2024-09-28")
+
+        # as_of is Jan 5 (after Jan 2 acceptance), but snapshot is Jan 1 -> INVALID_TEMPORAL_LINEAGE
+        res = SECWinnerResolver.resolve_winner(
+            group_key, [c], [s], [f_future_acc],
+            mode=SECWinnerResolutionMode.SYSTEM_AS_OF,
+            as_of=datetime(2024, 1, 5, 12, 0, 0, tzinfo=timezone.utc),
+        )
+        assert res.status == SECWinnerStatus.INVALID_TEMPORAL_LINEAGE
+
+    def test_17_filing_date_after_snapshot_retrieved_date_is_invalid_temporal(self):
+        """Scenario 17: Filing date after snapshot retrieved_at date -> INVALID_TEMPORAL_LINEAGE."""
+        s = _make_snapshot(retrieved_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc))
+        f_future_date = SECFilingRecord(
+            cik="320193",
+            accession_number="0001",
+            form="10-K",
+            is_amendment=False,
+            filing_date=date(2024, 1, 15),  # After Jan 1 snapshot
+        )
+        c = _make_periodized_candidate(snapshot_id=s.id, accession_number="0001")
+        group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2023-10-01", "2024-09-28")
+
+        res = SECWinnerResolver.resolve_winner(group_key, [c], [s], [f_future_date], mode=SECWinnerResolutionMode.CURRENT_REPORTED)
+        assert res.status == SECWinnerStatus.INVALID_TEMPORAL_LINEAGE
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 16. Logical Duplicate Snapshots Equivalence (Phase 8B.2B.5 Scenarios 20-24)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSECLogicalDuplicateSnapshotsHardening:
+
+    def test_20_to_23_logical_snapshot_equivalence_and_order_invariance(self):
+        """Scenarios 20-23: Snapshots with identical retrieved_at and payload_hash are treated as single logical state."""
+        t = datetime(2024, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+        payload = {"cik": 320193, "facts": {"us-gaap": {"Revenues": {}}}}
+        s1 = _make_snapshot(retrieved_at=t, raw_payload=payload)
+        s2 = _make_snapshot(retrieved_at=t, raw_payload=payload)
+        assert s1.id != s2.id
+        assert s1.payload_hash == s2.payload_hash
+
+        f = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, filing_date=date(2024, 9, 28))
+        group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2023-10-01", "2024-09-28")
+
+        # 20. Candidate on s1
+        c1 = _make_periodized_candidate(snapshot_id=s1.id, accession_number="0001", value=Decimal("100"))
+        res1 = SECWinnerResolver.resolve_winner(group_key, [c1], [s1, s2], [f])
+        assert res1.status == SECWinnerStatus.SELECTED
+        assert res1.selected_value == Decimal("100")
+
+        # 21. Candidate on s2
+        c2 = _make_periodized_candidate(snapshot_id=s2.id, accession_number="0001", value=Decimal("100"))
+        res2 = SECWinnerResolver.resolve_winner(group_key, [c2], [s1, s2], [f])
+        assert res2.status == SECWinnerStatus.SELECTED
+        assert res2.selected_value == Decimal("100")
+
+        # 22. Reverse snapshot input order -> identical result
+        res_rev = SECWinnerResolver.resolve_winner(group_key, [c2], [s2, s1], [f])
+        assert res_rev.status == SECWinnerStatus.SELECTED
+        assert res_rev.selected_value == Decimal("100")
+        assert res_rev.evaluation_snapshot_id == res2.evaluation_snapshot_id
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 17. Cover-Date Defense-In-Depth (Phase 8B.2B.5 Scenarios 25-27)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSECCoverDateDefenseInDepth:
+
+    def test_25_to_27_cover_date_defense(self):
+        """Scenarios 25-27: Only verified DEI EntityCommonStockSharesOutstanding is eligible for COVER_DATE_CONTEXT."""
+        s = _make_snapshot()
+        f = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, filing_date=date(2024, 9, 28))
+        group_key = ("0000320193", "SHARES_OUTSTANDING", "shares", "cover_date_instant", None, "2024-10-18")
+
+        # 25. Verified DEI
+        c_dei = _make_periodized_candidate(
+            snapshot_id=s.id,
+            accession_number="0001",
+            canonical_concept="SHARES_OUTSTANDING",
+            unit="shares",
+            economic_period_kind=SECEconomicPeriodKind.COVER_DATE_INSTANT,
+            period_alignment_status=SECPeriodAlignmentStatus.COVER_DATE_CONTEXT,
+            taxonomy="dei",
+            source_concept="EntityCommonStockSharesOutstanding",
+            start_date=None,
+            end_date=date(2024, 10, 18),
+        )
+        res_dei = SECWinnerResolver.resolve_winner(group_key, [c_dei], [s], [f])
+        assert res_dei.status == SECWinnerStatus.SELECTED
+
+        # 26. us-gaap SHARES_OUTSTANDING artificially marked COVER_DATE_CONTEXT -> reject
+        c_us_gaap = _make_periodized_candidate(
+            snapshot_id=s.id,
+            accession_number="0001",
+            canonical_concept="SHARES_OUTSTANDING",
+            unit="shares",
+            economic_period_kind=SECEconomicPeriodKind.COVER_DATE_INSTANT,
+            period_alignment_status=SECPeriodAlignmentStatus.COVER_DATE_CONTEXT,
+            taxonomy="us-gaap",
+            source_concept="CommonStockSharesOutstanding",
+            start_date=None,
+            end_date=date(2024, 10, 18),
+        )
+        res_us_gaap = SECWinnerResolver.resolve_winner(group_key, [c_us_gaap], [s], [f])
+        assert res_us_gaap.status == SECWinnerStatus.NO_ELIGIBLE_CANDIDATE
+
+        # 27. Custom taxonomy artificially marked COVER_DATE_CONTEXT -> reject
+        c_custom = _make_periodized_candidate(
+            snapshot_id=s.id,
+            accession_number="0001",
+            canonical_concept="SHARES_OUTSTANDING",
+            unit="shares",
+            economic_period_kind=SECEconomicPeriodKind.COVER_DATE_INSTANT,
+            period_alignment_status=SECPeriodAlignmentStatus.COVER_DATE_CONTEXT,
+            taxonomy="custom",
+            source_concept="CustomShares",
+            start_date=None,
+            end_date=date(2024, 10, 18),
+        )
+        res_custom = SECWinnerResolver.resolve_winner(group_key, [c_custom], [s], [f])
+        assert res_custom.status == SECWinnerStatus.NO_ELIGIBLE_CANDIDATE
+
+

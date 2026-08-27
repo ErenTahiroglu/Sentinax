@@ -1,18 +1,24 @@
 """
 backend/engine/private/sec/winner_resolver.py
 ===============================================
-SEC EDGAR Phase 8B.2B: Snapshot-Scoped PIT Filing Precedence,
-Restatement Reconciliation & Winner Resolution.
+SEC EDGAR Phase 8B.2B / 8B.2B.5: Snapshot-Scoped PIT Filing Precedence,
+Restatement Reconciliation & Winner Resolution Hardening.
 
 Core Invariants:
-    - Snapshot-Scoped Isolation: Only candidates from the selected evaluation snapshot are considered.
+    - Snapshot-Scoped Isolation: Only candidates from the selected evaluation snapshot (or logical snapshot
+      equivalence class with identical payload_hash and retrieved_at) are considered.
       Older snapshot candidates are NEVER mixed in or resurrected in CURRENT_REPORTED.
+    - Dual Filing Identifier Consistency: When both accession_number and filing_id are present on candidate,
+      both must resolve and agree on the exact same filing record.
+    - Local Acceptance Semantics: Naive local acceptance timestamps can only be compared chronologically if
+      both have verified matching semantics ("SEC_EST_DOCUMENTED").
+    - Snapshot Temporal Lineage: A candidate's filing cannot be dated or accepted after the snapshot was retrieved.
     - Deterministic Mode Semantics:
         * CURRENT_REPORTED: Latest valid full CompanyFacts snapshot locally observed for the CIK.
         * SYSTEM_AS_OF: Latest valid full CompanyFacts snapshot with retrieved_at <= as_of.
         * SOURCE_AS_OF: Fail-closed (UNAVAILABLE_SOURCE_AS_OF) because SEC CompanyFacts does not provide
           exact historical external API state reconstruction.
-    - Disclosure Chronology: Acceptance aware UTC datetime > SEC local naive datetime > filing_date fallback.
+    - Disclosure Chronology: Aware UTC acceptance > Local acceptance with SEC_EST_DOCUMENTED > filing_date fallback.
       Lexicographical accession order, UUIDs, or DB created_at are NEVER used as economic authority.
     - Pure / Deterministic Engine: Zero external network calls, zero database writes, zero metric calculations.
 """
@@ -23,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from uuid import UUID
 
 from backend.engine.private.sec.cik import normalize_cik
@@ -81,6 +87,7 @@ class SECWinnerResolutionResult:
     economic_group_key: Optional[Tuple[str, str, str, str, Optional[str], str]] = None
     as_of: Optional[datetime] = None
     evaluation_snapshot_id: Optional[UUID] = None
+    evaluation_snapshot_ids: List[UUID] = field(default_factory=list)
     evaluation_snapshot_retrieved_at: Optional[datetime] = None
     evaluation_snapshot_hash: Optional[str] = None
     selected_candidate: Optional[SECPeriodizedFactCandidate] = None
@@ -107,6 +114,7 @@ class SECWinnerResolutionResult:
             "economic_group_key": list(self.economic_group_key) if self.economic_group_key else None,
             "as_of": self.as_of.isoformat() if self.as_of else None,
             "evaluation_snapshot_id": str(self.evaluation_snapshot_id) if self.evaluation_snapshot_id else None,
+            "evaluation_snapshot_ids": [str(sid) for sid in self.evaluation_snapshot_ids],
             "evaluation_snapshot_retrieved_at": self.evaluation_snapshot_retrieved_at.isoformat() if self.evaluation_snapshot_retrieved_at else None,
             "evaluation_snapshot_hash": self.evaluation_snapshot_hash,
             "selected_candidate": self.selected_candidate.to_dict() if self.selected_candidate else None,
@@ -151,9 +159,9 @@ def compare_filing_disclosure_order(
     Compares the disclosure chronology of two filings.
     Hierarchy:
         1. Both have timezone-aware acceptance_datetime -> UTC comparison
-        2. Both have naive acceptance_local_datetime (same local SEC basis) -> direct comparison
+        2. Both have naive acceptance_local_datetime WITH SAME VERIFIED SEMANTICS ("SEC_EST_DOCUMENTED") -> direct comparison
         3. Fallback to filing_date if different
-        4. If same filing_date with no comparable acceptance -> UNORDERABLE
+        4. If same filing_date with uncomparable acceptance timestamps -> UNORDERABLE
     """
     # 1. Aware acceptance timestamps
     if a.acceptance_datetime is not None and b.acceptance_datetime is not None:
@@ -163,13 +171,16 @@ def compare_filing_disclosure_order(
             return FilingDisclosureComparison.B_LATER
         return FilingDisclosureComparison.SAME
 
-    # 2. Local naive acceptance timestamps
+    # 2. Local naive acceptance timestamps - require matching trusted semantics basis
     if a.acceptance_local_datetime is not None and b.acceptance_local_datetime is not None:
-        if a.acceptance_local_datetime > b.acceptance_local_datetime:
-            return FilingDisclosureComparison.A_LATER
-        if a.acceptance_local_datetime < b.acceptance_local_datetime:
-            return FilingDisclosureComparison.B_LATER
-        return FilingDisclosureComparison.SAME
+        a_sem = a.acceptance_timezone_semantics
+        b_sem = b.acceptance_timezone_semantics
+        if a_sem and b_sem and a_sem == b_sem and a_sem == "SEC_EST_DOCUMENTED":
+            if a.acceptance_local_datetime > b.acceptance_local_datetime:
+                return FilingDisclosureComparison.A_LATER
+            if a.acceptance_local_datetime < b.acceptance_local_datetime:
+                return FilingDisclosureComparison.B_LATER
+            return FilingDisclosureComparison.SAME
 
     # 3. Filing date fallback
     if a.filing_date is not None and b.filing_date is not None:
@@ -272,7 +283,7 @@ class SECWinnerResolver:
                 raise ValueError(f"as_of must be a timezone-aware datetime. Got naive: {as_of}")
 
         # ─────────────────────────────────────────────────────────────────────
-        # 2. Evaluation Snapshot Selection
+        # 2. Evaluation Snapshot Selection & Logical Duplicate Equivalence
         # ─────────────────────────────────────────────────────────────────────
         valid_snapshots = [
             s for s in snapshots
@@ -291,7 +302,6 @@ class SECWinnerResolver:
             )
 
         if mode == SECWinnerResolutionMode.CURRENT_REPORTED:
-            # Pick latest valid snapshot
             max_retrieved = max(s.retrieved_at for s in valid_snapshots)
             latest_candidates = [s for s in valid_snapshots if s.retrieved_at == max_retrieved]
             
@@ -307,10 +317,11 @@ class SECWinnerResolver:
                     selection_basis="Multiple snapshots with identical latest retrieved_at have differing payload hashes.",
                     diagnostics=["Snapshot conflict: differing payload_hash on identical retrieved_at."],
                 )
-            eval_snapshot = latest_candidates[0]
+            # Deterministic representative selection (sort by string UUID)
+            eval_snapshot = min(latest_candidates, key=lambda s: str(s.id))
+            eval_snapshot_ids = {s.id for s in latest_candidates}
 
         elif mode == SECWinnerResolutionMode.SYSTEM_AS_OF:
-            # Filter snapshots retrieved_at <= as_of
             eligible_snaps = [s for s in valid_snapshots if s.retrieved_at <= as_of]
             if not eligible_snaps:
                 return SECWinnerResolutionResult(
@@ -336,18 +347,50 @@ class SECWinnerResolver:
                     selection_basis="Multiple snapshots at as_of boundary have differing payload hashes.",
                     diagnostics=["Snapshot conflict at as_of boundary."],
                 )
-            eval_snapshot = latest_candidates[0]
+            eval_snapshot = min(latest_candidates, key=lambda s: str(s.id))
+            eval_snapshot_ids = {s.id for s in latest_candidates}
 
         # ─────────────────────────────────────────────────────────────────────
-        # 3. Snapshot-Scoped Candidate Filtering & Eligibility Checks
+        # 3. Collision-Resistant Filing Maps & Candidate Lineage Checks
         # ─────────────────────────────────────────────────────────────────────
-        filing_map: Dict[str, SECFilingRecord] = {}
+        accession_map: Dict[str, SECFilingRecord] = {}
         filing_id_map: Dict[UUID, SECFilingRecord] = {}
+        colliding_accessions: Set[str] = set()
+        colliding_ids: Set[UUID] = set()
+
         for f in filings:
             if f.accession_number:
-                filing_map[f.accession_number.strip()] = f
+                acc_key = f.accession_number.strip()
+                if acc_key in accession_map:
+                    existing = accession_map[acc_key]
+                    if (
+                        existing.id != f.id
+                        or existing.cik != f.cik
+                        or existing.form != f.form
+                        or existing.filing_date != f.filing_date
+                        or existing.report_date != f.report_date
+                        or existing.acceptance_datetime != f.acceptance_datetime
+                        or existing.acceptance_local_datetime != f.acceptance_local_datetime
+                    ):
+                        colliding_accessions.add(acc_key)
+                else:
+                    accession_map[acc_key] = f
+
             if f.id:
-                filing_id_map[f.id] = f
+                if f.id in filing_id_map:
+                    existing = filing_id_map[f.id]
+                    if (
+                        existing.accession_number != f.accession_number
+                        or existing.cik != f.cik
+                        or existing.form != f.form
+                        or existing.filing_date != f.filing_date
+                        or existing.report_date != f.report_date
+                        or existing.acceptance_datetime != f.acceptance_datetime
+                        or existing.acceptance_local_datetime != f.acceptance_local_datetime
+                    ):
+                        colliding_ids.add(f.id)
+                else:
+                    filing_id_map[f.id] = f
 
         eligible_candidates: List[Tuple[SECPeriodizedFactCandidate, SECFilingRecord]] = []
         rejected_candidates: List[Dict[str, Any]] = []
@@ -360,15 +403,16 @@ class SECWinnerResolver:
             economic_group_key[4],
             economic_group_key[5],
         )
+        canonical_concept = economic_group_key[1]
 
         for cand in candidates:
-            # 3.1 Strict Snapshot Membership
-            if cand.snapshot_id != eval_snapshot.id:
+            # 3.1 Strict Snapshot Membership (using logical snapshot equivalence class)
+            if cand.snapshot_id not in eval_snapshot_ids:
                 rejected_candidates.append({
                     "candidate_id": str(cand.id),
                     "raw_fact_id": str(cand.raw_fact_id),
                     "accession_number": cand.accession_number,
-                    "reason": f"Snapshot mismatch: candidate belongs to snapshot {cand.snapshot_id}, evaluation snapshot is {eval_snapshot.id}.",
+                    "reason": f"Snapshot mismatch: candidate belongs to snapshot {cand.snapshot_id}, evaluation snapshot ids are {[str(s) for s in eval_snapshot_ids]}.",
                 })
                 continue
 
@@ -383,7 +427,6 @@ class SECWinnerResolver:
                 })
                 continue
 
-
             # 3.3 Value Presence Check
             if cand.value is None:
                 rejected_candidates.append({
@@ -394,7 +437,7 @@ class SECWinnerResolver:
                 })
                 continue
 
-            # 3.4 Alignment Status Eligibility
+            # 3.4 Alignment Status Eligibility & Cover-Date Defense-In-Depth
             if cand.period_alignment_status in (
                 SECPeriodAlignmentStatus.NON_PRIMARY_CONTEXT,
                 SECPeriodAlignmentStatus.UNRESOLVED_FILING,
@@ -410,30 +453,88 @@ class SECWinnerResolver:
                 continue
 
             if cand.period_alignment_status == SECPeriodAlignmentStatus.COVER_DATE_CONTEXT:
-                if canonical_concept != "SHARES_OUTSTANDING":
+                if (
+                    canonical_concept != "SHARES_OUTSTANDING"
+                    or cand.taxonomy != "dei"
+                    or cand.source_concept != "EntityCommonStockSharesOutstanding"
+                ):
                     rejected_candidates.append({
                         "candidate_id": str(cand.id),
                         "raw_fact_id": str(cand.raw_fact_id),
                         "accession_number": cand.accession_number,
-                        "reason": f"COVER_DATE_CONTEXT is only eligible for SHARES_OUTSTANDING, got {canonical_concept}.",
+                        "reason": f"COVER_DATE_CONTEXT is only eligible for dei:EntityCommonStockSharesOutstanding under SHARES_OUTSTANDING, got {cand.taxonomy}:{cand.source_concept} ({canonical_concept}).",
                     })
                     continue
 
-            # 3.5 Filing Lineage Resolution
-            resolved_filing: Optional[SECFilingRecord] = None
-            if cand.accession_number:
-                resolved_filing = filing_map.get(cand.accession_number.strip())
-            elif cand.filing_id:
-                resolved_filing = filing_id_map.get(cand.filing_id)
+            # 3.5 Dual Filing Lineage Resolution & Validation
+            has_acc = bool(cand.accession_number and cand.accession_number.strip())
+            has_id = bool(cand.filing_id)
 
-            if not resolved_filing:
+            if not has_acc and not has_id:
                 rejected_candidates.append({
                     "candidate_id": str(cand.id),
                     "raw_fact_id": str(cand.raw_fact_id),
                     "accession_number": cand.accession_number,
-                    "reason": "Filing record could not be resolved from supplied filings.",
+                    "reason": "Candidate lacks both accession_number and filing_id.",
                 })
                 continue
+
+            filing_by_acc: Optional[SECFilingRecord] = None
+            filing_by_id: Optional[SECFilingRecord] = None
+
+            if has_acc:
+                acc_clean = cand.accession_number.strip()
+                if acc_clean in colliding_accessions:
+                    rejected_candidates.append({
+                        "candidate_id": str(cand.id),
+                        "raw_fact_id": str(cand.raw_fact_id),
+                        "accession_number": cand.accession_number,
+                        "reason": f"Conflicting duplicate filings provided for accession '{acc_clean}'.",
+                    })
+                    continue
+                filing_by_acc = accession_map.get(acc_clean)
+                if not filing_by_acc:
+                    rejected_candidates.append({
+                        "candidate_id": str(cand.id),
+                        "raw_fact_id": str(cand.raw_fact_id),
+                        "accession_number": cand.accession_number,
+                        "reason": f"Accession '{acc_clean}' could not be resolved from supplied filings.",
+                    })
+                    continue
+
+            if has_id:
+                if cand.filing_id in colliding_ids:
+                    rejected_candidates.append({
+                        "candidate_id": str(cand.id),
+                        "raw_fact_id": str(cand.raw_fact_id),
+                        "accession_number": cand.accession_number,
+                        "reason": f"Conflicting duplicate filings provided for filing_id '{cand.filing_id}'.",
+                    })
+                    continue
+                filing_by_id = filing_id_map.get(cand.filing_id)
+                if not filing_by_id:
+                    rejected_candidates.append({
+                        "candidate_id": str(cand.id),
+                        "raw_fact_id": str(cand.raw_fact_id),
+                        "accession_number": cand.accession_number,
+                        "reason": f"Filing ID '{cand.filing_id}' could not be resolved from supplied filings.",
+                    })
+                    continue
+
+            if has_acc and has_id:
+                if filing_by_acc.id != filing_by_id.id or filing_by_acc.accession_number.strip() != filing_by_id.accession_number.strip():
+                    rejected_candidates.append({
+                        "candidate_id": str(cand.id),
+                        "raw_fact_id": str(cand.raw_fact_id),
+                        "accession_number": cand.accession_number,
+                        "reason": "Candidate accession_number and filing_id resolve to different filings.",
+                    })
+                    continue
+                resolved_filing = filing_by_acc
+            elif has_acc:
+                resolved_filing = filing_by_acc
+            else:
+                resolved_filing = filing_by_id
 
             # Check CIK consistency
             if normalize_cik(resolved_filing.cik) != norm_target_cik:
@@ -456,7 +557,47 @@ class SECWinnerResolver:
                     })
                     continue
 
-            # 3.6 Temporal Lookahead Protection (SYSTEM_AS_OF)
+            # 3.6 Snapshot Temporal Lineage Sanity (CURRENT_REPORTED & SYSTEM_AS_OF)
+            # A candidate's filing cannot occur after the evaluation snapshot was retrieved!
+            if resolved_filing.filing_date and resolved_filing.filing_date > eval_snapshot.retrieved_at.date():
+                return SECWinnerResolutionResult(
+                    mode=mode,
+                    status=SECWinnerStatus.INVALID_TEMPORAL_LINEAGE,
+                    cik=norm_target_cik,
+                    economic_group_key=economic_group_key,
+                    as_of=as_of,
+                    evaluation_snapshot_id=eval_snapshot.id,
+                    evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
+                    evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
+                    evaluation_snapshot_hash=eval_snapshot.payload_hash,
+                    selection_basis=f"Temporal lineage error: filing_date {resolved_filing.filing_date} is after snapshot retrieved_at date {eval_snapshot.retrieved_at.date()}.",
+                    diagnostics=[f"Snapshot temporal lookahead detected on candidate {cand.id}."],
+                    rejected_candidates=rejected_candidates + [{
+                        "candidate_id": str(cand.id),
+                        "reason": "filing_date > eval_snapshot.retrieved_at.date()",
+                    }],
+                )
+
+            if resolved_filing.acceptance_datetime and resolved_filing.acceptance_datetime > eval_snapshot.retrieved_at:
+                return SECWinnerResolutionResult(
+                    mode=mode,
+                    status=SECWinnerStatus.INVALID_TEMPORAL_LINEAGE,
+                    cik=norm_target_cik,
+                    economic_group_key=economic_group_key,
+                    as_of=as_of,
+                    evaluation_snapshot_id=eval_snapshot.id,
+                    evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
+                    evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
+                    evaluation_snapshot_hash=eval_snapshot.payload_hash,
+                    selection_basis=f"Temporal lineage error: acceptance_datetime {resolved_filing.acceptance_datetime.isoformat()} is after snapshot retrieved_at {eval_snapshot.retrieved_at.isoformat()}.",
+                    diagnostics=[f"Snapshot temporal lookahead detected on candidate {cand.id}."],
+                    rejected_candidates=rejected_candidates + [{
+                        "candidate_id": str(cand.id),
+                        "reason": "acceptance_datetime > eval_snapshot.retrieved_at",
+                    }],
+                )
+
+            # Secondary check for SYSTEM_AS_OF boundary
             if mode == SECWinnerResolutionMode.SYSTEM_AS_OF and as_of is not None:
                 if resolved_filing.filing_date and resolved_filing.filing_date > as_of.date():
                     return SECWinnerResolutionResult(
@@ -466,6 +607,7 @@ class SECWinnerResolver:
                         economic_group_key=economic_group_key,
                         as_of=as_of,
                         evaluation_snapshot_id=eval_snapshot.id,
+                        evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
                         evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
                         evaluation_snapshot_hash=eval_snapshot.payload_hash,
                         selection_basis=f"Lookahead inconsistency: filing_date {resolved_filing.filing_date} is after as_of {as_of.date()}.",
@@ -483,6 +625,7 @@ class SECWinnerResolver:
                         economic_group_key=economic_group_key,
                         as_of=as_of,
                         evaluation_snapshot_id=eval_snapshot.id,
+                        evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
                         evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
                         evaluation_snapshot_hash=eval_snapshot.payload_hash,
                         selection_basis=f"Lookahead inconsistency: acceptance_datetime {resolved_filing.acceptance_datetime.isoformat()} is after as_of {as_of.isoformat()}.",
@@ -503,6 +646,7 @@ class SECWinnerResolver:
                 economic_group_key=economic_group_key,
                 as_of=as_of,
                 evaluation_snapshot_id=eval_snapshot.id,
+                evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
                 evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
                 evaluation_snapshot_hash=eval_snapshot.payload_hash,
                 selection_basis="No candidates met snapshot-scoped winner eligibility criteria.",
@@ -522,6 +666,7 @@ class SECWinnerResolver:
 
         filing_representatives: List[Dict[str, Any]] = []
         all_corroborating_ids: List[UUID] = []
+        diagnostics_list: List[str] = []
 
         for f_key, cand_list in filing_groups.items():
             # Sort by semantic quality rank (ascending: EXACT=1 < COMPATIBLE=2 < LEGACY_COMPATIBLE=3), then variant_priority
@@ -548,6 +693,7 @@ class SECWinnerResolver:
                             economic_group_key=economic_group_key,
                             as_of=as_of,
                             evaluation_snapshot_id=eval_snapshot.id,
+                            evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
                             evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
                             evaluation_snapshot_hash=eval_snapshot.payload_hash,
                             selection_basis=f"Filing {f_key} contains conflicting EXACT canonical concept variants with differing values {exact_values}.",
@@ -561,6 +707,10 @@ class SECWinnerResolver:
                     if other_cand.value == top_cand.value:
                         corroborating_for_filing.append(other_cand.id)
                         all_corroborating_ids.append(other_cand.id)
+                    else:
+                        diagnostics_list.append(
+                            f"Filing {f_key}: Lower semantic candidate ({other_cand.match_strength}, {other_cand.source_concept}) differed in value ({other_cand.value}) from selected fact ({top_cand.value})."
+                        )
 
             filing_representatives.append({
                 "candidate": top_cand,
@@ -584,6 +734,7 @@ class SECWinnerResolver:
                 economic_group_key=economic_group_key,
                 as_of=as_of,
                 evaluation_snapshot_id=eval_snapshot.id,
+                evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
                 evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
                 evaluation_snapshot_hash=eval_snapshot.payload_hash,
                 selected_candidate=winner_cand,
@@ -596,7 +747,7 @@ class SECWinnerResolver:
                 selected_form=winner_cand.form,
                 selection_confidence=winner_cand.classification_confidence,
                 selection_basis=f"Uniquely resolved candidate from authoritative filing {winner_filing.accession_number}.",
-                diagnostics=["Single filing representative selected."],
+                diagnostics=diagnostics_list or ["Single filing representative selected."],
                 eligible_candidate_ids=[c.id for c, f in eligible_candidates],
                 rejected_candidates=rejected_candidates,
                 corroborating_candidate_ids=all_corroborating_ids,
@@ -606,7 +757,6 @@ class SECWinnerResolver:
         # Multiple filing representatives: sort/reconcile across filings
         superseded_ids: List[UUID] = []
         winner_rep = filing_representatives[0]
-        diagnostics_list: List[str] = []
         confidence_level: str = winner_rep["candidate"].classification_confidence
 
         for next_rep in filing_representatives[1:]:
@@ -621,6 +771,7 @@ class SECWinnerResolver:
                         economic_group_key=economic_group_key,
                         as_of=as_of,
                         evaluation_snapshot_id=eval_snapshot.id,
+                        evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
                         evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
                         evaluation_snapshot_hash=eval_snapshot.payload_hash,
                         selection_basis=f"Filings {winner_rep['filing'].accession_number} and {next_rep['filing'].accession_number} have unorderable disclosure chronology with differing values.",
@@ -669,6 +820,7 @@ class SECWinnerResolver:
                             economic_group_key=economic_group_key,
                             as_of=as_of,
                             evaluation_snapshot_id=eval_snapshot.id,
+                            evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
                             evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
                             evaluation_snapshot_hash=eval_snapshot.payload_hash,
                             selection_basis=f"Later disclosure {next_rep['filing'].accession_number} has lower semantic quality ({next_rep['candidate'].match_strength}) with differing value {next_rep['candidate'].value} vs prior exact {winner_rep['candidate'].value}.",
@@ -696,6 +848,7 @@ class SECWinnerResolver:
                             economic_group_key=economic_group_key,
                             as_of=as_of,
                             evaluation_snapshot_id=eval_snapshot.id,
+                            evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
                             evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
                             evaluation_snapshot_hash=eval_snapshot.payload_hash,
                             selection_basis="Semantic scope conflict between differing quality disclosures.",
@@ -719,6 +872,7 @@ class SECWinnerResolver:
             economic_group_key=economic_group_key,
             as_of=as_of,
             evaluation_snapshot_id=eval_snapshot.id,
+            evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
             evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
             evaluation_snapshot_hash=eval_snapshot.payload_hash,
             selected_candidate=winner_cand,
