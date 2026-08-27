@@ -12,6 +12,8 @@ Key Architectural Invariants:
     - Strict Decimal typing (no float, no NaN, no Inf, no silent float conversions).
     - Hard bounded contexts between MY_PORTFOLIO and SANDBOX.
     - Zero user secrets, credentials, or unnecessary PII.
+    - Mutually exclusive event field families (fail-closed on contradictory fields).
+    - REVERSAL is strictly reference-only (zero independent economic fields).
 """
 
 from __future__ import annotations
@@ -46,6 +48,17 @@ def _validate_decimal_positive(val: Any, field_name: str) -> Decimal:
     return val
 
 
+def _validate_decimal_nonnegative(val: Any, field_name: str) -> Decimal:
+    """Validates that a value is strictly a finite Decimal >= 0 (not float, not bool, not int/str)."""
+    if isinstance(val, bool) or not isinstance(val, Decimal):
+        raise TypeError(f"{field_name} must be a Decimal, got {type(val).__name__}: {val!r}")
+    if not val.is_finite():
+        raise ValueError(f"{field_name} must be finite, got: {val}")
+    if val < Decimal("0"):
+        raise ValueError(f"{field_name} must be non-negative (>= 0), got: {val}")
+    return val
+
+
 def _validate_aware_datetime(dt: Optional[datetime], field_name: str) -> None:
     """Validates that a datetime is timezone-aware."""
     if dt is not None and dt.tzinfo is None:
@@ -53,13 +66,13 @@ def _validate_aware_datetime(dt: Optional[datetime], field_name: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. Portfolio Model
+# 1. Portfolio Model (Lifecycle Entity)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class Portfolio:
     """
-    Root portfolio domain entity representing either real user holdings or an isolated sandbox.
+    Root portfolio domain aggregate representing either real user holdings or an isolated sandbox.
     """
     mode: PortfolioMode
     name: str
@@ -79,8 +92,17 @@ class Portfolio:
         _validate_aware_datetime(self.archived_at, "archived_at")
         _validate_aware_datetime(self.source_snapshot_time, "source_snapshot_time")
 
-        if self.mode == PortfolioMode.MY_PORTFOLIO and self.source_portfolio_id is not None:
-            raise ValueError("MY_PORTFOLIO cannot have source_portfolio_id (cloning/provenance is SANDBOX only).")
+        if self.mode == PortfolioMode.MY_PORTFOLIO:
+            if self.source_portfolio_id is not None:
+                raise ValueError("MY_PORTFOLIO cannot have source_portfolio_id (cloning/provenance is SANDBOX only).")
+            if self.source_snapshot_time is not None:
+                raise ValueError("MY_PORTFOLIO cannot have source_snapshot_time.")
+
+        if self.mode == PortfolioMode.SANDBOX:
+            if self.source_snapshot_time is not None and self.source_portfolio_id is None:
+                raise ValueError("SANDBOX with source_snapshot_time must specify source_portfolio_id.")
+            if self.source_portfolio_id is not None and self.source_portfolio_id == self.id:
+                raise ValueError("SANDBOX source_portfolio_id cannot reference self (no self-cloning).")
 
     @property
     def is_active(self) -> bool:
@@ -102,7 +124,7 @@ class Portfolio:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. Portfolio Account Model
+# 2. Portfolio Account Model (Lifecycle Entity)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -144,7 +166,7 @@ class PortfolioAccount:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. Immutable Transaction Event Model
+# 3. Immutable Transaction Event Model (Frozen Ledger Event)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -159,6 +181,8 @@ class PortfolioTransaction:
             * `recorded_at`: System knowledge time (when Sentinax ingested it).
         - Strict Decimal type checks on all financial amounts.
         - Exact multi-currency preservation (no implicit conversions).
+        - Mutually exclusive field families per transaction type.
+        - REVERSAL is strictly reference-only (zero independent economic fields).
     """
     portfolio_id: UUID
     account_id: UUID
@@ -218,7 +242,9 @@ class PortfolioTransaction:
             if self.trade_currency is None:
                 raise ValueError(f"{t.name} requires trade_currency.")
 
-            # Contradictory economics check
+            # Contradictory economics check: No cash fields, no FX fields, no reversal field
+            if self.cash_amount is not None or self.cash_currency is not None:
+                raise ValueError(f"{t.name} must not contain cash_amount or cash_currency.")
             if self.from_currency is not None or self.from_amount is not None or self.to_currency is not None or self.to_amount is not None:
                 raise ValueError(f"{t.name} must not contain FX conversion legs.")
             if self.reverses_transaction_id is not None:
@@ -231,7 +257,9 @@ class PortfolioTransaction:
             if self.cash_currency is None:
                 raise ValueError(f"{t.name} requires cash_currency.")
 
-            # Contradictory economics check
+            # Contradictory economics check: No security fields (including instrument_id), no FX fields, no reversal field
+            if self.instrument_id is not None:
+                raise ValueError(f"{t.name} must not contain instrument_id.")
             if self.quantity is not None or self.unit_price is not None or self.trade_currency is not None:
                 raise ValueError(f"{t.name} must not contain trade security fields.")
             if self.from_currency is not None or self.from_amount is not None or self.to_currency is not None or self.to_amount is not None:
@@ -246,6 +274,9 @@ class PortfolioTransaction:
             if self.cash_currency is None:
                 raise ValueError(f"{t.name} requires cash_currency.")
 
+            # Contradictory economics check: No trade pricing/quantity fields, no FX fields, no reversal field
+            if self.quantity is not None or self.unit_price is not None or self.trade_currency is not None:
+                raise ValueError(f"{t.name} must not contain quantity, unit_price, or trade_currency.")
             if self.from_currency is not None or self.from_amount is not None or self.to_currency is not None or self.to_amount is not None:
                 raise ValueError(f"{t.name} must not contain FX conversion legs.")
             if self.reverses_transaction_id is not None:
@@ -267,9 +298,15 @@ class PortfolioTransaction:
             if self.from_currency == self.to_currency:
                 raise ValueError(f"FX_CONVERSION requires distinct currencies, got {self.from_currency} on both legs.")
 
-            # Contradictory economics check
+            # Contradictory economics check: No security fields, no simple cash fields, no cash_bucket_id, no reversal field
+            if self.instrument_id is not None:
+                raise ValueError("FX_CONVERSION must not contain instrument_id.")
             if self.quantity is not None or self.unit_price is not None or self.trade_currency is not None:
                 raise ValueError("FX_CONVERSION must not contain security trade fields.")
+            if self.cash_amount is not None or self.cash_currency is not None:
+                raise ValueError("FX_CONVERSION must not contain cash_amount or cash_currency.")
+            if self.cash_bucket_id is not None:
+                raise ValueError("FX_CONVERSION must not contain cash_bucket_id.")
             if self.reverses_transaction_id is not None:
                 raise ValueError("FX_CONVERSION must not have reverses_transaction_id (use REVERSAL type).")
 
@@ -278,6 +315,18 @@ class PortfolioTransaction:
                 raise ValueError("REVERSAL requires reverses_transaction_id.")
             if self.reverses_transaction_id == self.id:
                 raise ValueError("Transaction cannot reverse itself (self-reversal).")
+
+            # REVERSAL is strictly reference-only: All independent economic fields MUST be None
+            if self.instrument_id is not None:
+                raise ValueError("REVERSAL must not contain instrument_id.")
+            if self.quantity is not None or self.unit_price is not None or self.trade_currency is not None:
+                raise ValueError("REVERSAL must not contain quantity, unit_price, or trade_currency.")
+            if self.cash_amount is not None or self.cash_currency is not None:
+                raise ValueError("REVERSAL must not contain cash_amount or cash_currency.")
+            if self.cash_bucket_id is not None:
+                raise ValueError("REVERSAL must not contain cash_bucket_id.")
+            if self.from_currency is not None or self.from_amount is not None or self.to_currency is not None or self.to_amount is not None:
+                raise ValueError("REVERSAL must not contain FX conversion fields.")
 
     def economic_fingerprint(self) -> str:
         """
@@ -337,7 +386,7 @@ class PortfolioTransaction:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. Cash Bucket Model
+# 4. Cash Bucket Model (Lifecycle Entity)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -363,12 +412,18 @@ class CashBucket:
             raise ValueError(f"created_at must be timezone-aware, got naive: {self.created_at}")
         _validate_aware_datetime(self.archived_at, "archived_at")
 
-        # Purpose-driven default inclusion
+        # Purpose-driven default inclusion or strict bool check
         if self.included_in_investable_assets is None:
             if self.purpose == CashPurpose.INVESTABLE:
                 self.included_in_investable_assets = True
             else:
                 self.included_in_investable_assets = False
+        else:
+            if not isinstance(self.included_in_investable_assets, bool):
+                raise TypeError(
+                    f"included_in_investable_assets must be a strict bool (or None), "
+                    f"got {type(self.included_in_investable_assets).__name__}: {self.included_in_investable_assets!r}"
+                )
 
     @property
     def is_active(self) -> bool:
@@ -390,7 +445,7 @@ class CashBucket:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. Investment Goal Model
+# 5. Investment Goal Model (Lifecycle Entity)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -433,7 +488,7 @@ class InvestmentGoal:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. Planned Contribution Model
+# 6. Planned Contribution Model (Lifecycle Entity)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -494,14 +549,13 @@ class PositionLot:
     status: LotStatus = LotStatus.OPEN
 
     def __post_init__(self) -> None:
-        if isinstance(self.original_quantity, bool) or not isinstance(self.original_quantity, Decimal) or self.original_quantity <= Decimal("0"):
-            raise ValueError("original_quantity must be Decimal > 0.")
-        if isinstance(self.quantity_open, bool) or not isinstance(self.quantity_open, Decimal) or self.quantity_open < Decimal("0"):
-            raise ValueError("quantity_open must be Decimal >= 0.")
+        _validate_decimal_positive(self.original_quantity, "original_quantity")
+        _validate_decimal_nonnegative(self.quantity_open, "quantity_open")
         if self.quantity_open > self.original_quantity:
-            raise ValueError("quantity_open cannot exceed original_quantity.")
-        if isinstance(self.native_unit_cost, bool) or not isinstance(self.native_unit_cost, Decimal) or self.native_unit_cost < Decimal("0"):
-            raise ValueError("native_unit_cost must be Decimal >= 0.")
+            raise ValueError(
+                f"quantity_open ({self.quantity_open}) cannot exceed original_quantity ({self.original_quantity})."
+            )
+        _validate_decimal_nonnegative(self.native_unit_cost, "native_unit_cost")
 
     def to_dict(self) -> Dict[str, Any]:
         return {

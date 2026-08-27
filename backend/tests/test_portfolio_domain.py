@@ -1,7 +1,7 @@
 """
 backend/tests/test_portfolio_domain.py
 ======================================
-Comprehensive Domain Model Unit Tests for Private Portfolio Ledger.
+Comprehensive Domain Model Unit Tests for Private Portfolio Ledger (Phase 12A & 12A.5).
 
 Zero external network calls (pytest-socket enforced).
 """
@@ -85,9 +85,24 @@ def test_portfolio_my_portfolio_cannot_have_cloning_provenance():
             source_portfolio_id=uuid4(),
         )
 
-    # SANDBOX with provenance is valid
+    with pytest.raises(ValueError, match="MY_PORTFOLIO cannot have source_snapshot_time"):
+        Portfolio(
+            mode=PortfolioMode.MY_PORTFOLIO,
+            name="Real",
+            base_currency=Currency.TRY,
+            created_at=now,
+            source_snapshot_time=now,
+        )
+
+
+def test_sandbox_provenance_validation():
+    now = datetime(2026, 8, 27, 10, 0, 0, tzinfo=timezone.utc)
+    sb_id = uuid4()
     source_id = uuid4()
+
+    # Valid sandbox with provenance
     sb = Portfolio(
+        id=sb_id,
         mode=PortfolioMode.SANDBOX,
         name="Sandbox 1",
         base_currency=Currency.TRY,
@@ -96,6 +111,29 @@ def test_portfolio_my_portfolio_cannot_have_cloning_provenance():
         source_snapshot_time=now,
     )
     assert sb.source_portfolio_id == source_id
+    assert sb.source_snapshot_time == now
+
+    # Reject source_snapshot_time without source_portfolio_id
+    with pytest.raises(ValueError, match="source_snapshot_time must specify source_portfolio_id"):
+        Portfolio(
+            mode=PortfolioMode.SANDBOX,
+            name="Sandbox Bad",
+            base_currency=Currency.TRY,
+            created_at=now,
+            source_snapshot_time=now,
+            source_portfolio_id=None,
+        )
+
+    # Reject self-cloning provenance
+    with pytest.raises(ValueError, match="cannot reference self"):
+        Portfolio(
+            id=sb_id,
+            mode=PortfolioMode.SANDBOX,
+            name="Self Clone",
+            base_currency=Currency.TRY,
+            created_at=now,
+            source_portfolio_id=sb_id,
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -223,6 +261,15 @@ def test_buy_transaction_invalids():
             from_currency=Currency.USD, from_amount=Decimal("100"),
         )
 
+    # Contradictory cash fields in BUY (Phase 12A.5)
+    with pytest.raises(ValueError, match="must not contain cash_amount or cash_currency"):
+        PortfolioTransaction(
+            portfolio_id=p_id, account_id=a_id, transaction_type=TransactionType.BUY,
+            instrument_id=inst_id, effective_date=date(2026, 8, 27), recorded_at=rec_time,
+            quantity=Decimal("10"), unit_price=Decimal("10"), trade_currency=Currency.TRY,
+            cash_amount=Decimal("100"),
+        )
+
 
 def test_sell_transaction_valid_positive_quantity():
     p_id = uuid4()
@@ -250,6 +297,15 @@ def test_sell_transaction_valid_positive_quantity():
             portfolio_id=p_id, account_id=a_id, transaction_type=TransactionType.SELL,
             instrument_id=inst_id, effective_date=date(2026, 8, 27), recorded_at=rec_time,
             quantity=Decimal("-50"), unit_price=Decimal("120.00"), trade_currency=Currency.TRY,
+        )
+
+    # Contradictory cash fields in SELL (Phase 12A.5)
+    with pytest.raises(ValueError, match="must not contain cash_amount or cash_currency"):
+        PortfolioTransaction(
+            portfolio_id=p_id, account_id=a_id, transaction_type=TransactionType.SELL,
+            instrument_id=inst_id, effective_date=date(2026, 8, 27), recorded_at=rec_time,
+            quantity=Decimal("50"), unit_price=Decimal("120.00"), trade_currency=Currency.TRY,
+            cash_amount=Decimal("6000"),
         )
 
 
@@ -299,6 +355,59 @@ def test_cash_deposit_and_withdrawal():
             quantity=Decimal("50"),
         )
 
+    # Reject deposit with instrument_id (Phase 12A.5)
+    with pytest.raises(ValueError, match="must not contain instrument_id"):
+        PortfolioTransaction(
+            portfolio_id=p_id, account_id=a_id, transaction_type=TransactionType.CASH_DEPOSIT,
+            effective_date=date(2026, 8, 27), recorded_at=rec_time,
+            cash_amount=Decimal("1000"), cash_currency=Currency.TRY,
+            instrument_id=uuid4(),
+        )
+
+    # Reject withdrawal with instrument_id (Phase 12A.5)
+    with pytest.raises(ValueError, match="must not contain instrument_id"):
+        PortfolioTransaction(
+            portfolio_id=p_id, account_id=a_id, transaction_type=TransactionType.CASH_WITHDRAWAL,
+            effective_date=date(2026, 8, 27), recorded_at=rec_time,
+            cash_amount=Decimal("1000"), cash_currency=Currency.TRY,
+            instrument_id=uuid4(),
+        )
+
+
+def test_cash_flow_rejects_trade_fields():
+    p_id = uuid4()
+    a_id = uuid4()
+    inst_id = uuid4()
+    rec_time = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+    for tt in (TransactionType.DIVIDEND, TransactionType.INTEREST, TransactionType.FEE, TransactionType.TAX_WITHHOLDING):
+        # Valid cash-flow event with optional instrument_id
+        valid_tx = PortfolioTransaction(
+            portfolio_id=p_id, account_id=a_id, transaction_type=tt,
+            effective_date=date(2026, 8, 27), recorded_at=rec_time,
+            cash_amount=Decimal("250.00"), cash_currency=Currency.TRY,
+            instrument_id=inst_id,
+        )
+        assert valid_tx.cash_amount == Decimal("250.00")
+
+        # Reject quantity
+        with pytest.raises(ValueError, match="must not contain quantity, unit_price, or trade_currency"):
+            PortfolioTransaction(
+                portfolio_id=p_id, account_id=a_id, transaction_type=tt,
+                effective_date=date(2026, 8, 27), recorded_at=rec_time,
+                cash_amount=Decimal("250.00"), cash_currency=Currency.TRY,
+                quantity=Decimal("10"),
+            )
+
+        # Reject unit_price
+        with pytest.raises(ValueError, match="must not contain quantity, unit_price, or trade_currency"):
+            PortfolioTransaction(
+                portfolio_id=p_id, account_id=a_id, transaction_type=tt,
+                effective_date=date(2026, 8, 27), recorded_at=rec_time,
+                cash_amount=Decimal("250.00"), cash_currency=Currency.TRY,
+                unit_price=Decimal("10.00"),
+            )
+
 
 def test_fx_conversion_contract():
     p_id = uuid4()
@@ -336,6 +445,26 @@ def test_fx_conversion_contract():
             effective_date=date(2026, 8, 27), recorded_at=rec_time,
             from_currency=Currency.USD, from_amount=Decimal("100"),
             to_currency=Currency.TRY,
+        )
+
+    # Reject cash_bucket_id on FX_CONVERSION (Phase 12A.5)
+    with pytest.raises(ValueError, match="must not contain cash_bucket_id"):
+        PortfolioTransaction(
+            portfolio_id=p_id, account_id=a_id, transaction_type=TransactionType.FX_CONVERSION,
+            effective_date=date(2026, 8, 27), recorded_at=rec_time,
+            from_currency=Currency.USD, from_amount=Decimal("100"),
+            to_currency=Currency.TRY, to_amount=Decimal("3400"),
+            cash_bucket_id=uuid4(),
+        )
+
+    # Reject trade security fields on FX_CONVERSION
+    with pytest.raises(ValueError, match="must not contain security trade fields"):
+        PortfolioTransaction(
+            portfolio_id=p_id, account_id=a_id, transaction_type=TransactionType.FX_CONVERSION,
+            effective_date=date(2026, 8, 27), recorded_at=rec_time,
+            from_currency=Currency.USD, from_amount=Decimal("100"),
+            to_currency=Currency.TRY, to_amount=Decimal("3400"),
+            quantity=Decimal("10"),
         )
 
 
@@ -410,6 +539,39 @@ def test_reversal_constructor_validation():
         )
 
 
+@pytest.mark.parametrize("bad_field,bad_val", [
+    ("instrument_id", uuid4()),
+    ("quantity", Decimal("10")),
+    ("unit_price", Decimal("100.00")),
+    ("trade_currency", Currency.TRY),
+    ("cash_amount", Decimal("1000.00")),
+    ("cash_currency", Currency.TRY),
+    ("cash_bucket_id", uuid4()),
+    ("from_currency", Currency.USD),
+    ("from_amount", Decimal("100")),
+    ("to_currency", Currency.TRY),
+    ("to_amount", Decimal("3400")),
+])
+def test_reversal_rejects_all_economic_fields(bad_field, bad_val):
+    """Phase 12A.5: REVERSAL must be strictly reference-only with zero independent economics."""
+    p_id = uuid4()
+    a_id = uuid4()
+    orig_id = uuid4()
+    rec_time = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+    kwargs = {
+        "portfolio_id": p_id,
+        "account_id": a_id,
+        "transaction_type": TransactionType.REVERSAL,
+        "effective_date": date(2026, 8, 27),
+        "recorded_at": rec_time,
+        "reverses_transaction_id": orig_id,
+        bad_field: bad_val,
+    }
+    with pytest.raises(ValueError, match="REVERSAL must not contain"):
+        PortfolioTransaction(**kwargs)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. Cash Bucket Model Tests
 # ─────────────────────────────────────────────────────────────────────────────
@@ -468,6 +630,23 @@ def test_cash_bucket_purpose_defaults():
         created_at=now,
     )
     assert cb5.included_in_investable_assets is True
+
+
+@pytest.mark.parametrize("invalid_bool", [1, 0, "true", "yes", Decimal("1")])
+def test_cash_bucket_bool_type_safety(invalid_bool):
+    """Phase 12A.5: included_in_investable_assets must be strict bool (or None)."""
+    p_id = uuid4()
+    now = datetime(2026, 8, 27, 10, 0, 0, tzinfo=timezone.utc)
+
+    with pytest.raises(TypeError, match="must be a strict bool"):
+        CashBucket(
+            portfolio_id=p_id,
+            name="Type Error Bucket",
+            currency=Currency.TRY,
+            purpose=CashPurpose.INVESTABLE,
+            included_in_investable_assets=invalid_bool,  # type: ignore
+            created_at=now,
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -552,6 +731,50 @@ def test_position_lot_projection_model():
             origin_transaction_id=tx_id, acquired_date=date(2026, 8, 1),
             quantity_open=Decimal("150"), original_quantity=Decimal("100"),
             native_unit_cost=Decimal("50.25"), currency=Currency.TRY,
+        )
+
+
+@pytest.mark.parametrize("invalid_val", [
+    Decimal("NaN"),
+    Decimal("Infinity"),
+    Decimal("-Infinity"),
+    float(10.0),
+    int(10),
+    "10.0",
+    True,
+])
+def test_position_lot_finite_decimal_rejection(invalid_val):
+    """Phase 12A.5: PositionLot fields reject non-finite Decimals, floats, ints, strings, and bools."""
+    p_id = uuid4()
+    a_id = uuid4()
+    inst_id = uuid4()
+    tx_id = uuid4()
+
+    # original_quantity
+    with pytest.raises((ValueError, TypeError)):
+        PositionLot(
+            portfolio_id=p_id, account_id=a_id, instrument_id=inst_id,
+            origin_transaction_id=tx_id, acquired_date=date(2026, 8, 1),
+            quantity_open=Decimal("100"), original_quantity=invalid_val,  # type: ignore
+            native_unit_cost=Decimal("50.25"), currency=Currency.TRY,
+        )
+
+    # quantity_open
+    with pytest.raises((ValueError, TypeError)):
+        PositionLot(
+            portfolio_id=p_id, account_id=a_id, instrument_id=inst_id,
+            origin_transaction_id=tx_id, acquired_date=date(2026, 8, 1),
+            quantity_open=invalid_val, original_quantity=Decimal("100"),  # type: ignore
+            native_unit_cost=Decimal("50.25"), currency=Currency.TRY,
+        )
+
+    # native_unit_cost
+    with pytest.raises((ValueError, TypeError)):
+        PositionLot(
+            portfolio_id=p_id, account_id=a_id, instrument_id=inst_id,
+            origin_transaction_id=tx_id, acquired_date=date(2026, 8, 1),
+            quantity_open=Decimal("100"), original_quantity=Decimal("100"),
+            native_unit_cost=invalid_val, currency=Currency.TRY,  # type: ignore
         )
 
 

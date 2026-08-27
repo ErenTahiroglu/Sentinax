@@ -1,7 +1,7 @@
 """
 backend/tests/test_portfolio_ledger.py
 ======================================
-Comprehensive In-Memory Portfolio Ledger & Reversal Unit Tests.
+Comprehensive In-Memory Portfolio Ledger & Reversal Unit Tests (Phase 12A & 12A.5).
 
 Zero external network calls (pytest-socket enforced).
 """
@@ -34,6 +34,17 @@ from backend.engine.private.portfolio.models import (
     PortfolioAccount,
     PortfolioTransaction,
 )
+
+
+def _make_portfolio(mode: PortfolioMode = PortfolioMode.MY_PORTFOLIO, p_id: UUID | None = None) -> Portfolio:
+    now = datetime(2026, 8, 27, 10, 0, 0, tzinfo=timezone.utc)
+    return Portfolio(
+        id=p_id or uuid4(),
+        mode=mode,
+        name="Test Portföy",
+        base_currency=Currency.TRY,
+        created_at=now,
+    )
 
 
 def _make_buy(
@@ -72,10 +83,11 @@ def _make_buy(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_append_valid_transactions_and_listing():
-    p_id = uuid4()
+    port = _make_portfolio()
+    p_id = port.id
     a_id = uuid4()
     inst_id = uuid4()
-    ledger = PortfolioLedger(portfolio_id=p_id)
+    ledger = PortfolioLedger(port)
 
     tx1 = _make_buy(p_id, a_id, inst_id, date(2026, 8, 1))
     tx2 = _make_buy(p_id, a_id, inst_id, date(2026, 8, 5))
@@ -94,11 +106,11 @@ def test_append_valid_transactions_and_listing():
 
 
 def test_append_mismatched_portfolio_rejected():
-    p_id = uuid4()
+    port = _make_portfolio()
     other_p_id = uuid4()
     a_id = uuid4()
     inst_id = uuid4()
-    ledger = PortfolioLedger(portfolio_id=p_id)
+    ledger = PortfolioLedger(port)
 
     tx = _make_buy(other_p_id, a_id, inst_id, date(2026, 8, 1))
     res = ledger.append(tx)
@@ -112,10 +124,11 @@ def test_append_mismatched_portfolio_rejected():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_external_idempotency_safe_replay():
-    p_id = uuid4()
+    port = _make_portfolio()
+    p_id = port.id
     a_id = uuid4()
     inst_id = uuid4()
-    ledger = PortfolioLedger(portfolio_id=p_id)
+    ledger = PortfolioLedger(port)
 
     tx1 = _make_buy(
         p_id, a_id, inst_id, date(2026, 8, 1),
@@ -136,10 +149,11 @@ def test_external_idempotency_safe_replay():
 
 
 def test_external_idempotency_conflict_detection():
-    p_id = uuid4()
+    port = _make_portfolio()
+    p_id = port.id
     a_id = uuid4()
     inst_id = uuid4()
-    ledger = PortfolioLedger(portfolio_id=p_id)
+    ledger = PortfolioLedger(port)
 
     tx1 = _make_buy(
         p_id, a_id, inst_id, date(2026, 8, 1),
@@ -165,10 +179,11 @@ def test_external_idempotency_conflict_detection():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_valid_reversal_workflow():
-    p_id = uuid4()
+    port = _make_portfolio()
+    p_id = port.id
     a_id = uuid4()
     inst_id = uuid4()
-    ledger = PortfolioLedger(portfolio_id=p_id)
+    ledger = PortfolioLedger(port)
     now = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
 
     # 1. Original BUY
@@ -193,9 +208,10 @@ def test_valid_reversal_workflow():
 
 
 def test_reversal_target_not_found():
-    p_id = uuid4()
+    port = _make_portfolio()
+    p_id = port.id
     a_id = uuid4()
-    ledger = PortfolioLedger(portfolio_id=p_id)
+    ledger = PortfolioLedger(port)
     now = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
 
     rev = PortfolioTransaction(
@@ -212,18 +228,20 @@ def test_reversal_target_not_found():
 
 
 def test_cross_portfolio_reversal_rejected():
-    p_id_a = uuid4()
-    p_id_b = uuid4()
+    port_a = _make_portfolio()
+    port_b = _make_portfolio()
+    p_id_a = port_a.id
+    p_id_b = port_b.id
     a_id = uuid4()
     inst_id = uuid4()
     now = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
 
-    ledger_b = PortfolioLedger(portfolio_id=p_id_b)
+    ledger_b = PortfolioLedger(port_b)
 
     # Transaction in A
     buy_a = _make_buy(p_id_a, a_id, inst_id, date(2026, 8, 1))
 
-    # Hack to insert into ledger_b's dict for isolated cross-check
+    # Mock insert into ledger_b's dict for isolated cross-check
     ledger_b._tx_by_id[buy_a.id] = buy_a
 
     # Reversal in B targeting transaction from A
@@ -241,12 +259,13 @@ def test_cross_portfolio_reversal_rejected():
 
 
 def test_cross_account_reversal_rejected():
-    p_id = uuid4()
+    port = _make_portfolio()
+    p_id = port.id
     a_id_1 = uuid4()
     a_id_2 = uuid4()
     inst_id = uuid4()
     now = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
-    ledger = PortfolioLedger(portfolio_id=p_id)
+    ledger = PortfolioLedger(port)
 
     # BUY in account 1
     buy_1 = _make_buy(p_id, a_id_1, inst_id, date(2026, 8, 1))
@@ -267,11 +286,12 @@ def test_cross_account_reversal_rejected():
 
 
 def test_reversal_of_reversal_rejected():
-    p_id = uuid4()
+    port = _make_portfolio()
+    p_id = port.id
     a_id = uuid4()
     inst_id = uuid4()
     now = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
-    ledger = PortfolioLedger(portfolio_id=p_id)
+    ledger = PortfolioLedger(port)
 
     # 1. Original BUY
     buy = _make_buy(p_id, a_id, inst_id, date(2026, 8, 1))
@@ -304,11 +324,12 @@ def test_reversal_of_reversal_rejected():
 
 
 def test_double_reversal_rejected():
-    p_id = uuid4()
+    port = _make_portfolio()
+    p_id = port.id
     a_id = uuid4()
     inst_id = uuid4()
     now = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
-    ledger = PortfolioLedger(portfolio_id=p_id)
+    ledger = PortfolioLedger(port)
 
     # 1. Original BUY
     buy = _make_buy(p_id, a_id, inst_id, date(2026, 8, 1))
@@ -396,16 +417,16 @@ def test_goal_and_contribution_consistency():
         PortfolioLedgerValidator.validate_contribution_consistency(contrib, port, goal=other_goal_same_port)
 
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. Deterministic Audit Order Tests
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_deterministic_audit_sorting():
-    p_id = uuid4()
+    port = _make_portfolio()
+    p_id = port.id
     a_id = uuid4()
     inst_id = uuid4()
-    ledger = PortfolioLedger(portfolio_id=p_id)
+    ledger = PortfolioLedger(port)
 
     t1 = _make_buy(p_id, a_id, inst_id, date(2026, 8, 10))
     t2 = _make_buy(p_id, a_id, inst_id, date(2026, 8, 1), exec_at=datetime(2026, 8, 1, 14, 0, 0, tzinfo=timezone.utc))
@@ -418,3 +439,51 @@ def test_deterministic_audit_sorting():
 
     sorted_txs = ledger.list_transactions()
     assert [t.id for t in sorted_txs] == [t3.id, t2.id, t1.id]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. Phase 12A.5 Root Mode Binding & Sandbox Cross-Contamination Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_ledger_root_mode_binding():
+    real_port = _make_portfolio(mode=PortfolioMode.MY_PORTFOLIO)
+    real_ledger = PortfolioLedger(real_port)
+    assert real_ledger.portfolio_id == real_port.id
+    assert real_ledger.mode == PortfolioMode.MY_PORTFOLIO
+    assert real_ledger.portfolio == real_port
+
+    sandbox_port = _make_portfolio(mode=PortfolioMode.SANDBOX)
+    sandbox_ledger = PortfolioLedger(sandbox_port)
+    assert sandbox_ledger.portfolio_id == sandbox_port.id
+    assert sandbox_ledger.mode == PortfolioMode.SANDBOX
+
+    with pytest.raises(TypeError, match="must be an instance of Portfolio"):
+        PortfolioLedger("not_a_portfolio")  # type: ignore
+
+    with pytest.raises(TypeError, match="must be an instance of Portfolio"):
+        PortfolioLedger(real_port.id)  # type: ignore
+
+
+
+def test_sandbox_cross_contamination_isolation():
+    real_port = _make_portfolio(mode=PortfolioMode.MY_PORTFOLIO)
+    real_ledger = PortfolioLedger(real_port)
+
+    sandbox_port = _make_portfolio(mode=PortfolioMode.SANDBOX)
+    sandbox_ledger = PortfolioLedger(sandbox_port)
+
+    a_id = uuid4()
+    inst_id = uuid4()
+
+    real_tx = _make_buy(real_port.id, a_id, inst_id, date(2026, 8, 1))
+    sandbox_tx = _make_buy(sandbox_port.id, a_id, inst_id, date(2026, 8, 1))
+
+    # Append real tx to sandbox ledger -> INVALID
+    res_sandbox = sandbox_ledger.append(real_tx)
+    assert res_sandbox.status == AppendStatus.INVALID
+    assert len(sandbox_ledger) == 0
+
+    # Append sandbox tx to real ledger -> INVALID
+    res_real = real_ledger.append(sandbox_tx)
+    assert res_real.status == AppendStatus.INVALID
+    assert len(real_ledger) == 0

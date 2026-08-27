@@ -4,6 +4,7 @@ backend/engine/private/portfolio/ledger.py
 Authoritative In-Memory Immutable Ledger & Consistency Validator.
 
 Core Invariants:
+    - Ledger binds directly to root `Portfolio` aggregate (eliminates mode split-brain).
     - Transactions are APPEND-ONLY. No edits, no deletes, no in-place modifications.
     - Corrections are executed via REVERSAL events referencing `reverses_transaction_id`.
     - A transaction may be reversed at most once in authoritative history.
@@ -139,21 +140,29 @@ class PortfolioLedger:
     In-memory immutable transaction ledger for a single Portfolio context.
 
     Enforces:
+        - Binds to root `Portfolio` aggregate (deriving `portfolio_id` and `mode`).
         - Append-only semantics.
         - Strict external source idempotency / conflict detection.
         - Strict reversal validation (no self-reversal, cross-portfolio, cross-account, double reversal).
         - Deterministic audit sorting.
     """
 
-    def __init__(self, portfolio_id: UUID, mode: PortfolioMode = PortfolioMode.MY_PORTFOLIO) -> None:
-        self._portfolio_id: UUID = portfolio_id
-        self._mode: PortfolioMode = mode
+    def __init__(self, portfolio: Portfolio) -> None:
+        if not isinstance(portfolio, Portfolio):
+            raise TypeError(f"portfolio must be an instance of Portfolio, got {type(portfolio).__name__}")
+        self._portfolio: Portfolio = portfolio
+        self._portfolio_id: UUID = portfolio.id
+        self._mode: PortfolioMode = portfolio.mode
         self._transactions: List[PortfolioTransaction] = []
         self._tx_by_id: Dict[UUID, PortfolioTransaction] = {}
         # Map (portfolio_id, account_id, external_source_norm, external_ref) -> transaction
         self._external_refs: Dict[Tuple[UUID, UUID, str, str], PortfolioTransaction] = {}
         # Map reversed_transaction_id -> reversal_transaction_id
         self._reversals: Dict[UUID, UUID] = {}
+
+    @property
+    def portfolio(self) -> Portfolio:
+        return self._portfolio
 
     @property
     def portfolio_id(self) -> UUID:
