@@ -100,16 +100,40 @@ Base URL: `https://data.sec.gov`
 
 ---
 
-## 9. Phase 8B.1 — Canonical Concept Families & Raw-Fact Candidate Resolver
+## 9. Phase 8B.1 / 8B.1.5 — Canonical Concept Families & Semantic Hardening
 
-Phase 8B.1 defines the deterministic registry that maps raw taxonomy tags to canonical economic concept families without metric calculations or winner selection.
+Phase 8B.1 / 8B.1.5 defines the deterministic registry that maps raw taxonomy tags to canonical economic concept families without metric calculations or winner selection.
 
-### 9.1 Initial Canonical Concept Families
+### 9.1 Authoritative Taxonomy Support Reality
+
+- **US-GAAP**: SEC currently supports the **2026 release** (and historical 2020–2025 releases).
+- **IFRS**: In the official SEC Standard Taxonomies list, the current SEC-supported IFRS taxonomy is **IFRS 2025** (and earlier 2020–2024 releases).  
+  *Note*: Publication of a taxonomy by the IASB does not constitute acceptance by the SEC until officially adopted on `sec.gov`. Sentinax strictly avoids fabricating "SEC-supported IFRS 2026".
+
+### 9.2 Critical Semantic Safeguards
+
+1. **IFRS 18 Operating Profit vs IAS 1 Operating Subtotal**:
+   - `ifrs-full:ProfitLossFromOperatingActivities` was an optional, entity-specific subtotal under IAS 1 and maps to `OPERATING_INCOME_LEGACY_IAS1`.
+   - `ifrs-full:OperatingProfitLoss` is a standardized operating category under IFRS 18 and maps to `OPERATING_PROFIT_IFRS18`.
+   - These two concepts are semantically distinct and are **never treated as blind interchangeable aliases**.
+
+2. **CapEx PP&E vs Productive Assets**:
+   - `CAPEX_PP&E`: Measures strictly cash paid for physical property, plant, and equipment (`us-gaap:PaymentsToAcquirePropertyPlantAndEquipment`, `ifrs-full:PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities`).
+   - `CAPEX_PRODUCTIVE_ASSETS`: Measures broader capital additions including software, licenses, and intangible assets (`us-gaap:PaymentsToAcquireProductiveAssets`).
+   - *Double-Count Guard*: Downstream analytical engines and future FCF calculators must treat these as distinct items and **never sum them together**.
+
+3. **Income and Equity Scope Separation**:
+   - Parent stockholders equity (`StockholdersEquity`, `EquityAttributableToOwnersOfParent`) and total equity including non-controlling interest (`StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest`, `Equity`) are preserved as separate canonical concepts.
+   - Consolidated `NET_INCOME` does not silently collapse parent-only or common-stockholder-only income.
+
+### 9.3 Canonical Concept Families Table
 
 | Canonical Concept | Statement Family | Expected Period | Expected Unit Class | Primary Verified Tags |
 |---|---|---|---|---|
 | `REVENUE` | `INCOME_STATEMENT` | `DURATION` | `MONETARY` | `us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax`, `us-gaap:Revenues`, `ifrs-full:Revenue` |
-| `OPERATING_INCOME` | `INCOME_STATEMENT` | `DURATION` | `MONETARY` | `us-gaap:OperatingIncomeLoss`, `ifrs-full:ProfitLossFromOperatingActivities` |
+| `OPERATING_INCOME` | `INCOME_STATEMENT` | `DURATION` | `MONETARY` | `us-gaap:OperatingIncomeLoss` |
+| `OPERATING_INCOME_LEGACY_IAS1` | `INCOME_STATEMENT` | `DURATION` | `MONETARY` | `ifrs-full:ProfitLossFromOperatingActivities` (Legacy IAS 1) |
+| `OPERATING_PROFIT_IFRS18` | `INCOME_STATEMENT` | `DURATION` | `MONETARY` | `ifrs-full:OperatingProfitLoss` (Standardized IFRS 18) |
 | `NET_INCOME` | `INCOME_STATEMENT` | `DURATION` | `MONETARY` | `us-gaap:NetIncomeLoss`, `us-gaap:ProfitLoss`, `ifrs-full:ProfitLoss` |
 | `TOTAL_ASSETS` | `BALANCE_SHEET` | `INSTANT` | `MONETARY` | `us-gaap:Assets`, `ifrs-full:Assets` |
 | `TOTAL_LIABILITIES` | `BALANCE_SHEET` | `INSTANT` | `MONETARY` | `us-gaap:Liabilities`, `ifrs-full:Liabilities` |
@@ -119,16 +143,17 @@ Phase 8B.1 defines the deterministic registry that maps raw taxonomy tags to can
 | `CURRENT_LIABILITIES` | `BALANCE_SHEET` | `INSTANT` | `MONETARY` | `us-gaap:LiabilitiesCurrent`, `ifrs-full:CurrentLiabilities` |
 | `CASH_AND_CASH_EQUIVALENTS` | `BALANCE_SHEET` | `INSTANT` | `MONETARY` | `us-gaap:CashAndCashEquivalentsAtCarryingValue`, `ifrs-full:CashAndCashEquivalents` |
 | `OPERATING_CASH_FLOW` | `CASH_FLOW_STATEMENT` | `DURATION` | `MONETARY` | `us-gaap:NetCashProvidedByUsedInOperatingActivities`, `ifrs-full:CashFlowsFromUsedInOperatingActivities` |
-| `CAPEX_PP&E` | `CASH_FLOW_STATEMENT` | `DURATION` | `MONETARY` | `us-gaap:PaymentsToAcquirePropertyPlantAndEquipment`, `ifrs-full:PurchaseOfPropertyPlantAndEquipment` |
+| `CAPEX_PP&E` | `CASH_FLOW_STATEMENT` | `DURATION` | `MONETARY` | `us-gaap:PaymentsToAcquirePropertyPlantAndEquipment`, `ifrs-full:PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities` |
+| `CAPEX_PRODUCTIVE_ASSETS` | `CASH_FLOW_STATEMENT` | `DURATION` | `MONETARY` | `us-gaap:PaymentsToAcquireProductiveAssets` |
 | `DILUTED_EPS` | `INCOME_STATEMENT` | `DURATION` | `MONETARY_PER_SHARE` | `us-gaap:EarningsPerShareDiluted`, `ifrs-full:DilutedEarningsLossPerShare` |
 | `DILUTED_WEIGHTED_AVERAGE_SHARES` | `SHARE_DATA` | `DURATION` | `SHARES` | `us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding`, `ifrs-full:AdjustedWeightedAverageShares` |
 | `SHARES_OUTSTANDING` | `SHARE_DATA` | `INSTANT` | `SHARES` | `dei:EntityCommonStockSharesOutstanding`, `us-gaap:CommonStockSharesOutstanding` |
 
-### 9.2 Candidate Invariant (Candidate != Winner)
+### 9.4 Candidate Invariant (Candidate != Winner)
 
 - `SECCanonicalFactCandidate` represents a validly mapped economic disclosure entry.
 - All candidate entries from original filings, amendments (`10-K/A`), and comparative restatement columns are preserved simultaneously.
-- No candidate is discarded or chosen as a single "winner" in Phase 8B.1.
+- No candidate is discarded or chosen as a single "winner" in Phase 8B.1 / 8B.1.5.
 
 ---
 
@@ -140,4 +165,5 @@ Phase 8B.2 is strictly responsible for:
 - Amendment and restatement reconciliation.
 - Point-in-Time (PIT) as-of knowledge view construction.
 - Current-view selection for downstream analytical engines.
+
 
