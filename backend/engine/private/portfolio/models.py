@@ -1,0 +1,519 @@
+"""
+backend/engine/private/portfolio/models.py
+===========================================
+Immutable Domain Models for the Private Personal Investment Decision Engine.
+
+Key Architectural Invariants:
+    - Transactions are the SINGLE AUTHORITATIVE SOURCE OF TRUTH.
+    - Positions, lots, cash balances, and portfolio values are DERIVED PROJECTIONS.
+    - Two independent time axes:
+        1. Economic event time: `effective_date` / `executed_at`
+        2. System knowledge time: `recorded_at`
+    - Strict Decimal typing (no float, no NaN, no Inf, no silent float conversions).
+    - Hard bounded contexts between MY_PORTFOLIO and SANDBOX.
+    - Zero user secrets, credentials, or unnecessary PII.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from decimal import Decimal
+import hashlib
+from typing import Any, Dict, Optional
+from uuid import UUID, uuid4
+
+from backend.engine.private.domain import (
+    CashPurpose,
+    ContributionStatus,
+    Currency,
+    GoalPriority,
+    GoalStatus,
+    LotStatus,
+    PortfolioMode,
+    TransactionType,
+)
+
+
+def _validate_decimal_positive(val: Any, field_name: str) -> Decimal:
+    """Validates that a value is strictly a finite Decimal > 0 (not float, not bool, not int/str)."""
+    if isinstance(val, bool) or not isinstance(val, Decimal):
+        raise TypeError(f"{field_name} must be a Decimal, got {type(val).__name__}: {val!r}")
+    if not val.is_finite():
+        raise ValueError(f"{field_name} must be finite, got: {val}")
+    if val <= Decimal("0"):
+        raise ValueError(f"{field_name} must be strictly positive (> 0), got: {val}")
+    return val
+
+
+def _validate_aware_datetime(dt: Optional[datetime], field_name: str) -> None:
+    """Validates that a datetime is timezone-aware."""
+    if dt is not None and dt.tzinfo is None:
+        raise ValueError(f"{field_name} must be a timezone-aware datetime, got naive: {dt}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. Portfolio Model
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class Portfolio:
+    """
+    Root portfolio domain entity representing either real user holdings or an isolated sandbox.
+    """
+    mode: PortfolioMode
+    name: str
+    base_currency: Currency
+    created_at: datetime
+    id: UUID = field(default_factory=uuid4)
+    archived_at: Optional[datetime] = None
+    source_portfolio_id: Optional[UUID] = None
+    source_snapshot_time: Optional[datetime] = None
+    owner_id: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if not self.name or not self.name.strip():
+            raise ValueError("Portfolio name cannot be empty.")
+        if self.created_at.tzinfo is None:
+            raise ValueError(f"created_at must be timezone-aware, got naive: {self.created_at}")
+        _validate_aware_datetime(self.archived_at, "archived_at")
+        _validate_aware_datetime(self.source_snapshot_time, "source_snapshot_time")
+
+        if self.mode == PortfolioMode.MY_PORTFOLIO and self.source_portfolio_id is not None:
+            raise ValueError("MY_PORTFOLIO cannot have source_portfolio_id (cloning/provenance is SANDBOX only).")
+
+    @property
+    def is_active(self) -> bool:
+        return self.archived_at is None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "mode": self.mode.value,
+            "name": self.name,
+            "base_currency": self.base_currency.value,
+            "created_at": self.created_at.isoformat(),
+            "archived_at": self.archived_at.isoformat() if self.archived_at else None,
+            "source_portfolio_id": str(self.source_portfolio_id) if self.source_portfolio_id else None,
+            "source_snapshot_time": self.source_snapshot_time.isoformat() if self.source_snapshot_time else None,
+            "owner_id": self.owner_id,
+            "is_active": self.is_active,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. Portfolio Account Model
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class PortfolioAccount:
+    """
+    Custody, brokerage, or manual ledger account within a Portfolio.
+    Allows same canonical instrument to exist across multiple accounts with separate tax/lot tracking.
+    """
+    portfolio_id: UUID
+    name: str
+    base_currency: Currency
+    created_at: datetime
+    id: UUID = field(default_factory=uuid4)
+    broker_label: Optional[str] = None
+    archived_at: Optional[datetime] = None
+
+    def __post_init__(self) -> None:
+        if not self.name or not self.name.strip():
+            raise ValueError("Account name cannot be empty.")
+        if self.created_at.tzinfo is None:
+            raise ValueError(f"created_at must be timezone-aware, got naive: {self.created_at}")
+        _validate_aware_datetime(self.archived_at, "archived_at")
+
+    @property
+    def is_active(self) -> bool:
+        return self.archived_at is None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "portfolio_id": str(self.portfolio_id),
+            "name": self.name,
+            "base_currency": self.base_currency.value,
+            "broker_label": self.broker_label,
+            "created_at": self.created_at.isoformat(),
+            "archived_at": self.archived_at.isoformat() if self.archived_at else None,
+            "is_active": self.is_active,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. Immutable Transaction Event Model
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class PortfolioTransaction:
+    """
+    Immutable economic event recorded in the portfolio ledger.
+
+    Invariants:
+        - No mutation methods / frozen dataclass.
+        - Two independent time axes:
+            * `effective_date` / `executed_at`: Economic event time.
+            * `recorded_at`: System knowledge time (when Sentinax ingested it).
+        - Strict Decimal type checks on all financial amounts.
+        - Exact multi-currency preservation (no implicit conversions).
+    """
+    portfolio_id: UUID
+    account_id: UUID
+    transaction_type: TransactionType
+    effective_date: date
+    recorded_at: datetime
+
+    id: UUID = field(default_factory=uuid4)
+    executed_at: Optional[datetime] = None
+
+    # Trade security fields (BUY, SELL)
+    instrument_id: Optional[UUID] = None
+    quantity: Optional[Decimal] = None
+    unit_price: Optional[Decimal] = None
+    trade_currency: Optional[Currency] = None
+
+    # Cash movement fields (CASH_DEPOSIT, CASH_WITHDRAWAL, DIVIDEND, INTEREST, FEE, TAX_WITHHOLDING)
+    cash_amount: Optional[Decimal] = None
+    cash_currency: Optional[Currency] = None
+    cash_bucket_id: Optional[UUID] = None
+
+    # FX Conversion fields (two-leg economics)
+    from_currency: Optional[Currency] = None
+    from_amount: Optional[Decimal] = None
+    to_currency: Optional[Currency] = None
+    to_amount: Optional[Decimal] = None
+
+    # External source & idempotency
+    external_source: Optional[str] = None
+    external_reference: Optional[str] = None
+
+    # Reversal / correction link
+    reverses_transaction_id: Optional[UUID] = None
+
+    # Context notes (metadata only, excluded from economic fingerprint)
+    notes: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        # 1. Timezone checks
+        if self.recorded_at.tzinfo is None:
+            raise ValueError(f"recorded_at must be timezone-aware, got naive: {self.recorded_at}")
+        if self.executed_at is not None and self.executed_at.tzinfo is None:
+            raise ValueError(f"executed_at must be timezone-aware, got naive: {self.executed_at}")
+
+        # 2. Per-TransactionType Contract Validation
+        t = self.transaction_type
+
+        if t in (TransactionType.BUY, TransactionType.SELL):
+            if self.instrument_id is None:
+                raise ValueError(f"{t.name} requires instrument_id.")
+            if self.quantity is None:
+                raise ValueError(f"{t.name} requires quantity.")
+            _validate_decimal_positive(self.quantity, f"{t.name} quantity")
+            if self.unit_price is None:
+                raise ValueError(f"{t.name} requires unit_price.")
+            _validate_decimal_positive(self.unit_price, f"{t.name} unit_price")
+            if self.trade_currency is None:
+                raise ValueError(f"{t.name} requires trade_currency.")
+
+            # Contradictory economics check
+            if self.from_currency is not None or self.from_amount is not None or self.to_currency is not None or self.to_amount is not None:
+                raise ValueError(f"{t.name} must not contain FX conversion legs.")
+            if self.reverses_transaction_id is not None:
+                raise ValueError(f"{t.name} must not have reverses_transaction_id (use REVERSAL type).")
+
+        elif t in (TransactionType.CASH_DEPOSIT, TransactionType.CASH_WITHDRAWAL):
+            if self.cash_amount is None:
+                raise ValueError(f"{t.name} requires cash_amount.")
+            _validate_decimal_positive(self.cash_amount, f"{t.name} cash_amount")
+            if self.cash_currency is None:
+                raise ValueError(f"{t.name} requires cash_currency.")
+
+            # Contradictory economics check
+            if self.quantity is not None or self.unit_price is not None or self.trade_currency is not None:
+                raise ValueError(f"{t.name} must not contain trade security fields.")
+            if self.from_currency is not None or self.from_amount is not None or self.to_currency is not None or self.to_amount is not None:
+                raise ValueError(f"{t.name} must not contain FX conversion legs.")
+            if self.reverses_transaction_id is not None:
+                raise ValueError(f"{t.name} must not have reverses_transaction_id (use REVERSAL type).")
+
+        elif t in (TransactionType.DIVIDEND, TransactionType.INTEREST, TransactionType.FEE, TransactionType.TAX_WITHHOLDING):
+            if self.cash_amount is None:
+                raise ValueError(f"{t.name} requires cash_amount.")
+            _validate_decimal_positive(self.cash_amount, f"{t.name} cash_amount")
+            if self.cash_currency is None:
+                raise ValueError(f"{t.name} requires cash_currency.")
+
+            if self.from_currency is not None or self.from_amount is not None or self.to_currency is not None or self.to_amount is not None:
+                raise ValueError(f"{t.name} must not contain FX conversion legs.")
+            if self.reverses_transaction_id is not None:
+                raise ValueError(f"{t.name} must not have reverses_transaction_id (use REVERSAL type).")
+
+        elif t == TransactionType.FX_CONVERSION:
+            if self.from_currency is None:
+                raise ValueError("FX_CONVERSION requires from_currency.")
+            if self.from_amount is None:
+                raise ValueError("FX_CONVERSION requires from_amount.")
+            _validate_decimal_positive(self.from_amount, "from_amount")
+
+            if self.to_currency is None:
+                raise ValueError("FX_CONVERSION requires to_currency.")
+            if self.to_amount is None:
+                raise ValueError("FX_CONVERSION requires to_amount.")
+            _validate_decimal_positive(self.to_amount, "to_amount")
+
+            if self.from_currency == self.to_currency:
+                raise ValueError(f"FX_CONVERSION requires distinct currencies, got {self.from_currency} on both legs.")
+
+            # Contradictory economics check
+            if self.quantity is not None or self.unit_price is not None or self.trade_currency is not None:
+                raise ValueError("FX_CONVERSION must not contain security trade fields.")
+            if self.reverses_transaction_id is not None:
+                raise ValueError("FX_CONVERSION must not have reverses_transaction_id (use REVERSAL type).")
+
+        elif t == TransactionType.REVERSAL:
+            if self.reverses_transaction_id is None:
+                raise ValueError("REVERSAL requires reverses_transaction_id.")
+            if self.reverses_transaction_id == self.id:
+                raise ValueError("Transaction cannot reverse itself (self-reversal).")
+
+    def economic_fingerprint(self) -> str:
+        """
+        Computes deterministic SHA-256 economic fingerprint.
+        Excludes physical internal `id`, `recorded_at`, and mutable `notes`.
+        """
+        parts = [
+            str(self.portfolio_id),
+            str(self.account_id),
+            self.transaction_type.value,
+            str(self.instrument_id) if self.instrument_id else "None",
+            self.effective_date.isoformat(),
+            self.executed_at.isoformat() if self.executed_at else "None",
+            str(self.quantity) if self.quantity is not None else "None",
+            str(self.unit_price) if self.unit_price is not None else "None",
+            self.trade_currency.value if self.trade_currency else "None",
+            str(self.cash_amount) if self.cash_amount is not None else "None",
+            self.cash_currency.value if self.cash_currency else "None",
+            str(self.cash_bucket_id) if self.cash_bucket_id else "None",
+            self.from_currency.value if self.from_currency else "None",
+            str(self.from_amount) if self.from_amount is not None else "None",
+            self.to_currency.value if self.to_currency else "None",
+            str(self.to_amount) if self.to_amount is not None else "None",
+            (self.external_source or "").strip().upper(),
+            (self.external_reference or "").strip(),
+            str(self.reverses_transaction_id) if self.reverses_transaction_id else "None",
+        ]
+        raw = ":".join(parts)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "portfolio_id": str(self.portfolio_id),
+            "account_id": str(self.account_id),
+            "transaction_type": self.transaction_type.value,
+            "effective_date": self.effective_date.isoformat(),
+            "executed_at": self.executed_at.isoformat() if self.executed_at else None,
+            "recorded_at": self.recorded_at.isoformat(),
+            "instrument_id": str(self.instrument_id) if self.instrument_id else None,
+            "quantity": str(self.quantity) if self.quantity is not None else None,
+            "unit_price": str(self.unit_price) if self.unit_price is not None else None,
+            "trade_currency": self.trade_currency.value if self.trade_currency else None,
+            "cash_amount": str(self.cash_amount) if self.cash_amount is not None else None,
+            "cash_currency": self.cash_currency.value if self.cash_currency else None,
+            "cash_bucket_id": str(self.cash_bucket_id) if self.cash_bucket_id else None,
+            "from_currency": self.from_currency.value if self.from_currency else None,
+            "from_amount": str(self.from_amount) if self.from_amount is not None else None,
+            "to_currency": self.to_currency.value if self.to_currency else None,
+            "to_amount": str(self.to_amount) if self.to_amount is not None else None,
+            "external_source": self.external_source,
+            "external_reference": self.external_reference,
+            "reverses_transaction_id": str(self.reverses_transaction_id) if self.reverses_transaction_id else None,
+            "notes": self.notes,
+            "economic_fingerprint": self.economic_fingerprint(),
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. Cash Bucket Model
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class CashBucket:
+    """
+    Categorizes personal cash into liquidity/purpose buckets (e.g. Investable vs Emergency Reserve).
+    Protects emergency/near-term money from being treated as investable asset base.
+    """
+    portfolio_id: UUID
+    name: str
+    currency: Currency
+    purpose: CashPurpose
+    created_at: datetime
+    id: UUID = field(default_factory=uuid4)
+    account_id: Optional[UUID] = None
+    included_in_investable_assets: Optional[bool] = None
+    archived_at: Optional[datetime] = None
+
+    def __post_init__(self) -> None:
+        if not self.name or not self.name.strip():
+            raise ValueError("Cash bucket name cannot be empty.")
+        if self.created_at.tzinfo is None:
+            raise ValueError(f"created_at must be timezone-aware, got naive: {self.created_at}")
+        _validate_aware_datetime(self.archived_at, "archived_at")
+
+        # Purpose-driven default inclusion
+        if self.included_in_investable_assets is None:
+            if self.purpose == CashPurpose.INVESTABLE:
+                self.included_in_investable_assets = True
+            else:
+                self.included_in_investable_assets = False
+
+    @property
+    def is_active(self) -> bool:
+        return self.archived_at is None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "portfolio_id": str(self.portfolio_id),
+            "account_id": str(self.account_id) if self.account_id else None,
+            "name": self.name,
+            "currency": self.currency.value,
+            "purpose": self.purpose.value,
+            "included_in_investable_assets": self.included_in_investable_assets,
+            "created_at": self.created_at.isoformat(),
+            "archived_at": self.archived_at.isoformat() if self.archived_at else None,
+            "is_active": self.is_active,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. Investment Goal Model
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class InvestmentGoal:
+    """
+    User investment/financial goal with explicit target amount, currency, and arbitrary target date.
+    """
+    portfolio_id: UUID
+    name: str
+    target_amount: Decimal
+    target_currency: Currency
+    created_at: datetime
+    id: UUID = field(default_factory=uuid4)
+    target_date: Optional[date] = None
+    priority: GoalPriority = GoalPriority.MEDIUM
+    status: GoalStatus = GoalStatus.ACTIVE
+    archived_at: Optional[datetime] = None
+
+    def __post_init__(self) -> None:
+        if not self.name or not self.name.strip():
+            raise ValueError("Goal name cannot be empty.")
+        _validate_decimal_positive(self.target_amount, "target_amount")
+        if self.created_at.tzinfo is None:
+            raise ValueError(f"created_at must be timezone-aware, got naive: {self.created_at}")
+        _validate_aware_datetime(self.archived_at, "archived_at")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "portfolio_id": str(self.portfolio_id),
+            "name": self.name,
+            "target_amount": str(self.target_amount),
+            "target_currency": self.target_currency.value,
+            "target_date": self.target_date.isoformat() if self.target_date else None,
+            "priority": self.priority.value,
+            "status": self.status.value,
+            "created_at": self.created_at.isoformat(),
+            "archived_at": self.archived_at.isoformat() if self.archived_at else None,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. Planned Contribution Model
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class PlannedContribution:
+    """
+    Expected future inflow tied to a goal or cash bucket.
+    CRITICAL: A planned contribution is NOT portfolio cash. It does not alter the ledger.
+    """
+    portfolio_id: UUID
+    expected_date: date
+    amount: Decimal
+    currency: Currency
+    created_at: datetime
+    id: UUID = field(default_factory=uuid4)
+    goal_id: Optional[UUID] = None
+    cash_bucket_id: Optional[UUID] = None
+    status: ContributionStatus = ContributionStatus.PLANNED
+
+    def __post_init__(self) -> None:
+        _validate_decimal_positive(self.amount, "PlannedContribution amount")
+        if self.created_at.tzinfo is None:
+            raise ValueError(f"created_at must be timezone-aware, got naive: {self.created_at}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "portfolio_id": str(self.portfolio_id),
+            "goal_id": str(self.goal_id) if self.goal_id else None,
+            "cash_bucket_id": str(self.cash_bucket_id) if self.cash_bucket_id else None,
+            "expected_date": self.expected_date.isoformat(),
+            "amount": str(self.amount),
+            "currency": self.currency.value,
+            "created_at": self.created_at.isoformat(),
+            "status": self.status.value,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. Position / Tax Lot Model (Projection Boundary Only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class PositionLot:
+    """
+    Derived accounting / tax lot produced by ledger projections.
+    NEVER the primary source of truth; strictly derived from immutable transactions.
+    """
+    portfolio_id: UUID
+    account_id: UUID
+    instrument_id: UUID
+    origin_transaction_id: UUID
+    acquired_date: date
+    quantity_open: Decimal
+    original_quantity: Decimal
+    native_unit_cost: Decimal
+    currency: Currency
+    id: UUID = field(default_factory=uuid4)
+    status: LotStatus = LotStatus.OPEN
+
+    def __post_init__(self) -> None:
+        if isinstance(self.original_quantity, bool) or not isinstance(self.original_quantity, Decimal) or self.original_quantity <= Decimal("0"):
+            raise ValueError("original_quantity must be Decimal > 0.")
+        if isinstance(self.quantity_open, bool) or not isinstance(self.quantity_open, Decimal) or self.quantity_open < Decimal("0"):
+            raise ValueError("quantity_open must be Decimal >= 0.")
+        if self.quantity_open > self.original_quantity:
+            raise ValueError("quantity_open cannot exceed original_quantity.")
+        if isinstance(self.native_unit_cost, bool) or not isinstance(self.native_unit_cost, Decimal) or self.native_unit_cost < Decimal("0"):
+            raise ValueError("native_unit_cost must be Decimal >= 0.")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "portfolio_id": str(self.portfolio_id),
+            "account_id": str(self.account_id),
+            "instrument_id": str(self.instrument_id),
+            "origin_transaction_id": str(self.origin_transaction_id),
+            "acquired_date": self.acquired_date.isoformat(),
+            "quantity_open": str(self.quantity_open),
+            "original_quantity": str(self.original_quantity),
+            "native_unit_cost": str(self.native_unit_cost),
+            "currency": self.currency.value,
+            "status": self.status.value,
+        }

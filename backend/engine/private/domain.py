@@ -277,3 +277,61 @@ class CorporateActionType(Enum):
     DELISTING = "delisting"               # Removal from exchange listing
     FUND_CODE_CHANGE = "fund_code_change" # TEFAS / UCITS fund code migration
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Portfolio Ledger & Personal Investment Enums (Phase 12A)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TransactionType(Enum):
+    """Canonical transaction types for the immutable portfolio ledger."""
+    BUY = "buy"
+    SELL = "sell"
+    CASH_DEPOSIT = "cash_deposit"
+    CASH_WITHDRAWAL = "cash_withdrawal"
+    DIVIDEND = "dividend"
+    INTEREST = "interest"
+    FX_CONVERSION = "fx_conversion"
+    FEE = "fee"
+    TAX_WITHHOLDING = "tax_withholding"
+    REVERSAL = "reversal"
+
+
+class CashPurpose(Enum):
+    """Purpose and liquidity classification for cash buckets."""
+    INVESTABLE = "investable"
+    EMERGENCY_RESERVE = "emergency_reserve"
+    NEAR_TERM = "near_term"
+    RESTRICTED_OTHER = "restricted_other"
+
+
+class GoalPriority(Enum):
+    """Priority level for financial/investment goals."""
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class GoalStatus(Enum):
+    """Lifecycle status of an investment goal."""
+    ACTIVE = "active"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+class ContributionStatus(Enum):
+    """Lifecycle status of a planned cash contribution."""
+    PLANNED = "planned"
+    CONFIRMED = "confirmed"
+    CANCELLED = "cancelled"
+    RECEIVED = "received"
+
+
+class LotStatus(Enum):
+    """Status of a derived position tax/accounting lot."""
+    OPEN = "open"
+    PARTIALLY_CLOSED = "partially_closed"
+    CLOSED = "closed"
+
+

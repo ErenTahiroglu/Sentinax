@@ -60,10 +60,12 @@ The PIT resolver answers strictly: **"What did Sentinax know at knowledge time?"
   - Observation type (`TEFAS_FUND_CURRENT_METRICS`)
   - Resolution mode and `as_of` timestamp
   - Canonical `instrument_id`
-  - Authoritative snapshot scope: `(provider, endpoint, provider_symbol, retrieved_at, payload_hash)`
+  - Authoritative snapshot scope: `(provider, endpoint, instrument_id, provider_symbol, retrieved_at, payload_hash, parser_version)`
   - Economic observation fingerprint: `(instrument_id, provider, provider_symbol, portfolio_size, currency, outstanding_units, investor_count, reported_current_unit_price, instrument_type, status)`
 - Re-running queries across reversed input orders or regenerated UUIDs yields identical resolution keys.
 
-### 6. TRY-Only Currency Enforcement
-- Only observations with canonical `portfolio_size_currency == Currency.TRY` are eligible.
-- Non-TRY canonical instruments fail closed.
+### 6. Strict Typing & Explicit Classification Invariants
+- **Exact Decimal Preservation:** Persisted AUM (`portfolio_size`) and `outstanding_units` must be exact `Decimal` instances (finite and non-negative); `float`, string, integer, or silent float conversions are strictly rejected.
+- **Explicit Instrument Type:** Canonical `instrument_type` must be explicit and belong to `TEFAS_RESOLVER_ALLOWED_INSTRUMENT_TYPES`; `None` fails closed as ineligible.
+- **TRY-Only Currency Enforcement:** Only observations with canonical `portfolio_size_currency == Currency.TRY` are eligible; non-TRY canonical instruments fail closed.
+
