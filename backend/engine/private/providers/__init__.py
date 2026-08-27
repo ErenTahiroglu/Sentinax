@@ -10,6 +10,7 @@ from backend.engine.private.providers.fred_alfred import FREDALFREDProvider
 from backend.engine.private.providers.manual_enag import ManualENAGProvider
 from backend.engine.private.providers.marketstack_eod import MarketstackEODProvider
 from backend.engine.private.providers.tcmb_evds import TCMBEVDSProvider
+from backend.engine.private.providers.tefas_eod import TefasFundPriceProvider
 from backend.engine.private.providers.tiingo_eod import TiingoEODProvider
 from backend.engine.private.providers.tuik_sdmx import TUIKSDMXProvider
 from backend.engine.private.providers.us_treasury import USTreasuryYieldCurveProvider
@@ -23,6 +24,7 @@ __all__ = [
     "ManualENAGProvider",
     "MarketstackEODProvider",
     "TCMBEVDSProvider",
+    "TefasFundPriceProvider",
     "TiingoEODProvider",
     "TUIKSDMXProvider",
     "USTreasuryYieldCurveProvider",

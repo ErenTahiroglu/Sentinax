@@ -24,6 +24,13 @@ from backend.engine.private.market_data.resolver import (
     PointInTimeMarketDataResolver,
 )
 
+from backend.engine.private.market_data.tefas_models import (
+    TefasCapability,
+    TefasFundPriceObservation,
+    TefasFundPriceSnapshot,
+    TefasObservationStatus,
+)
+
 __all__ = [
     "MarketDataResolutionMode",
     "MarketDataResolutionStatus",
@@ -38,4 +45,8 @@ __all__ = [
     "TiingoCapability",
     "GlobalEODObservation",
     "GlobalEODSnapshot",
+    "TefasCapability",
+    "TefasFundPriceObservation",
+    "TefasFundPriceSnapshot",
+    "TefasObservationStatus",
 ]

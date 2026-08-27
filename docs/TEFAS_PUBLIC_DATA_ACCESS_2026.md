@@ -3,11 +3,12 @@
 ## 1. Executive Verdict
 
 - **Platform Operator:** Takasbank A.Ş. (İstanbul Takas ve Saklama Bankası A.Ş. / TEFAS Platformu).
-- **Public Machine-Readable Access Status:** `GREEN_PUBLIC_API` (`OFFICIAL_OBSERVED`).
+- **Public Machine-Readable Access Status:** `ProviderAccessStatus.YELLOW` (`OFFICIAL_OBSERVED` public web surface; no developer SLA / quota endpoint).
+- **Source Tier:** `SourceTier.TIER_2_EXCHANGE` (Takasbank central clearing & fund registry).
 - **Production Gate Decision:** **`GO_PUBLIC_LOW_FREQUENCY`**.
 - **Critical Finding:** Legacy ASP.NET endpoints (`/api/DB/BindHistoryInfo` and `/api/DB/BindHistoryAllocation`) are **REMOVED / DISABLED (HTTP 404)** in 2026. The 2026 Next.js architecture exposes clean, active, public JSON endpoints under `https://www.tefas.gov.tr/api/funds/*` that respond to ordinary HTTP `POST` requests without anti-bot circumvention or session cookies.
 - **Target Recurring Market Data Cost:** **$0/month**.
-- **Phase 11A.5 Code Status:** **NO PRODUCTION CODE WRITTEN** (Documentation & empirical verification only).
+- **Phase 11B Implementation Status:** Price history core implemented (`TefasFundPriceProvider`) supporting 5Y history window (`periyod=60`).
 
 ---
 

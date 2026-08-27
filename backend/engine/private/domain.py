@@ -38,6 +38,7 @@ class InstrumentType(Enum):
     EUROPEAN_STOCK = "european_stock"
 
     # Funds
+    TEFAS_FUND = "tefas_fund"
     TEFAS_MONEY_MARKET = "tefas_money_market"
     TEFAS_EQUITY = "tefas_equity"
     TEFAS_VARIABLE = "tefas_variable"
