@@ -302,51 +302,54 @@ class SECPeriodClassifier:
                     )
                 id_match = True
 
-            # Check Form consistency
-            if candidate.form and filing.form:
-                if candidate.form.strip().upper() != filing.form.strip().upper():
-                    msg = f"Form mismatch: candidate form '{candidate.form}' vs filing form '{filing.form}'."
-                    return SECPeriodizedFactCandidate(
-                        candidate_id=candidate.id,
-                        raw_fact_id=candidate.raw_fact_id,
-                        cik=candidate.cik,
-                        canonical_concept=candidate.canonical_concept,
-                        economic_period_kind=SECEconomicPeriodKind.UNKNOWN,
-                        period_alignment_status=SECPeriodAlignmentStatus.INVALID_CONTEXT,
-                        economic_start_date=candidate.start_date,
-                        economic_end_date=candidate.end_date,
-                        duration_days=None,
-                        fiscal_year=candidate.fiscal_year,
-                        fiscal_period=candidate.fiscal_period,
-                        filing_id=candidate.filing_id,
-                        accession_number=candidate.accession_number,
-                        form=candidate.form,
-                        form_role=candidate.form_role,
-                        is_amendment=candidate.is_amendment,
-                        filing_report_date=None,
-                        is_comparative=False,
-                        classification_confidence="LOW",
-                        classification_basis=msg,
-                        diagnostics=diagnostics + [msg],
-                        value=candidate.value,
-                        unit=candidate.unit,
-                        taxonomy=candidate.taxonomy,
-                        source_concept=candidate.source_concept,
-                        match_strength=candidate.match_strength,
-                        variant_priority=candidate.variant_priority,
-                        snapshot_id=candidate.snapshot_id,
-                        filed_date=candidate.filed_date,
-                        frame=candidate.frame,
-                    )
-
             # 3. Association proof verification: at least one of accession_match or id_match is required
-            if accession_match or id_match:
-                filing_report_date = filing.report_date
-            else:
+            association_proven = accession_match or id_match
+
+            if not association_proven:
                 # Both accession and filing_id were absent on candidate (or unlinked)
                 # CIK/form alone is NOT proof of specific filing identity!
+                # Do NOT compare candidate.form vs filing.form!
                 filing_report_date = None
                 diagnostics.append("Supplied filing ignored because candidate lacks filing-level association proof.")
+            else:
+                # 4. Association is proven: now check Form consistency for metadata contradiction
+                if candidate.form and filing.form:
+                    if candidate.form.strip().upper() != filing.form.strip().upper():
+                        msg = f"Form mismatch: candidate form '{candidate.form}' vs filing form '{filing.form}'."
+                        return SECPeriodizedFactCandidate(
+                            candidate_id=candidate.id,
+                            raw_fact_id=candidate.raw_fact_id,
+                            cik=candidate.cik,
+                            canonical_concept=candidate.canonical_concept,
+                            economic_period_kind=SECEconomicPeriodKind.UNKNOWN,
+                            period_alignment_status=SECPeriodAlignmentStatus.INVALID_CONTEXT,
+                            economic_start_date=candidate.start_date,
+                            economic_end_date=candidate.end_date,
+                            duration_days=None,
+                            fiscal_year=candidate.fiscal_year,
+                            fiscal_period=candidate.fiscal_period,
+                            filing_id=candidate.filing_id,
+                            accession_number=candidate.accession_number,
+                            form=candidate.form,
+                            form_role=candidate.form_role,
+                            is_amendment=candidate.is_amendment,
+                            filing_report_date=None,
+                            is_comparative=False,
+                            classification_confidence="LOW",
+                            classification_basis=msg,
+                            diagnostics=diagnostics + [msg],
+                            value=candidate.value,
+                            unit=candidate.unit,
+                            taxonomy=candidate.taxonomy,
+                            source_concept=candidate.source_concept,
+                            match_strength=candidate.match_strength,
+                            variant_priority=candidate.variant_priority,
+                            snapshot_id=candidate.snapshot_id,
+                            filed_date=candidate.filed_date,
+                            frame=candidate.frame,
+                        )
+
+                filing_report_date = filing.report_date
 
         # ─────────────────────────────────────────────────────────────────────
         # 1. PeriodType.INSTANT Handling
