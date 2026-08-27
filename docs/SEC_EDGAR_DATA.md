@@ -162,14 +162,14 @@ Phase 8B.1 / 8B.1.6 defines the deterministic registry that maps raw taxonomy ta
 - All candidate entries from original filings, amendments (`10-K/A`), and comparative restatement columns are preserved simultaneously.
 - No candidate is discarded or chosen as a single "winner" in Phase 8B.1 / 8B.1.6.
 
-## 10. Phase 8B.2A — Economic Period Context Classification & Candidate Grouping
+## 10. Phase 8B.2A / 8B.2A.5 — Economic Period Context Classification & Candidate Grouping
 
-Phase 8B.2A deterministically classifies the economic period context of canonical candidates without picking filing winners.
+Phase 8B.2A / 8B.2A.5 deterministically classifies the economic period context of canonical candidates without picking filing winners.
 
 ### 10.1 Economic Period Kinds (`SECEconomicPeriodKind`)
 
 - **`INSTANT`**: Balance sheet point-in-time financial observation.
-- **`COVER_DATE_INSTANT`**: Cover page disclosure dated after the balance sheet report date (e.g. DEI shares outstanding).
+- **`COVER_DATE_INSTANT`**: Cover page disclosure dated after the balance sheet report date (strictly `dei:EntityCommonStockSharesOutstanding`).
 - **`ANNUAL_DURATION`**: Full fiscal year period (`330 <= duration_days <= 385` inclusive; supports 52/53-week fiscal years).
 - **`QUARTER_DURATION`**: Standalone ~3-month fiscal quarter (`70 <= duration_days <= 115` inclusive).
 - **`YTD_DURATION`**: Year-to-date interim period (`150 <= duration_days <= 210` for 6M, `240 <= duration_days <= 300` for 9M).
@@ -178,13 +178,22 @@ Phase 8B.2A deterministically classifies the economic period context of canonica
 
 ### 10.2 Period Alignment Status (`SECPeriodAlignmentStatus`)
 
-- **`PRIMARY_REPORT_PERIOD`**: Current period ending on the containing filing's `report_date`.
+- **`PRIMARY_REPORT_PERIOD`**: Current period ending on the containing filing's `report_date` (supported primary forms: `10-K`, `10-Q`, `20-F`, `40-F` and their amendments).
 - **`COMPARATIVE_PRIOR_PERIOD`**: Prior comparative period disclosed alongside current results (`end_date < filing.report_date`).
 - **`COVER_DATE_CONTEXT`**: Associated with filing cover date / subsequent disclosure.
-- **`NON_PRIMARY_CONTEXT`**: Interim or event filings (`6-K`, `8-K`) or non-primary context.
+- **`NON_PRIMARY_CONTEXT`**: Interim or event filings (`6-K`, `8-K`, `OTHER`, `10-KT`, `10-QT`) or non-primary context.
 - **`UNRESOLVED_FILING`**: Classification based on candidate dates when containing filing report date is unlinked.
+- **`INSUFFICIENT_EVIDENCE`**: Missing start_date or end_date.
+- **`INVALID_CONTEXT`**: Malformed dates (`start_date > end_date`) or filing vs candidate metadata mismatch (CIK, Accession, Filing ID, Form).
 
-### 10.3 Economic Grouping Key
+### 10.3 Fail-Closed Invariants & Null Safety
+
+1. **No Fabricated Dates**: Missing `economic_end_date` is strictly `None` (no `1970-01-01` epoch sentinels).
+2. **Ungroupable Isolation (`SECPeriodGroupingResult`)**: Candidates with `UNKNOWN`, `IRREGULAR_DURATION`, `INVALID_CONTEXT`, or `INSUFFICIENT_EVIDENCE` are preserved in the `ungroupable` list and never merged into a fake `UNKNOWN` group.
+3. **Strict DEI Cover-Date Shares**: Only `dei:EntityCommonStockSharesOutstanding` receives `COVER_DATE_INSTANT` and `COVER_DATE_CONTEXT`. `us-gaap:CommonStockSharesOutstanding` does not.
+4. **Filing vs Candidate Consistency**: Any discrepancy between candidate and supplied filing (CIK, accession, filing_id, or form) fails closed as `INVALID_CONTEXT`.
+
+### 10.4 Economic Grouping Key
 
 ```
 Economic Group Key = (cik, canonical_concept, unit, economic_period_kind, economic_start_date, economic_end_date)
@@ -200,6 +209,7 @@ Phase 8B.2B will be strictly responsible for:
 - Annual vs standalone quarter vs YTD derivation / subtraction.
 - Restatement and comparative reconciliation.
 - Current-view and Point-in-Time (PIT) selection for downstream analytical engines.
+
 
 
 

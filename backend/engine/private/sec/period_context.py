@@ -1,13 +1,17 @@
 """
 backend/engine/private/sec/period_context.py
 ==============================================
-SEC EDGAR Phase 8B.2A: Economic Period Context Classification & Candidate Grouping.
+SEC EDGAR Phase 8B.2A.5: Economic Period Context Classification & Candidate Grouping.
 
 Core Invariants:
-    - Pure deterministic economic period classification (INSTANT, ANNUAL_DURATION, QUARTER_DURATION, YTD_DURATION, IRREGULAR_DURATION).
+    - Pure deterministic economic period classification (INSTANT, COVER_DATE_INSTANT, ANNUAL_DURATION, QUARTER_DURATION, YTD_DURATION, IRREGULAR_DURATION).
+    - No fabricated dates: missing start or end dates remain None. No date(1970, 1, 1) or epoch sentinels.
     - Preserves all candidate observations without winner selection or filing precedence.
     - Dates (start_date, end_date, filing report_date) drive period classification; fp/frame/form_date are auxiliary evidence.
-    - DEI cover date shares outstanding are classified with COVER_DATE_INSTANT / COVER_DATE_CONTEXT.
+    - DEI cover date shares outstanding (dei:EntityCommonStockSharesOutstanding) is strictly separated from us-gaap shares.
+    - Filing vs Candidate consistency (CIK, Accession, Filing ID, Form) fails closed on mismatch (INVALID_CONTEXT).
+    - Non-primary forms (8-K, 6-K, OTHER, 10-KT, 10-QT) cannot produce PRIMARY_REPORT_PERIOD.
+    - Invalid/insufficient period candidates are preserved in SECPeriodGroupingResult.ungroupable and never merged into fake winner groups.
     - Inclusive duration days convention: duration_days = (end_date - start_date).days + 1.
     - Numerical values (Decimal) are NEVER altered (no YTD subtraction, no TTM, no annualization).
 """
@@ -18,9 +22,10 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
 
+from backend.engine.private.sec.cik import normalize_cik
 from backend.engine.private.sec.models import (
     PeriodType,
     SECCanonicalFactCandidate,
@@ -47,6 +52,16 @@ YTD_6M_MAX_DAYS = 210
 YTD_9M_MIN_DAYS = 240
 YTD_9M_MAX_DAYS = 300
 
+# Supported periodic form roles eligible for PRIMARY_REPORT_PERIOD
+SUPPORTED_PRIMARY_FORM_ROLES = {
+    "primary_annual",
+    "amendment_annual",
+    "primary_quarterly",
+    "amendment_quarterly",
+    "fpi_annual",
+    "fpi_amendment_annual",
+}
+
 
 class SECEconomicPeriodKind(Enum):
     """Classification of the economic time interval of a financial observation."""
@@ -64,10 +79,10 @@ class SECPeriodAlignmentStatus(Enum):
     PRIMARY_REPORT_PERIOD = "primary_report_period"       # Current period ending on the filing's report_date
     COMPARATIVE_PRIOR_PERIOD = "comparative_prior_period" # Prior comparative period disclosed in the filing
     COVER_DATE_CONTEXT = "cover_date_context"             # Associated with filing cover date / subsequent event
-    NON_PRIMARY_CONTEXT = "non_primary_context"           # 8-K, 6-K, or non-primary context
+    NON_PRIMARY_CONTEXT = "non_primary_context"           # 8-K, 6-K, OTHER form, or non-primary context
     UNRESOLVED_FILING = "unresolved_filing"               # Filing lineage missing, dates alone used
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"       # Dates missing or ambiguous
-    INVALID_CONTEXT = "invalid_context"                   # Malformed period (e.g. start_date > end_date)
+    INVALID_CONTEXT = "invalid_context"                   # Malformed period or filing metadata mismatch
 
 
 @dataclass
@@ -83,7 +98,7 @@ class SECPeriodizedFactCandidate:
     economic_period_kind: SECEconomicPeriodKind
     period_alignment_status: SECPeriodAlignmentStatus
     economic_start_date: Optional[date]
-    economic_end_date: date
+    economic_end_date: Optional[date]
     duration_days: Optional[int]
     fiscal_year: Optional[int]
     fiscal_period: Optional[str]
@@ -165,13 +180,169 @@ class SECPeriodClassifier:
         Classifies a single canonical fact candidate into a periodized fact candidate.
         """
         diagnostics: List[str] = list(candidate.diagnostics)
-        filing_report_date: Optional[date] = filing.report_date if filing else None
+
+        # ─────────────────────────────────────────────────────────────────────
+        # 0. Filing vs Candidate Consistency Validation (Fail-Closed)
+        # ─────────────────────────────────────────────────────────────────────
+        filing_report_date: Optional[date] = None
+
+        if filing is not None:
+            # Check CIK consistency
+            cand_cik = normalize_cik(candidate.cik)
+            filing_cik = normalize_cik(filing.cik)
+            if cand_cik != filing_cik:
+                msg = f"CIK mismatch: candidate CIK '{candidate.cik}' vs filing CIK '{filing.cik}'."
+                return SECPeriodizedFactCandidate(
+                    candidate_id=candidate.id,
+                    raw_fact_id=candidate.raw_fact_id,
+                    cik=candidate.cik,
+                    canonical_concept=candidate.canonical_concept,
+                    economic_period_kind=SECEconomicPeriodKind.UNKNOWN,
+                    period_alignment_status=SECPeriodAlignmentStatus.INVALID_CONTEXT,
+                    economic_start_date=candidate.start_date,
+                    economic_end_date=candidate.end_date,
+                    duration_days=None,
+                    fiscal_year=candidate.fiscal_year,
+                    fiscal_period=candidate.fiscal_period,
+                    filing_id=candidate.filing_id,
+                    accession_number=candidate.accession_number,
+                    form=candidate.form,
+                    form_role=candidate.form_role,
+                    is_amendment=candidate.is_amendment,
+                    filing_report_date=None,
+                    is_comparative=False,
+                    classification_confidence="LOW",
+                    classification_basis=msg,
+                    diagnostics=diagnostics + [msg],
+                    value=candidate.value,
+                    unit=candidate.unit,
+                    taxonomy=candidate.taxonomy,
+                    source_concept=candidate.source_concept,
+                    match_strength=candidate.match_strength,
+                    variant_priority=candidate.variant_priority,
+                    snapshot_id=candidate.snapshot_id,
+                    filed_date=candidate.filed_date,
+                    frame=candidate.frame,
+                )
+
+            # Check Accession consistency
+            if candidate.accession_number and filing.accession_number:
+                if candidate.accession_number.strip() != filing.accession_number.strip():
+                    msg = f"Accession mismatch: candidate '{candidate.accession_number}' vs filing '{filing.accession_number}'."
+                    return SECPeriodizedFactCandidate(
+                        candidate_id=candidate.id,
+                        raw_fact_id=candidate.raw_fact_id,
+                        cik=candidate.cik,
+                        canonical_concept=candidate.canonical_concept,
+                        economic_period_kind=SECEconomicPeriodKind.UNKNOWN,
+                        period_alignment_status=SECPeriodAlignmentStatus.INVALID_CONTEXT,
+                        economic_start_date=candidate.start_date,
+                        economic_end_date=candidate.end_date,
+                        duration_days=None,
+                        fiscal_year=candidate.fiscal_year,
+                        fiscal_period=candidate.fiscal_period,
+                        filing_id=candidate.filing_id,
+                        accession_number=candidate.accession_number,
+                        form=candidate.form,
+                        form_role=candidate.form_role,
+                        is_amendment=candidate.is_amendment,
+                        filing_report_date=None,
+                        is_comparative=False,
+                        classification_confidence="LOW",
+                        classification_basis=msg,
+                        diagnostics=diagnostics + [msg],
+                        value=candidate.value,
+                        unit=candidate.unit,
+                        taxonomy=candidate.taxonomy,
+                        source_concept=candidate.source_concept,
+                        match_strength=candidate.match_strength,
+                        variant_priority=candidate.variant_priority,
+                        snapshot_id=candidate.snapshot_id,
+                        filed_date=candidate.filed_date,
+                        frame=candidate.frame,
+                    )
+
+            # Check Filing ID consistency
+            if candidate.filing_id is not None and filing.id is not None:
+                if candidate.filing_id != filing.id:
+                    msg = f"Filing ID mismatch: candidate filing_id '{candidate.filing_id}' vs filing id '{filing.id}'."
+                    return SECPeriodizedFactCandidate(
+                        candidate_id=candidate.id,
+                        raw_fact_id=candidate.raw_fact_id,
+                        cik=candidate.cik,
+                        canonical_concept=candidate.canonical_concept,
+                        economic_period_kind=SECEconomicPeriodKind.UNKNOWN,
+                        period_alignment_status=SECPeriodAlignmentStatus.INVALID_CONTEXT,
+                        economic_start_date=candidate.start_date,
+                        economic_end_date=candidate.end_date,
+                        duration_days=None,
+                        fiscal_year=candidate.fiscal_year,
+                        fiscal_period=candidate.fiscal_period,
+                        filing_id=candidate.filing_id,
+                        accession_number=candidate.accession_number,
+                        form=candidate.form,
+                        form_role=candidate.form_role,
+                        is_amendment=candidate.is_amendment,
+                        filing_report_date=None,
+                        is_comparative=False,
+                        classification_confidence="LOW",
+                        classification_basis=msg,
+                        diagnostics=diagnostics + [msg],
+                        value=candidate.value,
+                        unit=candidate.unit,
+                        taxonomy=candidate.taxonomy,
+                        source_concept=candidate.source_concept,
+                        match_strength=candidate.match_strength,
+                        variant_priority=candidate.variant_priority,
+                        snapshot_id=candidate.snapshot_id,
+                        filed_date=candidate.filed_date,
+                        frame=candidate.frame,
+                    )
+
+            # Check Form consistency
+            if candidate.form and filing.form:
+                if candidate.form.strip().upper() != filing.form.strip().upper():
+                    msg = f"Form mismatch: candidate form '{candidate.form}' vs filing form '{filing.form}'."
+                    return SECPeriodizedFactCandidate(
+                        candidate_id=candidate.id,
+                        raw_fact_id=candidate.raw_fact_id,
+                        cik=candidate.cik,
+                        canonical_concept=candidate.canonical_concept,
+                        economic_period_kind=SECEconomicPeriodKind.UNKNOWN,
+                        period_alignment_status=SECPeriodAlignmentStatus.INVALID_CONTEXT,
+                        economic_start_date=candidate.start_date,
+                        economic_end_date=candidate.end_date,
+                        duration_days=None,
+                        fiscal_year=candidate.fiscal_year,
+                        fiscal_period=candidate.fiscal_period,
+                        filing_id=candidate.filing_id,
+                        accession_number=candidate.accession_number,
+                        form=candidate.form,
+                        form_role=candidate.form_role,
+                        is_amendment=candidate.is_amendment,
+                        filing_report_date=None,
+                        is_comparative=False,
+                        classification_confidence="LOW",
+                        classification_basis=msg,
+                        diagnostics=diagnostics + [msg],
+                        value=candidate.value,
+                        unit=candidate.unit,
+                        taxonomy=candidate.taxonomy,
+                        source_concept=candidate.source_concept,
+                        match_strength=candidate.match_strength,
+                        variant_priority=candidate.variant_priority,
+                        snapshot_id=candidate.snapshot_id,
+                        filed_date=candidate.filed_date,
+                        frame=candidate.frame,
+                    )
+
+            filing_report_date = filing.report_date
 
         # ─────────────────────────────────────────────────────────────────────
         # 1. PeriodType.INSTANT Handling
         # ─────────────────────────────────────────────────────────────────────
         if candidate.period_type == PeriodType.INSTANT:
-            if not candidate.end_date:
+            if candidate.end_date is None:
                 return SECPeriodizedFactCandidate(
                     candidate_id=candidate.id,
                     raw_fact_id=candidate.raw_fact_id,
@@ -180,7 +351,7 @@ class SECPeriodClassifier:
                     economic_period_kind=SECEconomicPeriodKind.UNKNOWN,
                     period_alignment_status=SECPeriodAlignmentStatus.INSUFFICIENT_EVIDENCE,
                     economic_start_date=None,
-                    economic_end_date=candidate.end_date or date(1970, 1, 1),
+                    economic_end_date=None,
                     duration_days=None,
                     fiscal_year=candidate.fiscal_year,
                     fiscal_period=candidate.fiscal_period,
@@ -205,20 +376,27 @@ class SECPeriodClassifier:
                     frame=candidate.frame,
                 )
 
-            # Special case: DEI Shares Outstanding on cover page
-            if candidate.canonical_concept == "SHARES_OUTSTANDING" and filing_report_date and candidate.end_date > filing_report_date:
+            # Strict DEI cover-date shares rule
+            is_dei_cover_shares = (
+                candidate.canonical_concept == "SHARES_OUTSTANDING"
+                and candidate.taxonomy == "dei"
+                and candidate.source_concept == "EntityCommonStockSharesOutstanding"
+            )
+
+            if is_dei_cover_shares and filing_report_date and candidate.end_date > filing_report_date:
                 kind = SECEconomicPeriodKind.COVER_DATE_INSTANT
                 align = SECPeriodAlignmentStatus.COVER_DATE_CONTEXT
                 conf = "HIGH"
                 is_comp = False
-                basis = "Cover page shares outstanding dated after balance sheet report date."
+                basis = "Cover page DEI shares outstanding dated after balance sheet report date."
             elif filing_report_date:
                 kind = SECEconomicPeriodKind.INSTANT
-                if candidate.form_role in ("event_filing", "fpi_interim_or_event"):
+                # Form role check: non-primary forms cannot be PRIMARY_REPORT_PERIOD
+                if candidate.form_role in ("event_filing", "fpi_interim_or_event", "other") or candidate.form_role not in SUPPORTED_PRIMARY_FORM_ROLES:
                     align = SECPeriodAlignmentStatus.NON_PRIMARY_CONTEXT
-                    conf = "MEDIUM"
+                    conf = "MEDIUM" if candidate.form_role == "fpi_interim_or_event" else "LOW"
                     is_comp = False
-                    basis = f"Instant observation in non-primary filing form ({candidate.form})."
+                    basis = f"Instant observation in non-primary periodic form ({candidate.form})."
                 elif candidate.end_date == filing_report_date:
                     align = SECPeriodAlignmentStatus.PRIMARY_REPORT_PERIOD
                     conf = "HIGH"
@@ -233,7 +411,7 @@ class SECPeriodClassifier:
                     align = SECPeriodAlignmentStatus.NON_PRIMARY_CONTEXT
                     conf = "MEDIUM"
                     is_comp = False
-                    basis = "Instant observation after filing report_date."
+                    basis = "Instant observation after filing report_date without DEI cover-page proof."
             else:
                 kind = SECEconomicPeriodKind.INSTANT
                 align = SECPeriodAlignmentStatus.UNRESOLVED_FILING
@@ -277,7 +455,7 @@ class SECPeriodClassifier:
         # ─────────────────────────────────────────────────────────────────────
         # 2. PeriodType.DURATION Handling
         # ─────────────────────────────────────────────────────────────────────
-        if not candidate.start_date or not candidate.end_date:
+        if candidate.start_date is None or candidate.end_date is None:
             return SECPeriodizedFactCandidate(
                 candidate_id=candidate.id,
                 raw_fact_id=candidate.raw_fact_id,
@@ -286,7 +464,7 @@ class SECPeriodClassifier:
                 economic_period_kind=SECEconomicPeriodKind.UNKNOWN,
                 period_alignment_status=SECPeriodAlignmentStatus.INSUFFICIENT_EVIDENCE,
                 economic_start_date=candidate.start_date,
-                economic_end_date=candidate.end_date or date(1970, 1, 1),
+                economic_end_date=candidate.end_date,
                 duration_days=None,
                 fiscal_year=candidate.fiscal_year,
                 fiscal_period=candidate.fiscal_period,
@@ -363,19 +541,24 @@ class SECPeriodClassifier:
 
         # Determine period alignment status
         if filing_report_date:
-            if candidate.form_role in ("event_filing", "fpi_interim_or_event"):
+            if candidate.form_role in ("event_filing", "fpi_interim_or_event", "other") or candidate.form_role not in SUPPORTED_PRIMARY_FORM_ROLES:
                 align = SECPeriodAlignmentStatus.NON_PRIMARY_CONTEXT
                 conf = "MEDIUM" if candidate.form_role == "fpi_interim_or_event" else "LOW"
                 is_comp = False
                 basis = f"{kind_desc} in non-primary periodic form ({candidate.form})."
+            elif kind == SECEconomicPeriodKind.IRREGULAR_DURATION:
+                align = SECPeriodAlignmentStatus.NON_PRIMARY_CONTEXT
+                conf = "LOW"
+                is_comp = False
+                basis = f"Irregular duration ({duration_days} days) in form ({candidate.form})."
             elif candidate.end_date == filing_report_date:
                 align = SECPeriodAlignmentStatus.PRIMARY_REPORT_PERIOD
-                conf = "HIGH" if kind != SECEconomicPeriodKind.IRREGULAR_DURATION else "MEDIUM"
+                conf = "HIGH"
                 is_comp = False
                 basis = f"Primary report period ending on filing report_date ({kind_desc})."
             elif candidate.end_date < filing_report_date:
                 align = SECPeriodAlignmentStatus.COMPARATIVE_PRIOR_PERIOD
-                conf = "HIGH" if kind != SECEconomicPeriodKind.IRREGULAR_DURATION else "MEDIUM"
+                conf = "HIGH"
                 is_comp = True
                 basis = f"Comparative prior period ending before filing report_date ({kind_desc})."
             else:
@@ -445,18 +628,65 @@ class SECPeriodClassifier:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Economic Candidate Grouping Helper
+# Economic Candidate Grouping Helper & Grouping Result Model
 # ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class SECPeriodGroupingResult:
+    """
+    Result of candidate grouping separating valid economic groups from ungroupable candidates.
+    Preserves all candidates from original filings, amendments, and comparative disclosures.
+    """
+    groups: Dict[Tuple[str, str, str, str, Optional[str], str], List[SECPeriodizedFactCandidate]]
+    ungroupable: List[SECPeriodizedFactCandidate]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "group_count": len(self.groups),
+            "ungroupable_count": len(self.ungroupable),
+            "groups": {
+                f"{k[0]}|{k[1]}|{k[2]}|{k[3]}|{k[4]}|{k[5]}": [c.to_dict() for c in v]
+                for k, v in self.groups.items()
+            },
+            "ungroupable": [c.to_dict() for c in self.ungroupable],
+        }
+
 
 def build_economic_group_key(
     candidate: SECPeriodizedFactCandidate,
-) -> Tuple[str, str, str, str, Optional[str], str]:
+) -> Optional[Tuple[str, str, str, str, Optional[str], str]]:
     """
     Constructs the canonical 6-tuple economic grouping key for a periodized candidate.
     Grouping Key: (cik, canonical_concept, unit, economic_period_kind, start_date, end_date)
+
+    Returns None if:
+        - economic_period_kind is UNKNOWN or IRREGULAR_DURATION
+        - period_alignment_status is INSUFFICIENT_EVIDENCE or INVALID_CONTEXT
+        - economic_end_date is None
+        - economic_period_kind is a duration kind and economic_start_date is None
     """
+    if candidate.economic_period_kind in (SECEconomicPeriodKind.UNKNOWN, SECEconomicPeriodKind.IRREGULAR_DURATION):
+        return None
+
+    if candidate.period_alignment_status in (
+        SECPeriodAlignmentStatus.INSUFFICIENT_EVIDENCE,
+        SECPeriodAlignmentStatus.INVALID_CONTEXT,
+    ):
+        return None
+
+    if candidate.economic_end_date is None:
+        return None
+
+    if candidate.economic_period_kind in (
+        SECEconomicPeriodKind.ANNUAL_DURATION,
+        SECEconomicPeriodKind.QUARTER_DURATION,
+        SECEconomicPeriodKind.YTD_DURATION,
+    ) and candidate.economic_start_date is None:
+        return None
+
     start_str = candidate.economic_start_date.isoformat() if candidate.economic_start_date else None
     end_str = candidate.economic_end_date.isoformat()
+
     return (
         candidate.cik,
         candidate.canonical_concept,
@@ -469,16 +699,25 @@ def build_economic_group_key(
 
 def group_periodized_candidates(
     candidates: List[SECPeriodizedFactCandidate],
-) -> Dict[Tuple[str, str, str, str, Optional[str], str], List[SECPeriodizedFactCandidate]]:
+) -> SECPeriodGroupingResult:
     """
     Groups periodized candidates by their canonical economic observation key.
     Preserves all candidates from original filings, amendments, and comparative disclosures
     without dropping or picking winners.
+
+    Ungroupable candidates (e.g. UNKNOWN, INVALID_CONTEXT, INSUFFICIENT_EVIDENCE, IRREGULAR_DURATION)
+    are preserved in the `ungroupable` list and never merged into a fake UNKNOWN group.
     """
     groups: Dict[Tuple[str, str, str, str, Optional[str], str], List[SECPeriodizedFactCandidate]] = {}
+    ungroupable: List[SECPeriodizedFactCandidate] = []
+
     for cand in candidates:
         key = build_economic_group_key(cand)
-        if key not in groups:
-            groups[key] = []
-        groups[key].append(cand)
-    return groups
+        if key is None:
+            ungroupable.append(cand)
+        else:
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(cand)
+
+    return SECPeriodGroupingResult(groups=groups, ungroupable=ungroupable)

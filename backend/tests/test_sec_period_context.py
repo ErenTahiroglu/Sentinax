@@ -1,18 +1,20 @@
 """
 backend/tests/test_sec_period_context.py
 ==========================================
-Comprehensive Unit Test Suite for SEC EDGAR Phase 8B.2A:
+Comprehensive Unit Test Suite for SEC EDGAR Phase 8B.2A / 8B.2A.5:
 Economic Period Context Classification & Candidate Grouping.
 
 Coverage:
-    - Annual Duration & Fiscal Year Variants (Scenarios 1-7)
-    - Standalone Quarter vs Interim YTD (Scenarios 8-16)
-    - Primary vs Comparative Alignment (Scenarios 17-22)
-    - Instant Balance Sheet & Cover Date Shares (Scenarios 23-27)
-    - Form Roles & Non-Primary Contexts (Scenarios 28-36)
-    - Irregular & Malformed Periods Fail-Closed (Scenarios 37-41)
-    - Economic Candidate Grouping (Scenarios 42-48)
-    - No-Winner & Multi-Candidate Preservation (Scenarios 49-54)
+    - No Fabricated Dates (Scenarios 1-6)
+    - Malformed Periods Fail-Closed (Scenarios 7-10)
+    - Strict DEI Cover Date Shares (Scenarios 11-16)
+    - Filing Consistency Checks CIK/Accession/ID/Form (Scenarios 17-22)
+    - Other & Transition Forms Fail-Closed (Scenarios 23-27)
+    - Supported Forms Regression (Scenarios 28-35)
+    - Economic Grouping & Ungroupable Separation (Scenarios 36-41)
+    - Annual Duration & Fiscal Year Variants (Scenarios 42-48)
+    - Standalone Quarter vs Interim YTD (Scenarios 49-55)
+    - No-Winner & Multi-Candidate Invariants (Scenarios 56-60)
 """
 
 from datetime import date, datetime, timezone
@@ -31,6 +33,7 @@ from backend.engine.private.sec.period_context import (
     ANNUAL_MIN_DAYS,
     QUARTER_MAX_DAYS,
     QUARTER_MIN_DAYS,
+    SUPPORTED_PRIMARY_FORM_ROLES,
     YTD_6M_MAX_DAYS,
     YTD_6M_MIN_DAYS,
     YTD_9M_MAX_DAYS,
@@ -38,6 +41,7 @@ from backend.engine.private.sec.period_context import (
     SECEconomicPeriodKind,
     SECPeriodAlignmentStatus,
     SECPeriodClassifier,
+    SECPeriodGroupingResult,
     SECPeriodizedFactCandidate,
     build_economic_group_key,
     group_periodized_candidates,
@@ -63,6 +67,7 @@ def _make_candidate(
     match_strength: str = "exact",
     variant_priority: int = 1,
     snapshot_id: UUID = None,
+    filing_id: UUID = None,
     filed_date: date = date(2024, 11, 1),
     frame: str = "CY2024",
 ) -> SECCanonicalFactCandidate:
@@ -85,6 +90,7 @@ def _make_candidate(
         is_amendment=is_amendment,
         fiscal_year=fiscal_year,
         fiscal_period=fiscal_period,
+        filing_id=filing_id,
         filed_date=filed_date,
         frame=frame,
         snapshot_id=snapshot_id or uuid4(),
@@ -92,266 +98,318 @@ def _make_candidate(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. Annual Duration & Fiscal Year Variants (Scenarios 1-7)
+# 1. No Fabricated Dates (Scenarios 1-6)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestSECAnnualPeriodClassification:
+class TestSECNoFabricatedDates:
 
-    def test_01_to_04_calendar_fiscal_and_52_53_week_annual_periods(self):
-        """Scenario 1-4: Calendar year, non-calendar fiscal year, 52-week, and 53-week periods classify as ANNUAL_DURATION."""
-        # 1. Calendar year (366 days in leap year 2024)
-        c_cal = _make_candidate(start_date=date(2024, 1, 1), end_date=date(2024, 12, 31))
-        filing_cal = SECFilingRecord(cik="320193", accession_number="0000320193-24-000106", form="10-K", is_amendment=False, report_date=date(2024, 12, 31))
-        p_cal = SECPeriodClassifier.classify_candidate(c_cal, filing=filing_cal)
-        assert p_cal.economic_period_kind == SECEconomicPeriodKind.ANNUAL_DURATION
-        assert p_cal.period_alignment_status == SECPeriodAlignmentStatus.PRIMARY_REPORT_PERIOD
-        assert p_cal.duration_days == 366
+    def test_01_to_06_missing_dates_remain_none_and_no_sentinels(self):
+        """Scenario 1-6: Missing end_date on INSTANT and DURATION remains None; no 1970 sentinel; group key is None."""
+        # 1. Instant with missing end_date
+        c_inst = _make_candidate(period_type=PeriodType.INSTANT, start_date=None, end_date=None)
+        p_inst = SECPeriodClassifier.classify_candidate(c_inst)
+        assert p_inst.economic_end_date is None
+        assert p_inst.period_alignment_status == SECPeriodAlignmentStatus.INSUFFICIENT_EVIDENCE
+        assert p_inst.economic_period_kind == SECEconomicPeriodKind.UNKNOWN
 
-        # 2. September fiscal year (Apple: Oct 1, 2023 to Sep 28, 2024 = 364 days)
-        c_aapl = _make_candidate(start_date=date(2023, 10, 1), end_date=date(2024, 9, 28))
-        filing_aapl = SECFilingRecord(cik="320193", accession_number="0000320193-24-000106", form="10-K", is_amendment=False, report_date=date(2024, 9, 28))
-        p_aapl = SECPeriodClassifier.classify_candidate(c_aapl, filing=filing_aapl)
-        assert p_aapl.economic_period_kind == SECEconomicPeriodKind.ANNUAL_DURATION
-        assert p_aapl.duration_days == 364
+        # 2. Duration with missing end_date
+        c_dur = _make_candidate(period_type=PeriodType.DURATION, start_date=date(2024, 1, 1), end_date=None)
+        p_dur = SECPeriodClassifier.classify_candidate(c_dur)
+        assert p_dur.economic_end_date is None
+        assert p_dur.period_alignment_status == SECPeriodAlignmentStatus.INSUFFICIENT_EVIDENCE
+        assert p_dur.economic_period_kind == SECEconomicPeriodKind.UNKNOWN
 
-        # 3. 52-week year (364 days)
-        c_52 = _make_candidate(start_date=date(2023, 1, 29), end_date=date(2024, 1, 27))
-        p_52 = SECPeriodClassifier.classify_candidate(c_52)
-        assert p_52.economic_period_kind == SECEconomicPeriodKind.ANNUAL_DURATION
-        assert p_52.duration_days == 364
+        # 3. Serialization has None, not sentinel string
+        d = p_inst.to_dict()
+        assert d["economic_end_date"] is None
 
-        # 4. 53-week year (371 days)
-        c_53 = _make_candidate(start_date=date(2023, 1, 29), end_date=date(2024, 2, 3))
-        p_53 = SECPeriodClassifier.classify_candidate(c_53)
-        assert p_53.economic_period_kind == SECEconomicPeriodKind.ANNUAL_DURATION
-        assert p_53.duration_days == 371
+        # 4. Group key is None for insufficient evidence
+        assert build_economic_group_key(p_inst) is None
+        assert build_economic_group_key(p_dur) is None
 
-    def test_05_to_07_comparative_annual_and_filed_date_independence(self):
-        """Scenario 5-7: Comparative prior annual stays comparative; filed_date and FY label do not override start/end dates."""
-        # 2023 annual disclosed in 2024 10-K
-        c_comp = _make_candidate(start_date=date(2022, 10, 1), end_date=date(2023, 9, 30), filed_date=date(2024, 11, 1))
-        filing_2024 = SECFilingRecord(cik="320193", accession_number="0000320193-24-000106", form="10-K", is_amendment=False, report_date=date(2024, 9, 28), filing_date=date(2024, 11, 1))
-        p_comp = SECPeriodClassifier.classify_candidate(c_comp, filing=filing_2024)
-
-        assert p_comp.economic_period_kind == SECEconomicPeriodKind.ANNUAL_DURATION
-        assert p_comp.period_alignment_status == SECPeriodAlignmentStatus.COMPARATIVE_PRIOR_PERIOD
-        assert p_comp.is_comparative is True
-        assert p_comp.economic_end_date == date(2023, 9, 30)  # Economic end date != filing_date (Nov 1, 2024)
+        # 5. Ungroupable candidates are preserved separately in grouping result
+        res = group_periodized_candidates([p_inst, p_dur])
+        assert len(res.groups) == 0
+        assert len(res.ungroupable) == 2
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. Standalone Quarter vs Interim YTD (Scenarios 8-16)
+# 2. Malformed Periods Fail-Closed (Scenarios 7-10)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestSECQuarterVsYTDClassification:
+class TestSECMalformedPeriods:
 
-    def test_08_and_09_q1_standalone_quarter_and_no_ytd_duplicate(self):
-        """Scenario 8 & 9: Q1 (~91 days) classifies as QUARTER_DURATION and is not duplicated as a separate YTD interval."""
-        c_q1 = _make_candidate(
-            start_date=date(2023, 10, 1),
-            end_date=date(2023, 12, 30),
-            form="10-Q",
-            form_role="primary_quarterly",
-            fiscal_period="Q1",
-        )
-        filing_q1 = SECFilingRecord(cik="320193", accession_number="0000320193-24-000010", form="10-Q", is_amendment=False, report_date=date(2023, 12, 30))
-        p_q1 = SECPeriodClassifier.classify_candidate(c_q1, filing=filing_q1)
+    def test_07_to_10_start_after_end_fails_closed(self):
+        """Scenario 7-10: start_date > end_date results in INVALID_CONTEXT, group key None, candidate preserved in ungroupable."""
+        c_bad = _make_candidate(start_date=date(2024, 12, 31), end_date=date(2024, 1, 1), value=Decimal("999.5"))
+        p_bad = SECPeriodClassifier.classify_candidate(c_bad)
 
-        assert p_q1.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
-        assert p_q1.duration_days == 91
-        assert p_q1.period_alignment_status == SECPeriodAlignmentStatus.PRIMARY_REPORT_PERIOD
+        assert p_bad.economic_period_kind == SECEconomicPeriodKind.UNKNOWN
+        assert p_bad.period_alignment_status == SECPeriodAlignmentStatus.INVALID_CONTEXT
+        assert p_bad.value == Decimal("999.5")  # Value preserved
+        assert build_economic_group_key(p_bad) is None
 
-    def test_10_to_15_q2_and_q3_standalone_quarter_vs_ytd_separation(self):
-        """Scenario 10-15: Same Q2/Q3 filing cleanly distinguishes standalone 3-month quarter from 6M/9M YTD."""
-        filing_q2 = SECFilingRecord(cik="320193", accession_number="0000320193-24-000020", form="10-Q", is_amendment=False, report_date=date(2024, 3, 30))
-
-        # Standalone Q2 (Dec 31, 2023 to Mar 30, 2024 = 91 days)
-        c_q2_standalone = _make_candidate(start_date=date(2023, 12, 31), end_date=date(2024, 3, 30), form="10-Q", form_role="primary_quarterly", fiscal_period="Q2")
-        p_q2_standalone = SECPeriodClassifier.classify_candidate(c_q2_standalone, filing=filing_q2)
-        assert p_q2_standalone.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
-        assert p_q2_standalone.duration_days == 91
-        assert p_q2_standalone.period_alignment_status == SECPeriodAlignmentStatus.PRIMARY_REPORT_PERIOD
-
-        # 6-Month Q2 YTD (Oct 1, 2023 to Mar 30, 2024 = 182 days)
-        c_q2_ytd = _make_candidate(start_date=date(2023, 10, 1), end_date=date(2024, 3, 30), form="10-Q", form_role="primary_quarterly", fiscal_period="Q2")
-        p_q2_ytd = SECPeriodClassifier.classify_candidate(c_q2_ytd, filing=filing_q2)
-        assert p_q2_ytd.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
-        assert p_q2_ytd.duration_days == 182
-        assert p_q2_ytd.period_alignment_status == SECPeriodAlignmentStatus.PRIMARY_REPORT_PERIOD
-
-        # Standalone Q3 vs 9-Month Q3 YTD
-        filing_q3 = SECFilingRecord(cik="320193", accession_number="0000320193-24-000030", form="10-Q", is_amendment=False, report_date=date(2024, 6, 29))
-        c_q3_standalone = _make_candidate(start_date=date(2024, 3, 31), end_date=date(2024, 6, 29), form="10-Q", form_role="primary_quarterly", fiscal_period="Q3")
-        c_q3_ytd = _make_candidate(start_date=date(2023, 10, 1), end_date=date(2024, 6, 29), form="10-Q", form_role="primary_quarterly", fiscal_period="Q3")
-
-        p_q3_standalone = SECPeriodClassifier.classify_candidate(c_q3_standalone, filing=filing_q3)
-        p_q3_ytd = SECPeriodClassifier.classify_candidate(c_q3_ytd, filing=filing_q3)
-
-        assert p_q3_standalone.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
-        assert p_q3_ytd.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
-        assert p_q3_ytd.duration_days == 273
-
-    def test_16_frame_alone_cannot_force_quarter(self):
-        """Scenario 16: Frame label alone (e.g. CY2024Q2) cannot turn an annual or YTD duration into a standalone quarter."""
-        c_fake = _make_candidate(start_date=date(2023, 10, 1), end_date=date(2024, 9, 28), frame="CY2024Q2")
-        p_fake = SECPeriodClassifier.classify_candidate(c_fake)
-        assert p_fake.economic_period_kind == SECEconomicPeriodKind.ANNUAL_DURATION
+        res = group_periodized_candidates([p_bad])
+        assert len(res.groups) == 0
+        assert len(res.ungroupable) == 1
+        assert res.ungroupable[0].candidate_id == c_bad.id
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. Primary vs Comparative Alignment (Scenarios 17-22)
+# 3. Strict DEI Cover Date Shares (Scenarios 11-16)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestSECPrimaryVsComparativeAlignment:
+class TestSECStrictDEICoverDateShares:
 
-    def test_17_to_22_primary_and_prior_year_comparatives(self):
-        """Scenario 17-22: Current quarter/YTD/annual are PRIMARY; prior year items in the same filing are COMPARATIVE."""
-        filing_q2 = SECFilingRecord(cik="320193", accession_number="0000320193-24-000020", form="10-Q", is_amendment=False, report_date=date(2024, 3, 30))
-
-        # Current Q2 Quarter (Primary)
-        c_curr_q = _make_candidate(start_date=date(2023, 12, 31), end_date=date(2024, 3, 30), form="10-Q")
-        assert SECPeriodClassifier.classify_candidate(c_curr_q, filing=filing_q2).period_alignment_status == SECPeriodAlignmentStatus.PRIMARY_REPORT_PERIOD
-
-        # Prior Year Q2 Quarter (Comparative)
-        c_prior_q = _make_candidate(start_date=date(2022, 12, 31), end_date=date(2023, 3, 30), form="10-Q")
-        p_prior_q = SECPeriodClassifier.classify_candidate(c_prior_q, filing=filing_q2)
-        assert p_prior_q.period_alignment_status == SECPeriodAlignmentStatus.COMPARATIVE_PRIOR_PERIOD
-        assert p_prior_q.is_comparative is True
-
-        # Current Q2 YTD (Primary)
-        c_curr_ytd = _make_candidate(start_date=date(2023, 10, 1), end_date=date(2024, 3, 30), form="10-Q")
-        assert SECPeriodClassifier.classify_candidate(c_curr_ytd, filing=filing_q2).period_alignment_status == SECPeriodAlignmentStatus.PRIMARY_REPORT_PERIOD
-
-        # Prior Year Q2 YTD (Comparative)
-        c_prior_ytd = _make_candidate(start_date=date(2022, 10, 1), end_date=date(2023, 3, 30), form="10-Q")
-        p_prior_ytd = SECPeriodClassifier.classify_candidate(c_prior_ytd, filing=filing_q2)
-        assert p_prior_ytd.period_alignment_status == SECPeriodAlignmentStatus.COMPARATIVE_PRIOR_PERIOD
-        assert p_prior_ytd.is_comparative is True
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. Instant Balance Sheet & Cover Date Shares (Scenarios 23-27)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestSECInstantAndCoverDateClassification:
-
-    def test_23_to_27_balance_sheet_and_cover_date_shares(self):
-        """Scenario 23-27: Balance sheet items at report_date are PRIMARY; prior dates are COMPARATIVE; cover-date shares are COVER_DATE_INSTANT."""
+    def test_11_to_16_dei_vs_us_gaap_shares_cover_date_rule(self):
+        """Scenario 11-16: Only dei:EntityCommonStockSharesOutstanding receives COVER_DATE_INSTANT; US-GAAP shares do not."""
         filing_10k = SECFilingRecord(cik="320193", accession_number="0000320193-24-000106", form="10-K", is_amendment=False, report_date=date(2024, 9, 28))
 
-        # 1. Total Assets at report_date -> PRIMARY_REPORT_PERIOD
-        c_assets_curr = _make_candidate(canonical_concept="TOTAL_ASSETS", period_type=PeriodType.INSTANT, start_date=None, end_date=date(2024, 9, 28))
-        p_assets_curr = SECPeriodClassifier.classify_candidate(c_assets_curr, filing=filing_10k)
-        assert p_assets_curr.economic_period_kind == SECEconomicPeriodKind.INSTANT
-        assert p_assets_curr.period_alignment_status == SECPeriodAlignmentStatus.PRIMARY_REPORT_PERIOD
-        assert p_assets_curr.is_comparative is False
+        # 11-14. DEI EntityCommonStockSharesOutstanding dated after report_date -> COVER_DATE_INSTANT & COVER_DATE_CONTEXT
+        c_dei = _make_candidate(
+            canonical_concept="SHARES_OUTSTANDING",
+            taxonomy="dei",
+            source_concept="EntityCommonStockSharesOutstanding",
+            period_type=PeriodType.INSTANT,
+            start_date=None,
+            end_date=date(2024, 10, 18),
+        )
+        p_dei = SECPeriodClassifier.classify_candidate(c_dei, filing=filing_10k)
+        assert p_dei.economic_period_kind == SECEconomicPeriodKind.COVER_DATE_INSTANT
+        assert p_dei.period_alignment_status == SECPeriodAlignmentStatus.COVER_DATE_CONTEXT
+        assert p_dei.economic_end_date == date(2024, 10, 18)  # NOT rewritten to report_date
 
-        # 2. Prior Total Assets at prior date -> COMPARATIVE_PRIOR_PERIOD
-        c_assets_prior = _make_candidate(canonical_concept="TOTAL_ASSETS", period_type=PeriodType.INSTANT, start_date=None, end_date=date(2023, 9, 30))
-        p_assets_prior = SECPeriodClassifier.classify_candidate(c_assets_prior, filing=filing_10k)
-        assert p_assets_prior.economic_period_kind == SECEconomicPeriodKind.INSTANT
-        assert p_assets_prior.period_alignment_status == SECPeriodAlignmentStatus.COMPARATIVE_PRIOR_PERIOD
-        assert p_assets_prior.is_comparative is True
+        # 15. us-gaap:CommonStockSharesOutstanding dated after report_date does NOT get COVER_DATE_CONTEXT
+        c_usgaap = _make_candidate(
+            canonical_concept="SHARES_OUTSTANDING",
+            taxonomy="us-gaap",
+            source_concept="CommonStockSharesOutstanding",
+            period_type=PeriodType.INSTANT,
+            start_date=None,
+            end_date=date(2024, 10, 18),
+        )
+        p_usgaap = SECPeriodClassifier.classify_candidate(c_usgaap, filing=filing_10k)
+        assert p_usgaap.economic_period_kind == SECEconomicPeriodKind.INSTANT
+        assert p_usgaap.period_alignment_status == SECPeriodAlignmentStatus.NON_PRIMARY_CONTEXT
+        assert p_usgaap.period_alignment_status != SECPeriodAlignmentStatus.COVER_DATE_CONTEXT
 
-        # 3. DEI Shares Outstanding dated after report date -> COVER_DATE_INSTANT
-        c_shares_cover = _make_candidate(canonical_concept="SHARES_OUTSTANDING", period_type=PeriodType.INSTANT, start_date=None, end_date=date(2024, 10, 18))
-        p_shares_cover = SECPeriodClassifier.classify_candidate(c_shares_cover, filing=filing_10k)
-        assert p_shares_cover.economic_period_kind == SECEconomicPeriodKind.COVER_DATE_INSTANT
-        assert p_shares_cover.period_alignment_status == SECPeriodAlignmentStatus.COVER_DATE_CONTEXT
-        assert p_shares_cover.is_comparative is False
+        # 16. Generic SHARES_OUTSTANDING without DEI taxonomy cannot trigger cover-date
+        c_gen = _make_candidate(
+            canonical_concept="SHARES_OUTSTANDING",
+            taxonomy="custom",
+            source_concept="CustomShares",
+            period_type=PeriodType.INSTANT,
+            start_date=None,
+            end_date=date(2024, 10, 18),
+        )
+        p_gen = SECPeriodClassifier.classify_candidate(c_gen, filing=filing_10k)
+        assert p_gen.period_alignment_status == SECPeriodAlignmentStatus.NON_PRIMARY_CONTEXT
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. Form Roles & Non-Primary Contexts (Scenarios 28-36)
+# 4. Filing Consistency Checks CIK/Accession/ID/Form (Scenarios 17-22)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestSECFormRolesAndNonPrimaryContexts:
+class TestSECFilingMetadataConsistency:
 
-    def test_28_to_36_form_roles_and_6k_8k_handling(self):
-        """Scenario 28-36: 10-K/10-Q/20-F/40-F are primary; 8-K/6-K duration facts are NON_PRIMARY_CONTEXT."""
-        filing_8k = SECFilingRecord(cik="320193", accession_number="0000320193-24-000099", form="8-K", is_amendment=False, report_date=date(2024, 9, 28))
-        c_8k = _make_candidate(start_date=date(2023, 10, 1), end_date=date(2024, 9, 28), form="8-K", form_role="event_filing")
-        p_8k = SECPeriodClassifier.classify_candidate(c_8k, filing=filing_8k)
-        assert p_8k.economic_period_kind == SECEconomicPeriodKind.ANNUAL_DURATION
-        assert p_8k.period_alignment_status == SECPeriodAlignmentStatus.NON_PRIMARY_CONTEXT
+    def test_17_to_22_filing_mismatch_fails_closed(self):
+        """Scenario 17-22: Mismatched CIK, accession, filing_id, or form produces INVALID_CONTEXT."""
+        filing_good = SECFilingRecord(cik="0000320193", accession_number="0000320193-24-000106", form="10-K", is_amendment=False, report_date=date(2024, 9, 28))
 
-        filing_6k = SECFilingRecord(cik="1018724", accession_number="0001018724-24-000005", form="6-K", is_amendment=False, report_date=date(2024, 6, 30))
-        c_6k = _make_candidate(start_date=date(2024, 4, 1), end_date=date(2024, 6, 30), form="6-K", form_role="fpi_interim_or_event")
-        p_6k = SECPeriodClassifier.classify_candidate(c_6k, filing=filing_6k)
-        assert p_6k.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
-        assert p_6k.period_alignment_status == SECPeriodAlignmentStatus.NON_PRIMARY_CONTEXT
+        # 17. Matching CIK & accession accepted
+        c_good = _make_candidate(cik="320193", accession_number="0000320193-24-000106", start_date=date(2023, 10, 1), end_date=date(2024, 9, 28))
+        assert SECPeriodClassifier.classify_candidate(c_good, filing=filing_good).period_alignment_status == SECPeriodAlignmentStatus.PRIMARY_REPORT_PERIOD
 
-        # 10-K/A amendment retains ANNUAL_DURATION and PRIMARY_REPORT_PERIOD
-        filing_10ka = SECFilingRecord(cik="320193", accession_number="0000320193-24-000999", form="10-K/A", is_amendment=True, report_date=date(2024, 9, 28))
-        c_10ka = _make_candidate(start_date=date(2023, 10, 1), end_date=date(2024, 9, 28), form="10-K/A", form_role="amendment_annual", is_amendment=True)
-        p_10ka = SECPeriodClassifier.classify_candidate(c_10ka, filing=filing_10ka)
-        assert p_10ka.economic_period_kind == SECEconomicPeriodKind.ANNUAL_DURATION
+        # 18. Wrong CIK
+        filing_wrong_cik = SECFilingRecord(cik="0000789019", accession_number="0000320193-24-000106", form="10-K", is_amendment=False, report_date=date(2024, 9, 28))
+        p_wrong_cik = SECPeriodClassifier.classify_candidate(c_good, filing=filing_wrong_cik)
+        assert p_wrong_cik.period_alignment_status == SECPeriodAlignmentStatus.INVALID_CONTEXT
+        assert p_wrong_cik.filing_report_date is None
+
+        # 19. Wrong Accession
+        filing_wrong_acc = SECFilingRecord(cik="0000320193", accession_number="0000320193-23-000001", form="10-K", is_amendment=False, report_date=date(2024, 9, 28))
+        p_wrong_acc = SECPeriodClassifier.classify_candidate(c_good, filing=filing_wrong_acc)
+        assert p_wrong_acc.period_alignment_status == SECPeriodAlignmentStatus.INVALID_CONTEXT
+
+        # 20. Wrong Filing ID
+        f_id1 = uuid4()
+        f_id2 = uuid4()
+        filing_wrong_id = SECFilingRecord(cik="0000320193", accession_number="0000320193-24-000106", form="10-K", is_amendment=False, report_date=date(2024, 9, 28), id=f_id1)
+        c_wrong_id = _make_candidate(cik="320193", accession_number="0000320193-24-000106", filing_id=f_id2)
+        p_wrong_id = SECPeriodClassifier.classify_candidate(c_wrong_id, filing=filing_wrong_id)
+        assert p_wrong_id.period_alignment_status == SECPeriodAlignmentStatus.INVALID_CONTEXT
+
+        # 21. Candidate 10-Q + Filing 8-K form mismatch
+        filing_8k = SECFilingRecord(cik="0000320193", accession_number="0000320193-24-000106", form="8-K", is_amendment=False, report_date=date(2024, 9, 28))
+        c_10q = _make_candidate(cik="320193", accession_number="0000320193-24-000106", form="10-Q")
+        p_form_mismatch = SECPeriodClassifier.classify_candidate(c_10q, filing=filing_8k)
+        assert p_form_mismatch.period_alignment_status == SECPeriodAlignmentStatus.INVALID_CONTEXT
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. Other & Transition Forms Fail-Closed (Scenarios 23-27)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSECOtherAndTransitionFormsFailClosed:
+
+    def test_23_to_27_other_forms_cannot_claim_primary(self):
+        """Scenario 23-27: Form role OTHER or unknown forms (XYZ, 10-KT, 10-QT) cannot claim PRIMARY_REPORT_PERIOD."""
+        filing_xyz = SECFilingRecord(cik="0000320193", accession_number="0000320193-24-000106", form="XYZ", is_amendment=False, report_date=date(2024, 9, 28))
+
+        # 23. form_role OTHER with annual duration -> NON_PRIMARY_CONTEXT
+        c_other_ann = _make_candidate(form="XYZ", form_role="other", start_date=date(2023, 10, 1), end_date=date(2024, 9, 28))
+        p_other_ann = SECPeriodClassifier.classify_candidate(c_other_ann, filing=filing_xyz)
+        assert p_other_ann.economic_period_kind == SECEconomicPeriodKind.ANNUAL_DURATION
+        assert p_other_ann.period_alignment_status == SECPeriodAlignmentStatus.NON_PRIMARY_CONTEXT
+        assert p_other_ann.period_alignment_status != SECPeriodAlignmentStatus.PRIMARY_REPORT_PERIOD
+
+        # 24. form_role OTHER with quarter duration -> NON_PRIMARY_CONTEXT
+        c_other_q = _make_candidate(form="XYZ", form_role="other", start_date=date(2024, 7, 1), end_date=date(2024, 9, 28))
+        p_other_q = SECPeriodClassifier.classify_candidate(c_other_q, filing=filing_xyz)
+        assert p_other_q.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
+        assert p_other_q.period_alignment_status == SECPeriodAlignmentStatus.NON_PRIMARY_CONTEXT
+
+        # 26. 10-KT form -> NON_PRIMARY_CONTEXT
+        filing_10kt = SECFilingRecord(cik="0000320193", accession_number="0000320193-24-000106", form="10-KT", is_amendment=False, report_date=date(2024, 9, 28))
+        c_10kt = _make_candidate(form="10-KT", form_role="other", start_date=date(2023, 10, 1), end_date=date(2024, 9, 28))
+        p_10kt = SECPeriodClassifier.classify_candidate(c_10kt, filing=filing_10kt)
+        assert p_10kt.period_alignment_status == SECPeriodAlignmentStatus.NON_PRIMARY_CONTEXT
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. Supported Forms Regression (Scenarios 28-35)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSECSupportedFormsRegression:
+
+    def test_28_to_35_supported_periodic_forms(self):
+        """Scenario 28-35: 10-K, 10-K/A, 10-Q, 10-Q/A, 20-F, 40-F are supported primary; 6-K and 8-K are NON_PRIMARY."""
+        # 28. 10-K
+        f_10k = SECFilingRecord(cik="320193", accession_number="0000320193-24-000106", form="10-K", is_amendment=False, report_date=date(2024, 9, 28))
+        c_10k = _make_candidate(form="10-K", form_role="primary_annual", start_date=date(2023, 10, 1), end_date=date(2024, 9, 28))
+        assert SECPeriodClassifier.classify_candidate(c_10k, filing=f_10k).period_alignment_status == SECPeriodAlignmentStatus.PRIMARY_REPORT_PERIOD
+
+        # 29. 10-K/A
+        f_10ka = SECFilingRecord(cik="320193", accession_number="0000320193-24-000999", form="10-K/A", is_amendment=True, report_date=date(2024, 9, 28))
+        c_10ka = _make_candidate(accession_number="0000320193-24-000999", form="10-K/A", form_role="amendment_annual", is_amendment=True, start_date=date(2023, 10, 1), end_date=date(2024, 9, 28))
+        p_10ka = SECPeriodClassifier.classify_candidate(c_10ka, filing=f_10ka)
         assert p_10ka.period_alignment_status == SECPeriodAlignmentStatus.PRIMARY_REPORT_PERIOD
         assert p_10ka.is_amendment is True
 
+        # 30. 10-Q
+        f_10q = SECFilingRecord(cik="320193", accession_number="0000320193-24-000020", form="10-Q", is_amendment=False, report_date=date(2024, 3, 30))
+        c_10q = _make_candidate(accession_number="0000320193-24-000020", form="10-Q", form_role="primary_quarterly", start_date=date(2023, 12, 31), end_date=date(2024, 3, 30))
+        assert SECPeriodClassifier.classify_candidate(c_10q, filing=f_10q).period_alignment_status == SECPeriodAlignmentStatus.PRIMARY_REPORT_PERIOD
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 6. Irregular & Malformed Periods Fail-Closed (Scenarios 37-41)
-# ─────────────────────────────────────────────────────────────────────────────
+        # 32. 20-F
+        f_20f = SECFilingRecord(cik="1018724", accession_number="0001018724-24-000001", form="20-F", is_amendment=False, report_date=date(2024, 12, 31))
+        c_20f = _make_candidate(cik="1018724", accession_number="0001018724-24-000001", form="20-F", form_role="fpi_annual", start_date=date(2024, 1, 1), end_date=date(2024, 12, 31))
+        assert SECPeriodClassifier.classify_candidate(c_20f, filing=f_20f).period_alignment_status == SECPeriodAlignmentStatus.PRIMARY_REPORT_PERIOD
 
-class TestSECIrregularAndMalformedPeriods:
+        # 34. 6-K -> NON_PRIMARY
+        f_6k = SECFilingRecord(cik="1018724", accession_number="0001018724-24-000005", form="6-K", is_amendment=False, report_date=date(2024, 6, 30))
+        c_6k = _make_candidate(cik="1018724", accession_number="0001018724-24-000005", form="6-K", form_role="fpi_interim_or_event", start_date=date(2024, 4, 1), end_date=date(2024, 6, 30))
+        assert SECPeriodClassifier.classify_candidate(c_6k, filing=f_6k).period_alignment_status == SECPeriodAlignmentStatus.NON_PRIMARY_CONTEXT
 
-    def test_37_to_41_stub_and_malformed_periods_fail_closed(self):
-        """Scenario 37-41: 45-day stub is IRREGULAR_DURATION; start > end is INVALID_CONTEXT; missing dates are INSUFFICIENT_EVIDENCE."""
-        # 45-day stub
-        c_stub = _make_candidate(start_date=date(2024, 1, 1), end_date=date(2024, 2, 14))
-        p_stub = SECPeriodClassifier.classify_candidate(c_stub)
-        assert p_stub.economic_period_kind == SECEconomicPeriodKind.IRREGULAR_DURATION
-        assert p_stub.duration_days == 45
-
-        # Malformed start > end
-        c_bad = _make_candidate(start_date=date(2024, 12, 31), end_date=date(2024, 1, 1))
-        p_bad = SECPeriodClassifier.classify_candidate(c_bad)
-        assert p_bad.economic_period_kind == SECEconomicPeriodKind.UNKNOWN
-        assert p_bad.period_alignment_status == SECPeriodAlignmentStatus.INVALID_CONTEXT
-
-        # Missing start on duration
-        c_nostart = _make_candidate(start_date=None, end_date=date(2024, 12, 31))
-        p_nostart = SECPeriodClassifier.classify_candidate(c_nostart)
-        assert p_nostart.economic_period_kind == SECEconomicPeriodKind.UNKNOWN
-        assert p_nostart.period_alignment_status == SECPeriodAlignmentStatus.INSUFFICIENT_EVIDENCE
+        # 35. 8-K -> NON_PRIMARY
+        f_8k = SECFilingRecord(cik="320193", accession_number="0000320193-24-000099", form="8-K", is_amendment=False, report_date=date(2024, 9, 28))
+        c_8k = _make_candidate(accession_number="0000320193-24-000099", form="8-K", form_role="event_filing", start_date=date(2023, 10, 1), end_date=date(2024, 9, 28))
+        assert SECPeriodClassifier.classify_candidate(c_8k, filing=f_8k).period_alignment_status == SECPeriodAlignmentStatus.NON_PRIMARY_CONTEXT
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 7. Economic Candidate Grouping & No-Winner Invariants (Scenarios 42-54)
+# 7. Economic Grouping & Ungroupable Separation (Scenarios 36-41)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestSECEconomicCandidateGroupingAndNoWinners:
+class TestSECEconomicGroupingAndUngroupableSeparation:
 
-    def test_42_to_48_grouping_key_dimensions(self):
-        """Scenario 42-48: Same economic interval groups together across accessions/amendments; different units or concepts separate."""
-        # Same observation in original 10-K and 10-K/A
+    def test_36_to_41_grouping_and_ungroupable_isolation(self):
+        """Scenario 36-41: Valid candidates group together; invalid/missing period candidates are kept in ungroupable."""
+        # 36 & 37. Valid original and amendment
         c_orig = _make_candidate(accession_number="0000320193-24-000106", start_date=date(2023, 10, 1), end_date=date(2024, 9, 28), value=Decimal("100"))
         c_amend = _make_candidate(accession_number="0000320193-24-000999", start_date=date(2023, 10, 1), end_date=date(2024, 9, 28), value=Decimal("105"), is_amendment=True)
-        # Prior comparative period
+        # 38. Prior comparative period
         c_prior = _make_candidate(accession_number="0000320193-24-000106", start_date=date(2022, 10, 1), end_date=date(2023, 9, 30), value=Decimal("90"))
+        # 39. EUR unit
+        c_eur = _make_candidate(accession_number="0000320193-24-000106", unit="EUR", start_date=date(2023, 10, 1), end_date=date(2024, 9, 28), value=Decimal("85"))
+        # 40. Invalid candidate (start > end)
+        c_invalid = _make_candidate(start_date=date(2024, 12, 31), end_date=date(2024, 1, 1))
 
-        p_orig = SECPeriodClassifier.classify_candidate(c_orig)
-        p_amend = SECPeriodClassifier.classify_candidate(c_amend)
-        p_prior = SECPeriodClassifier.classify_candidate(c_prior)
+        candidates = [
+            SECPeriodClassifier.classify_candidate(c_orig),
+            SECPeriodClassifier.classify_candidate(c_amend),
+            SECPeriodClassifier.classify_candidate(c_prior),
+            SECPeriodClassifier.classify_candidate(c_eur),
+            SECPeriodClassifier.classify_candidate(c_invalid),
+        ]
 
-        key_orig = build_economic_group_key(p_orig)
-        key_amend = build_economic_group_key(p_amend)
-        key_prior = build_economic_group_key(p_prior)
+        result: SECPeriodGroupingResult = group_periodized_candidates(candidates)
 
-        # Original and amendment share the exact same group key
-        assert key_orig == key_amend
-        # Comparative prior period has a different group key
-        assert key_orig != key_prior
+        # 3 valid groups: USD current (2 items), USD prior (1 item), EUR current (1 item)
+        assert len(result.groups) == 3
+        # 1 ungroupable item: invalid period
+        assert len(result.ungroupable) == 1
+        assert result.ungroupable[0].candidate_id == c_invalid.id
 
-        # Grouping helper
-        groups = group_periodized_candidates([p_orig, p_amend, p_prior])
-        assert len(groups) == 2
-        assert len(groups[key_orig]) == 2
-        assert len(groups[key_prior]) == 1
 
-    def test_49_to_54_all_candidates_preserved_without_declaring_winners(self):
-        """Scenario 49-54: In Phase 8B.2A, 3 filings for the same period produce 3 candidates; no latest accession or snapshot auto-wins."""
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. Annual Duration & Fiscal Year Variants (Scenarios 42-48)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSECAnnualDurationVariants:
+
+    def test_42_to_48_annual_duration_variants(self):
+        """Scenario 42-48: Calendar year, 52-week (364d), 53-week (371d) classify as ANNUAL_DURATION; filed_date is independent."""
+        c_cal = _make_candidate(start_date=date(2024, 1, 1), end_date=date(2024, 12, 31))
+        c_52 = _make_candidate(start_date=date(2023, 1, 29), end_date=date(2024, 1, 27))
+        c_53 = _make_candidate(start_date=date(2023, 1, 29), end_date=date(2024, 2, 3))
+
+        p_cal = SECPeriodClassifier.classify_candidate(c_cal)
+        p_52 = SECPeriodClassifier.classify_candidate(c_52)
+        p_53 = SECPeriodClassifier.classify_candidate(c_53)
+
+        assert p_cal.economic_period_kind == SECEconomicPeriodKind.ANNUAL_DURATION
+        assert p_52.economic_period_kind == SECEconomicPeriodKind.ANNUAL_DURATION
+        assert p_53.economic_period_kind == SECEconomicPeriodKind.ANNUAL_DURATION
+        assert p_52.duration_days == 364
+        assert p_53.duration_days == 371
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. Standalone Quarter vs Interim YTD (Scenarios 49-55)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSECQuarterVsYTDVariants:
+
+    def test_49_to_55_q1_q2_q3_quarter_vs_ytd(self):
+        """Scenario 49-55: Q1 is QUARTER; Q2 standalone (91d) vs Q2 YTD (182d); Q3 standalone (91d) vs Q3 YTD (273d)."""
+        c_q1 = _make_candidate(start_date=date(2023, 10, 1), end_date=date(2023, 12, 30))
+        c_q2_q = _make_candidate(start_date=date(2023, 12, 31), end_date=date(2024, 3, 30))
+        c_q2_ytd = _make_candidate(start_date=date(2023, 10, 1), end_date=date(2024, 3, 30))
+        c_q3_q = _make_candidate(start_date=date(2024, 3, 31), end_date=date(2024, 6, 29))
+        c_q3_ytd = _make_candidate(start_date=date(2023, 10, 1), end_date=date(2024, 6, 29))
+
+        p_q1 = SECPeriodClassifier.classify_candidate(c_q1)
+        p_q2_q = SECPeriodClassifier.classify_candidate(c_q2_q)
+        p_q2_ytd = SECPeriodClassifier.classify_candidate(c_q2_ytd)
+        p_q3_q = SECPeriodClassifier.classify_candidate(c_q3_q)
+        p_q3_ytd = SECPeriodClassifier.classify_candidate(c_q3_ytd)
+
+        assert p_q1.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
+        assert p_q2_q.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
+        assert p_q2_ytd.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
+        assert p_q3_q.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
+        assert p_q3_ytd.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. No-Winner & Multi-Candidate Invariants (Scenarios 56-60)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSECNoWinnerInvariants:
+
+    def test_56_to_60_all_candidates_preserved_in_groups(self):
+        """Scenario 56-60: 3 filings for the same period preserve all 3 candidates without picking a winner."""
         c1 = _make_candidate(accession_number="0000320193-23-000106", filed_date=date(2023, 11, 3), value=Decimal("100"))
         c2 = _make_candidate(accession_number="0000320193-23-000999", filed_date=date(2023, 12, 1), value=Decimal("101"), is_amendment=True)
         c3 = _make_candidate(accession_number="0000320193-24-000106", filed_date=date(2024, 11, 1), value=Decimal("100"))
@@ -359,10 +417,9 @@ class TestSECEconomicCandidateGroupingAndNoWinners:
         candidates = SECPeriodClassifier.classify_candidates([c1, c2, c3])
         assert len(candidates) == 3
 
-        groups = group_periodized_candidates(candidates)
-        assert len(groups) == 1
-        group_items = next(iter(groups.values()))
-        # All 3 candidates are preserved in the economic group without winner selection
+        result = group_periodized_candidates(candidates)
+        assert len(result.groups) == 1
+        group_items = next(iter(result.groups.values()))
         assert len(group_items) == 3
         assert {item.accession_number for item in group_items} == {
             "0000320193-23-000106", "0000320193-23-000999", "0000320193-24-000106"
