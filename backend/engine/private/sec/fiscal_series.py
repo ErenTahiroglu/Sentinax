@@ -1,16 +1,19 @@
 """
 backend/engine/private/sec/fiscal_series.py
 =============================================
-SEC EDGAR Phase 8B.3A / 8B.3A.5 / 8B.3A.6:
-PIT Fiscal Series Assembly, Fiscal Anchor Semantics, Central Period-Bound Reuse & Fail-Closed Identity.
+SEC EDGAR Phase 8B.3A / 8B.3A.5 / 8B.3A.6 / 8B.3A.7:
+PIT Fiscal Series Assembly, Interval Consistency, Conflict Fiscal Scope & Strict Relational Quarter Identity.
 
 Core Invariants:
     - Pure Economic Series Assembly: Groups verified winner results by CIK, canonical concept, unit,
       resolution mode, as_of date, and evaluation snapshot state.
+    - Authoritative Duration Rule: Inclusive duration is computed deterministically as (end_date - start_date).days + 1.
+      If duration_days metadata is supplied, it MUST match the computed inclusive duration; any discrepancy
+      fails closed as an invalid interval. If duration_days=None with valid dates, the computed duration is used.
+    - Structured Conflict Fiscal Scope: SECFiscalSeriesConflict preserves candidate fiscal_year and fiscal_period
+      metadata, ensuring target_fiscal_year evaluation cleanly isolates unrelated-year conflicts.
     - No Date Fabrication: Missing economic dates are NEVER replaced with epoch or sentinel dates.
       Selected winner candidates lacking economic_end_date are excluded from normal series points and logged.
-    - Structured Series Conflict: Conflicting values for identical economic periods are recorded as structured
-      SECFiscalSeriesConflict objects and mark the series status as CONFLICTED.
     - Conflict Cannot Be Bypassed: A target quarter cannot bypass a conflicted standalone or operand interval
       to fall back to YTD derivation or declare missing operands; returns SERIES_CONFLICT.
     - Fiscal Start Anchor Semantics: Standalone quarter starts (Apr 1 for Q2, Jul 1 for Q3) are NOT fiscal-year starts.
@@ -19,12 +22,13 @@ Core Invariants:
         * Q2 YTD_DURATION start_date
         * Q3 YTD_DURATION start_date
         * ANNUAL_DURATION start_date
+    - Strict Relational Quarter Boundaries:
+        * Standalone Q2 must start strictly after Q1 end date (start_date > Q1.end_date). No 1-day overlap.
+        * Standalone Q3 must start strictly after Q2 YTD end date (start_date > Q2_YTD.end_date). No 1-day overlap.
+    - Unified Interval Predicates: Points and conflicts share identical interval classification functions
+      (_check_standalone_q2_interval, _check_standalone_q3_interval) with strict FP contradiction detection.
     - Central Period-Bound Reuse: Reuses centralized inclusive duration bounds (QUARTER_MIN_DAYS/MAX_DAYS,
       YTD_6M_MIN_DAYS/MAX_DAYS, YTD_9M_MIN_DAYS/MAX_DAYS) from period_context.py.
-    - Inclusive Duration Convention: duration_days = (end_date - start_date).days + 1.
-    - Fail-Closed Duration Validation: duration_days=None or missing dates cannot positively prove period identity.
-    - Standalone Relational Identity: Standalone Q2/Q3 prefer strong relational proof against cumulative endpoints
-      (e.g. Q2 standalone end == Q2_YTD end) before falling back to date ordinal proofs.
     - Snapshot State Consistency: All operands in a single derivation chain MUST originate from the same
       logical CompanyFacts evaluation snapshot state (identical retrieved_at and payload_hash).
     - Mode & As-Of Isolation: CURRENT_REPORTED and SYSTEM_AS_OF points cannot be mixed; SYSTEM_AS_OF operands
@@ -100,10 +104,18 @@ class SECDerivationEligibilityStatus(Enum):
     UNAVAILABLE = "unavailable"
 
 
+class SECIntervalMatchResult(Enum):
+    """Result of interval identity predicate evaluation."""
+    MATCH = "match"
+    NO_MATCH = "no_match"
+    CONTRADICTION = "contradiction"
+
+
 @dataclass
 class SECFiscalSeriesConflict:
     """
     Structured conflict record for a period interval with conflicting winner values.
+    Preserves fiscal_year and fiscal_period metadata across conflicting candidates.
     """
     economic_period_kind: SECEconomicPeriodKind
     start_date: Optional[date]
@@ -112,6 +124,10 @@ class SECFiscalSeriesConflict:
     winner_result_ids: List[UUID]
     accession_numbers: List[str]
     reason: str
+    fiscal_year: Optional[int] = None
+    fiscal_period: Optional[str] = None
+    fiscal_years: List[int] = field(default_factory=list)
+    fiscal_periods: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -122,6 +138,10 @@ class SECFiscalSeriesConflict:
             "winner_result_ids": [str(wid) for wid in self.winner_result_ids],
             "accession_numbers": self.accession_numbers,
             "reason": self.reason,
+            "fiscal_year": self.fiscal_year,
+            "fiscal_period": self.fiscal_period,
+            "fiscal_years": self.fiscal_years,
+            "fiscal_periods": self.fiscal_periods,
         }
 
 
@@ -246,7 +266,7 @@ class SECQuarterDerivationEligibility:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helper Functions: Inclusive Duration & Period Checks
+# Helper Functions: Authoritative Inclusive Duration & Central Period Checks
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _effective_inclusive_duration(
@@ -255,15 +275,20 @@ def _effective_inclusive_duration(
     duration_days: Optional[int],
 ) -> Optional[int]:
     """
-    Computes effective inclusive duration ((end_date - start_date).days + 1)
-    and validates consistency with supplied duration_days if available.
-    Returns None if dates are missing.
+    Authoritative duration rule:
+    Inclusive duration is computed deterministically as (end_date - start_date).days + 1.
+    If supplied duration_days is present, it MUST match the computed inclusive duration;
+    any discrepancy fails closed and returns None.
+    If duration_days is None with valid dates, the computed duration is used.
+    Returns None if dates are missing or end_date < start_date.
     """
     if start_date is None or end_date is None:
         return None
     if end_date < start_date:
         return None
     computed = (end_date - start_date).days + 1
+    if duration_days is not None and duration_days != computed:
+        return None
     return computed
 
 
@@ -285,6 +310,122 @@ def _is_q3_ytd_duration(inclusive_days: Optional[int]) -> bool:
     return YTD_9M_MIN_DAYS <= inclusive_days <= YTD_9M_MAX_DAYS
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Unified Interval Identity Predicates (Points & Conflicts)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _check_standalone_q2_interval(
+    economic_period_kind: SECEconomicPeriodKind,
+    start_date: Optional[date],
+    end_date: Optional[date],
+    duration_days: Optional[int],
+    fiscal_period: Optional[str],
+    resolved_fiscal_start: date,
+    q1_anchor: Optional[SECFiscalSeriesPoint],
+    q2_ytd_anchor: Optional[SECFiscalSeriesPoint],
+) -> SECIntervalMatchResult:
+    """
+    Pure unified predicate for standalone Q2 interval identity.
+    Used identically for SECFiscalSeriesPoint and SECFiscalSeriesConflict.
+    Strict relational boundary: start_date > resolved_fiscal_start AND start_date > q1_anchor.end_date.
+    """
+    if economic_period_kind != SECEconomicPeriodKind.QUARTER_DURATION:
+        return SECIntervalMatchResult.NO_MATCH
+    if start_date is None or end_date is None:
+        return SECIntervalMatchResult.NO_MATCH
+    if start_date <= resolved_fiscal_start:
+        return SECIntervalMatchResult.NO_MATCH
+
+    dur = _effective_inclusive_duration(start_date, end_date, duration_days)
+    if not _is_valid_quarter_duration(dur):
+        return SECIntervalMatchResult.NO_MATCH
+
+    matched = False
+    # 1. Strong Relational Match with Q2 YTD Anchor
+    if q2_ytd_anchor is not None:
+        if end_date == q2_ytd_anchor.end_date:
+            if q1_anchor is None or start_date > q1_anchor.end_date:
+                matched = True
+    # 2. Relational Match with Q1 Anchor
+    elif q1_anchor is not None:
+        if start_date > q1_anchor.end_date and end_date <= resolved_fiscal_start + timedelta(days=210):
+            matched = True
+    # 3. Fallback: date ordinal proof
+    else:
+        if (
+            resolved_fiscal_start + timedelta(days=70) <= start_date <= resolved_fiscal_start + timedelta(days=125)
+            and end_date <= resolved_fiscal_start + timedelta(days=210)
+        ):
+            matched = True
+
+    if not matched:
+        return SECIntervalMatchResult.NO_MATCH
+
+    # Check fp contradiction
+    if fiscal_period:
+        fp_norm = fiscal_period.strip().upper()
+        if fp_norm != "Q2":
+            return SECIntervalMatchResult.CONTRADICTION
+
+    return SECIntervalMatchResult.MATCH
+
+
+def _check_standalone_q3_interval(
+    economic_period_kind: SECEconomicPeriodKind,
+    start_date: Optional[date],
+    end_date: Optional[date],
+    duration_days: Optional[int],
+    fiscal_period: Optional[str],
+    resolved_fiscal_start: date,
+    q2_ytd_anchor: Optional[SECFiscalSeriesPoint],
+    q3_ytd_anchor: Optional[SECFiscalSeriesPoint],
+) -> SECIntervalMatchResult:
+    """
+    Pure unified predicate for standalone Q3 interval identity.
+    Used identically for SECFiscalSeriesPoint and SECFiscalSeriesConflict.
+    Strict relational boundary: start_date > resolved_fiscal_start AND start_date > q2_ytd_anchor.end_date.
+    """
+    if economic_period_kind != SECEconomicPeriodKind.QUARTER_DURATION:
+        return SECIntervalMatchResult.NO_MATCH
+    if start_date is None or end_date is None:
+        return SECIntervalMatchResult.NO_MATCH
+    if start_date <= resolved_fiscal_start:
+        return SECIntervalMatchResult.NO_MATCH
+
+    dur = _effective_inclusive_duration(start_date, end_date, duration_days)
+    if not _is_valid_quarter_duration(dur):
+        return SECIntervalMatchResult.NO_MATCH
+
+    matched = False
+    # 1. Strong Relational Match with Q3 YTD Anchor
+    if q3_ytd_anchor is not None:
+        if end_date == q3_ytd_anchor.end_date:
+            if q2_ytd_anchor is None or start_date > q2_ytd_anchor.end_date:
+                matched = True
+    # 2. Relational Match with Q2 YTD Anchor
+    elif q2_ytd_anchor is not None:
+        if start_date > q2_ytd_anchor.end_date and end_date <= resolved_fiscal_start + timedelta(days=300):
+            matched = True
+    # 3. Fallback: date ordinal proof
+    else:
+        if (
+            resolved_fiscal_start + timedelta(days=150) <= start_date <= resolved_fiscal_start + timedelta(days=220)
+            and end_date <= resolved_fiscal_start + timedelta(days=300)
+        ):
+            matched = True
+
+    if not matched:
+        return SECIntervalMatchResult.NO_MATCH
+
+    # Check fp contradiction
+    if fiscal_period:
+        fp_norm = fiscal_period.strip().upper()
+        if fp_norm != "Q3":
+            return SECIntervalMatchResult.CONTRADICTION
+
+    return SECIntervalMatchResult.MATCH
+
+
 def _collect_fiscal_start_anchors(
     series: SECFiscalSeries,
     target_fiscal_year: Optional[int] = None,
@@ -299,7 +440,7 @@ def _collect_fiscal_start_anchors(
     for p in series.points:
         if p.start_date is None or p.end_date is None:
             continue
-        if target_fiscal_year is not None and p.fiscal_year != target_fiscal_year:
+        if target_fiscal_year is not None and p.fiscal_year is not None and p.fiscal_year != target_fiscal_year:
             continue
 
         dur = _effective_inclusive_duration(p.start_date, p.end_date, p.duration_days)
@@ -311,14 +452,11 @@ def _collect_fiscal_start_anchors(
             if _is_valid_quarter_duration(dur):
                 # fp if present must not indicate later quarters
                 if p.fiscal_period is None or p.fiscal_period.upper() == "Q1":
-                    # If evaluating specifically for Q2/Q3, Q1 is still a valid fiscal start anchor
                     anchors.add(p.start_date)
 
-        # 2. Q2 YTD Anchor
+        # 2. Q2/Q3 YTD Anchor
         elif p.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION:
-            if _is_q2_ytd_duration(dur):
-                anchors.add(p.start_date)
-            elif _is_q3_ytd_duration(dur):
+            if _is_q2_ytd_duration(dur) or _is_q3_ytd_duration(dur):
                 anchors.add(p.start_date)
 
         # 3. Annual Duration Anchor
@@ -330,13 +468,23 @@ def _collect_fiscal_start_anchors(
     for c in series.conflicts:
         if c.start_date is None or c.end_date is None:
             continue
-        dur = (c.end_date - c.start_date).days + 1
+        if target_fiscal_year is not None:
+            if c.fiscal_year is not None and c.fiscal_year != target_fiscal_year:
+                continue
+            if c.fiscal_years and target_fiscal_year not in c.fiscal_years:
+                continue
+            if c.fiscal_year is None and not c.fiscal_years:
+                # Unknown conflict year: do not provide positive anchor discovery for target_fiscal_year
+                continue
+
+        dur = _effective_inclusive_duration(c.start_date, c.end_date, None)
+        if dur is None:
+            continue
+
         if c.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION:
-            # Only if it matches a Q1 duration
-            if _is_valid_quarter_duration(dur):
-                # Avoid standalone Q2/Q3 conflict start dates
-                if for_quarter == "Q1" or target_fiscal_year is not None:
-                    anchors.add(c.start_date)
+            # Quarter conflict is fiscal start ONLY if unambiguously Q1
+            if c.fiscal_period and c.fiscal_period.upper() == "Q1" and _is_valid_quarter_duration(dur):
+                anchors.add(c.start_date)
         elif c.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION:
             if _is_q2_ytd_duration(dur) or _is_q3_ytd_duration(dur):
                 anchors.add(c.start_date)
@@ -362,7 +510,6 @@ class SECFiscalSeriesAssembler:
         Groups verified winner results into isolated fiscal series.
         Separates by CIK, canonical_concept, unit, resolution_mode, as_of, and snapshot state.
         """
-        # Cluster results by series identity key
         clusters: Dict[
             Tuple[str, str, str, SECWinnerResolutionMode, Optional[datetime], Optional[datetime], Optional[str]],
             List[SECWinnerResolutionResult]
@@ -398,7 +545,6 @@ class SECFiscalSeriesAssembler:
             failed_results: List[SECWinnerResolutionResult] = []
             diagnostics: List[str] = []
 
-            # Group selected points by economic period interval to detect duplicates/conflicts
             period_point_map: Dict[Tuple[SECEconomicPeriodKind, Optional[date], date], List[SECFiscalSeriesPoint]] = {}
 
             for res in res_list:
@@ -408,7 +554,6 @@ class SECFiscalSeriesAssembler:
                     continue
 
                 cand = res.selected_candidate
-                # Guard against missing economic_end_date: NEVER fabricate fallback sentinel dates
                 if cand.economic_end_date is None:
                     failed_results.append(res)
                     diagnostics.append(f"Selected winner lacks economic_end_date; excluded from fiscal series (group {res.economic_group_key}).")
@@ -439,14 +584,12 @@ class SECFiscalSeriesAssembler:
                 p_key = (point.economic_period_kind, point.start_date, point.end_date)
                 period_point_map.setdefault(p_key, []).append(point)
 
-            # Deduplicate identical points or record structured conflicts
             for p_key, p_candidates in period_point_map.items():
                 if len(p_candidates) == 1:
                     points.append(p_candidates[0])
                 else:
                     unique_vals = {p.selected_value for p in p_candidates}
                     if len(unique_vals) == 1:
-                        # Identical values: deduplicate deterministically
                         canonical_point = min(
                             p_candidates,
                             key=lambda p: (
@@ -462,13 +605,17 @@ class SECFiscalSeriesAssembler:
                         canonical_point.diagnostics = combined_diag
                         points.append(canonical_point)
                     else:
-                        # Differing values: structured series conflict!
                         w_ids = [
                             p.winner_result.selected_candidate.id
                             for p in p_candidates
                             if p.winner_result.selected_candidate
                         ]
                         accs = sorted(list({p.selected_accession for p in p_candidates if p.selected_accession}))
+                        f_years = sorted(list({p.fiscal_year for p in p_candidates if p.fiscal_year is not None}))
+                        f_periods = sorted(list({p.fiscal_period for p in p_candidates if p.fiscal_period is not None}))
+                        fy = f_years[0] if len(f_years) == 1 else None
+                        fp = f_periods[0] if len(f_periods) == 1 else None
+
                         conflict_rec = SECFiscalSeriesConflict(
                             economic_period_kind=p_key[0],
                             start_date=p_key[1],
@@ -477,13 +624,16 @@ class SECFiscalSeriesAssembler:
                             winner_result_ids=w_ids,
                             accession_numbers=accs,
                             reason=f"Conflicting selected values {unique_vals} on identical period [{p_key[1]} to {p_key[2]}].",
+                            fiscal_year=fy,
+                            fiscal_period=fp,
+                            fiscal_years=f_years,
+                            fiscal_periods=f_periods,
                         )
                         conflicts.append(conflict_rec)
                         diagnostics.append(
                             f"Series conflict on period {p_key[0].value} [{p_key[1]} to {p_key[2]}]: conflicting values {unique_vals}."
                         )
 
-            # Sort points by start_date/end_date
             points = sorted(
                 points,
                 key=lambda p: (
@@ -493,7 +643,6 @@ class SECFiscalSeriesAssembler:
                 )
             )
 
-            # Determine series status
             if conflicts:
                 series_status = SECFiscalSeriesStatus.CONFLICTED
             elif failed_results:
@@ -529,156 +678,6 @@ class SECFiscalSeriesEvaluator:
     Evaluates quarter derivation eligibility on an assembled SECFiscalSeries.
     Strictly fail-closed; does NOT compute numerical subtraction or derivations in Phase 8B.3A.
     """
-
-    @classmethod
-    def _identify_standalone_q2(
-        cls,
-        series: SECFiscalSeries,
-        resolved_fiscal_start: date,
-        q1_anchor: Optional[SECFiscalSeriesPoint],
-        q2_ytd_anchor: Optional[SECFiscalSeriesPoint],
-    ) -> List[SECFiscalSeriesPoint]:
-        """
-        Identifies standalone Q2 points using strong relational evidence relative to cumulative anchors.
-        """
-        candidates: List[SECFiscalSeriesPoint] = []
-
-        for p in series.points:
-            if p.economic_period_kind != SECEconomicPeriodKind.QUARTER_DURATION:
-                continue
-            if p.start_date is None or p.start_date <= resolved_fiscal_start:
-                continue
-            dur = _effective_inclusive_duration(p.start_date, p.end_date, p.duration_days)
-            if not _is_valid_quarter_duration(dur):
-                continue
-            if p.fiscal_period and p.fiscal_period.upper() in ("Q3", "Q4"):
-                continue
-
-            # 1. Strong Relational Match with Q2 YTD
-            if q2_ytd_anchor is not None:
-                if p.end_date == q2_ytd_anchor.end_date:
-                    if q1_anchor is None or p.start_date >= q1_anchor.end_date:
-                        candidates.append(p)
-                        continue
-
-            # 2. Relational Match with Q1 Anchor
-            elif q1_anchor is not None:
-                if p.start_date >= q1_anchor.end_date and p.end_date <= resolved_fiscal_start + timedelta(days=210):
-                    candidates.append(p)
-                    continue
-
-            # 3. Fallback: date ordinal proof
-            else:
-                if (
-                    resolved_fiscal_start + timedelta(days=70) <= p.start_date <= resolved_fiscal_start + timedelta(days=125)
-                    and p.end_date <= resolved_fiscal_start + timedelta(days=210)
-                ):
-                    candidates.append(p)
-
-        return candidates
-
-    @classmethod
-    def _is_standalone_q2_conflict(
-        cls,
-        conflict: SECFiscalSeriesConflict,
-        resolved_fiscal_start: date,
-        q1_anchor: Optional[SECFiscalSeriesPoint],
-        q2_ytd_anchor: Optional[SECFiscalSeriesPoint],
-    ) -> bool:
-        """Determines if a structured conflict lies on the standalone Q2 interval."""
-        if conflict.economic_period_kind != SECEconomicPeriodKind.QUARTER_DURATION:
-            return False
-        if conflict.start_date is None or conflict.start_date <= resolved_fiscal_start:
-            return False
-        dur = (conflict.end_date - conflict.start_date).days + 1
-        if not _is_valid_quarter_duration(dur):
-            return False
-
-        if q2_ytd_anchor is not None and conflict.end_date == q2_ytd_anchor.end_date:
-            return True
-        if q1_anchor is not None and conflict.start_date >= q1_anchor.end_date and conflict.end_date <= resolved_fiscal_start + timedelta(days=210):
-            return True
-        if (
-            resolved_fiscal_start + timedelta(days=70) <= conflict.start_date <= resolved_fiscal_start + timedelta(days=125)
-            and conflict.end_date <= resolved_fiscal_start + timedelta(days=210)
-        ):
-            return True
-        return False
-
-    @classmethod
-    def _identify_standalone_q3(
-        cls,
-        series: SECFiscalSeries,
-        resolved_fiscal_start: date,
-        q2_ytd_anchor: Optional[SECFiscalSeriesPoint],
-        q3_ytd_anchor: Optional[SECFiscalSeriesPoint],
-    ) -> List[SECFiscalSeriesPoint]:
-        """
-        Identifies standalone Q3 points using strong relational evidence relative to cumulative anchors.
-        """
-        candidates: List[SECFiscalSeriesPoint] = []
-
-        for p in series.points:
-            if p.economic_period_kind != SECEconomicPeriodKind.QUARTER_DURATION:
-                continue
-            if p.start_date is None or p.start_date <= resolved_fiscal_start:
-                continue
-            dur = _effective_inclusive_duration(p.start_date, p.end_date, p.duration_days)
-            if not _is_valid_quarter_duration(dur):
-                continue
-            if p.fiscal_period and p.fiscal_period.upper() in ("Q1", "Q2", "Q4"):
-                continue
-
-            # 1. Strong Relational Match with Q3 YTD
-            if q3_ytd_anchor is not None:
-                if p.end_date == q3_ytd_anchor.end_date:
-                    if q2_ytd_anchor is None or p.start_date >= q2_ytd_anchor.end_date:
-                        candidates.append(p)
-                        continue
-
-            # 2. Relational Match with Q2 YTD Anchor
-            elif q2_ytd_anchor is not None:
-                if p.start_date >= q2_ytd_anchor.end_date and p.end_date <= resolved_fiscal_start + timedelta(days=300):
-                    candidates.append(p)
-                    continue
-
-            # 3. Fallback: date ordinal proof
-            else:
-                if (
-                    resolved_fiscal_start + timedelta(days=150) <= p.start_date <= resolved_fiscal_start + timedelta(days=220)
-                    and p.end_date <= resolved_fiscal_start + timedelta(days=300)
-                ):
-                    candidates.append(p)
-
-        return candidates
-
-    @classmethod
-    def _is_standalone_q3_conflict(
-        cls,
-        conflict: SECFiscalSeriesConflict,
-        resolved_fiscal_start: date,
-        q2_ytd_anchor: Optional[SECFiscalSeriesPoint],
-        q3_ytd_anchor: Optional[SECFiscalSeriesPoint],
-    ) -> bool:
-        """Determines if a structured conflict lies on the standalone Q3 interval."""
-        if conflict.economic_period_kind != SECEconomicPeriodKind.QUARTER_DURATION:
-            return False
-        if conflict.start_date is None or conflict.start_date <= resolved_fiscal_start:
-            return False
-        dur = (conflict.end_date - conflict.start_date).days + 1
-        if not _is_valid_quarter_duration(dur):
-            return False
-
-        if q3_ytd_anchor is not None and conflict.end_date == q3_ytd_anchor.end_date:
-            return True
-        if q2_ytd_anchor is not None and conflict.start_date >= q2_ytd_anchor.end_date and conflict.end_date <= resolved_fiscal_start + timedelta(days=300):
-            return True
-        if (
-            resolved_fiscal_start + timedelta(days=150) <= conflict.start_date <= resolved_fiscal_start + timedelta(days=220)
-            and conflict.end_date <= resolved_fiscal_start + timedelta(days=300)
-        ):
-            return True
-        return False
 
     @classmethod
     def evaluate_quarter_derivation_eligibility(
@@ -759,7 +758,6 @@ class SECFiscalSeriesEvaluator:
                     diagnostics=[f"No points for fiscal_year {target_fiscal_year}."],
                 )
         else:
-            # Auto-infer candidate fiscal starts strictly from cumulative anchors
             candidate_starts = _collect_fiscal_start_anchors(series, for_quarter=norm_quarter)
 
             if len(candidate_starts) == 1:
@@ -789,9 +787,10 @@ class SECFiscalSeriesEvaluator:
         if norm_quarter == "Q1":
             q1_conflicts = [
                 c for c in series.conflicts
-                if c.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
+                if (target_fiscal_year is None or c.fiscal_year is None or c.fiscal_year == target_fiscal_year)
+                and c.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
                 and c.start_date == resolved_fiscal_start
-                and _is_valid_quarter_duration((c.end_date - c.start_date).days + 1)
+                and _is_valid_quarter_duration(_effective_inclusive_duration(c.start_date, c.end_date, None))
             ]
             if q1_conflicts:
                 return SECQuarterDerivationEligibility(
@@ -806,13 +805,14 @@ class SECFiscalSeriesEvaluator:
 
             q1_points = [
                 p for p in series.points
-                if p.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
+                if (target_fiscal_year is None or p.fiscal_year is None or p.fiscal_year == target_fiscal_year)
+                and p.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
                 and p.start_date == resolved_fiscal_start
                 and _is_valid_quarter_duration(_effective_inclusive_duration(p.start_date, p.end_date, p.duration_days))
             ]
             if len(q1_points) == 1:
                 q1_p = q1_points[0]
-                if q1_p.fiscal_period and q1_p.fiscal_period.upper() in ("Q3", "Q4"):
+                if q1_p.fiscal_period and q1_p.fiscal_period.strip().upper() != "Q1":
                     return SECQuarterDerivationEligibility(
                         target_quarter="Q1",
                         status=SECDerivationEligibilityStatus.PERIOD_IDENTITY_UNRESOLVED,
@@ -857,16 +857,17 @@ class SECFiscalSeriesEvaluator:
 
         # 5. Target Quarter Q2 Evaluation
         if norm_quarter == "Q2":
-            # Collect available operands for relational verification
             q2_ytd_cands = [
                 p for p in series.points
-                if p.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
+                if (target_fiscal_year is None or p.fiscal_year is None or p.fiscal_year == target_fiscal_year)
+                and p.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
                 and p.start_date == resolved_fiscal_start
                 and _is_q2_ytd_duration(_effective_inclusive_duration(p.start_date, p.end_date, p.duration_days))
             ]
             q1_cands = [
                 p for p in series.points
-                if p.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
+                if (target_fiscal_year is None or p.fiscal_year is None or p.fiscal_year == target_fiscal_year)
+                and p.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
                 and p.start_date == resolved_fiscal_start
                 and _is_valid_quarter_duration(_effective_inclusive_duration(p.start_date, p.end_date, p.duration_days))
             ]
@@ -874,9 +875,15 @@ class SECFiscalSeriesEvaluator:
             q1_anchor = q1_cands[0] if len(q1_cands) == 1 else None
             q2_ytd_anchor = q2_ytd_cands[0] if len(q2_ytd_cands) == 1 else None
 
-            # Check standalone Q2 conflict
+            # Check standalone Q2 conflict using unified predicate
             for c in series.conflicts:
-                if cls._is_standalone_q2_conflict(c, resolved_fiscal_start, q1_anchor, q2_ytd_anchor):
+                if target_fiscal_year is not None and c.fiscal_year is not None and c.fiscal_year != target_fiscal_year:
+                    continue
+                res = _check_standalone_q2_interval(
+                    c.economic_period_kind, c.start_date, c.end_date, None, c.fiscal_period,
+                    resolved_fiscal_start, q1_anchor, q2_ytd_anchor
+                )
+                if res in (SECIntervalMatchResult.MATCH, SECIntervalMatchResult.CONTRADICTION):
                     return SECQuarterDerivationEligibility(
                         target_quarter="Q2",
                         status=SECDerivationEligibilityStatus.SERIES_CONFLICT,
@@ -887,21 +894,30 @@ class SECFiscalSeriesEvaluator:
                         diagnostics=["Series conflict on standalone Q2 period."],
                     )
 
-            # Check standalone Q2 points
-            q2_standalone_points = cls._identify_standalone_q2(series, resolved_fiscal_start, q1_anchor, q2_ytd_anchor)
-
-            if len(q2_standalone_points) == 1:
-                q2_p = q2_standalone_points[0]
-                if q2_p.fiscal_period and q2_p.fiscal_period.upper() in ("Q3", "Q4"):
+            # Check standalone Q2 points using unified predicate
+            q2_standalone_points: List[SECFiscalSeriesPoint] = []
+            for p in series.points:
+                if target_fiscal_year is not None and p.fiscal_year is not None and p.fiscal_year != target_fiscal_year:
+                    continue
+                res = _check_standalone_q2_interval(
+                    p.economic_period_kind, p.start_date, p.end_date, p.duration_days, p.fiscal_period,
+                    resolved_fiscal_start, q1_anchor, q2_ytd_anchor
+                )
+                if res == SECIntervalMatchResult.CONTRADICTION:
                     return SECQuarterDerivationEligibility(
                         target_quarter="Q2",
                         status=SECDerivationEligibilityStatus.PERIOD_IDENTITY_UNRESOLVED,
                         canonical_concept=series.canonical_concept,
                         unit=series.unit,
                         confidence="LOW",
-                        basis=f"Period identity unresolved: point dates indicate Q2 [{q2_p.start_date} to {q2_p.end_date}] but fiscal_period is {q2_p.fiscal_period}.",
+                        basis=f"Period identity unresolved: point dates indicate Q2 [{p.start_date} to {p.end_date}] but fiscal_period is {p.fiscal_period}.",
                         diagnostics=["Contradiction between dates and fiscal_period metadata."],
                     )
+                elif res == SECIntervalMatchResult.MATCH:
+                    q2_standalone_points.append(p)
+
+            if len(q2_standalone_points) == 1:
+                q2_p = q2_standalone_points[0]
                 return SECQuarterDerivationEligibility(
                     target_quarter="Q2",
                     status=SECDerivationEligibilityStatus.ORIGINAL_AVAILABLE,
@@ -928,15 +944,17 @@ class SECFiscalSeriesEvaluator:
             # Standalone not available: check operand conflicts
             q2_ytd_conflicts = [
                 c for c in series.conflicts
-                if c.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
+                if (target_fiscal_year is None or c.fiscal_year is None or c.fiscal_year == target_fiscal_year)
+                and c.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
                 and c.start_date == resolved_fiscal_start
-                and _is_q2_ytd_duration((c.end_date - c.start_date).days + 1)
+                and _is_q2_ytd_duration(_effective_inclusive_duration(c.start_date, c.end_date, None))
             ]
             q1_conflicts = [
                 c for c in series.conflicts
-                if c.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
+                if (target_fiscal_year is None or c.fiscal_year is None or c.fiscal_year == target_fiscal_year)
+                and c.economic_period_kind == SECEconomicPeriodKind.QUARTER_DURATION
                 and c.start_date == resolved_fiscal_start
-                and _is_valid_quarter_duration((c.end_date - c.start_date).days + 1)
+                and _is_valid_quarter_duration(_effective_inclusive_duration(c.start_date, c.end_date, None))
             ]
 
             if q1_conflicts or q2_ytd_conflicts:
@@ -951,7 +969,6 @@ class SECFiscalSeriesEvaluator:
                     diagnostics=["Series conflict on derivation operand."],
                 )
 
-            # Cardinality checks for operands
             if len(q2_ytd_cands) > 1 or len(q1_cands) > 1:
                 return SECQuarterDerivationEligibility(
                     target_quarter="Q2",
@@ -1005,13 +1022,15 @@ class SECFiscalSeriesEvaluator:
         if norm_quarter == "Q3":
             q3_ytd_cands = [
                 p for p in series.points
-                if p.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
+                if (target_fiscal_year is None or p.fiscal_year is None or p.fiscal_year == target_fiscal_year)
+                and p.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
                 and p.start_date == resolved_fiscal_start
                 and _is_q3_ytd_duration(_effective_inclusive_duration(p.start_date, p.end_date, p.duration_days))
             ]
             q2_ytd_cands = [
                 p for p in series.points
-                if p.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
+                if (target_fiscal_year is None or p.fiscal_year is None or p.fiscal_year == target_fiscal_year)
+                and p.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
                 and p.start_date == resolved_fiscal_start
                 and _is_q2_ytd_duration(_effective_inclusive_duration(p.start_date, p.end_date, p.duration_days))
             ]
@@ -1019,9 +1038,15 @@ class SECFiscalSeriesEvaluator:
             q2_ytd_anchor = q2_ytd_cands[0] if len(q2_ytd_cands) == 1 else None
             q3_ytd_anchor = q3_ytd_cands[0] if len(q3_ytd_cands) == 1 else None
 
-            # Check standalone Q3 conflict
+            # Check standalone Q3 conflict using unified predicate
             for c in series.conflicts:
-                if cls._is_standalone_q3_conflict(c, resolved_fiscal_start, q2_ytd_anchor, q3_ytd_anchor):
+                if target_fiscal_year is not None and c.fiscal_year is not None and c.fiscal_year != target_fiscal_year:
+                    continue
+                res = _check_standalone_q3_interval(
+                    c.economic_period_kind, c.start_date, c.end_date, None, c.fiscal_period,
+                    resolved_fiscal_start, q2_ytd_anchor, q3_ytd_anchor
+                )
+                if res in (SECIntervalMatchResult.MATCH, SECIntervalMatchResult.CONTRADICTION):
                     return SECQuarterDerivationEligibility(
                         target_quarter="Q3",
                         status=SECDerivationEligibilityStatus.SERIES_CONFLICT,
@@ -1032,21 +1057,30 @@ class SECFiscalSeriesEvaluator:
                         diagnostics=["Series conflict on standalone Q3 period."],
                     )
 
-            # Check standalone Q3 points
-            q3_standalone_points = cls._identify_standalone_q3(series, resolved_fiscal_start, q2_ytd_anchor, q3_ytd_anchor)
-
-            if len(q3_standalone_points) == 1:
-                q3_p = q3_standalone_points[0]
-                if q3_p.fiscal_period and q3_p.fiscal_period.upper() in ("Q1", "Q2", "Q4"):
+            # Check standalone Q3 points using unified predicate
+            q3_standalone_points: List[SECFiscalSeriesPoint] = []
+            for p in series.points:
+                if target_fiscal_year is not None and p.fiscal_year is not None and p.fiscal_year != target_fiscal_year:
+                    continue
+                res = _check_standalone_q3_interval(
+                    p.economic_period_kind, p.start_date, p.end_date, p.duration_days, p.fiscal_period,
+                    resolved_fiscal_start, q2_ytd_anchor, q3_ytd_anchor
+                )
+                if res == SECIntervalMatchResult.CONTRADICTION:
                     return SECQuarterDerivationEligibility(
                         target_quarter="Q3",
                         status=SECDerivationEligibilityStatus.PERIOD_IDENTITY_UNRESOLVED,
                         canonical_concept=series.canonical_concept,
                         unit=series.unit,
                         confidence="LOW",
-                        basis=f"Period identity unresolved: point dates indicate Q3 [{q3_p.start_date} to {q3_p.end_date}] but fiscal_period is {q3_p.fiscal_period}.",
+                        basis=f"Period identity unresolved: point dates indicate Q3 [{p.start_date} to {p.end_date}] but fiscal_period is {p.fiscal_period}.",
                         diagnostics=["Contradiction between dates and fiscal_period metadata."],
                     )
+                elif res == SECIntervalMatchResult.MATCH:
+                    q3_standalone_points.append(p)
+
+            if len(q3_standalone_points) == 1:
+                q3_p = q3_standalone_points[0]
                 return SECQuarterDerivationEligibility(
                     target_quarter="Q3",
                     status=SECDerivationEligibilityStatus.ORIGINAL_AVAILABLE,
@@ -1073,15 +1107,17 @@ class SECFiscalSeriesEvaluator:
             # Standalone not available: check operand conflicts
             q3_ytd_conflicts = [
                 c for c in series.conflicts
-                if c.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
+                if (target_fiscal_year is None or c.fiscal_year is None or c.fiscal_year == target_fiscal_year)
+                and c.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
                 and c.start_date == resolved_fiscal_start
-                and _is_q3_ytd_duration((c.end_date - c.start_date).days + 1)
+                and _is_q3_ytd_duration(_effective_inclusive_duration(c.start_date, c.end_date, None))
             ]
             q2_ytd_conflicts = [
                 c for c in series.conflicts
-                if c.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
+                if (target_fiscal_year is None or c.fiscal_year is None or c.fiscal_year == target_fiscal_year)
+                and c.economic_period_kind == SECEconomicPeriodKind.YTD_DURATION
                 and c.start_date == resolved_fiscal_start
-                and _is_q2_ytd_duration((c.end_date - c.start_date).days + 1)
+                and _is_q2_ytd_duration(_effective_inclusive_duration(c.start_date, c.end_date, None))
             ]
 
             if q3_ytd_conflicts or q2_ytd_conflicts:
@@ -1096,7 +1132,6 @@ class SECFiscalSeriesEvaluator:
                     diagnostics=["Series conflict on derivation operand."],
                 )
 
-            # Cardinality checks for operands
             if len(q3_ytd_cands) > 1 or len(q2_ytd_cands) > 1:
                 return SECQuarterDerivationEligibility(
                     target_quarter="Q3",
@@ -1169,7 +1204,6 @@ class SECFiscalSeriesEvaluator:
         """
         diag: List[str] = []
 
-        # 1. Canonical Concept Match
         left_concept = left.winner_result.selected_candidate.canonical_concept if left.winner_result.selected_candidate else ""
         right_concept = right.winner_result.selected_candidate.canonical_concept if right.winner_result.selected_candidate else ""
         if left_concept != right_concept or left_concept != series.canonical_concept:
@@ -1185,7 +1219,6 @@ class SECFiscalSeriesEvaluator:
                 diagnostics=["Concept mismatch between operands."],
             )
 
-        # 2. Unit Match
         left_unit = left.winner_result.selected_unit or ""
         right_unit = right.winner_result.selected_unit or ""
         if left_unit != right_unit or left_unit != series.unit:
@@ -1201,7 +1234,6 @@ class SECFiscalSeriesEvaluator:
                 diagnostics=["Unit mismatch between derivation operands."],
             )
 
-        # 3. Snapshot State Match (evaluation_snapshot_hash & retrieved_at)
         if (
             left.evaluation_snapshot_hash != right.evaluation_snapshot_hash
             or left.evaluation_snapshot_retrieved_at != right.evaluation_snapshot_retrieved_at
@@ -1218,7 +1250,6 @@ class SECFiscalSeriesEvaluator:
                 diagnostics=["Derivation operands must originate from identical evaluation snapshot state."],
             )
 
-        # 4. Mode & As-Of Match
         if left.winner_result.mode != right.winner_result.mode:
             return SECQuarterDerivationEligibility(
                 target_quarter=target_quarter,
@@ -1246,7 +1277,6 @@ class SECFiscalSeriesEvaluator:
                     diagnostics=["SYSTEM_AS_OF timestamp mismatch."],
                 )
 
-        # 5. Fiscal Start Date Match (Economic Start Date)
         if left.start_date != right.start_date or left.start_date is None:
             return SECQuarterDerivationEligibility(
                 target_quarter=target_quarter,
@@ -1260,7 +1290,6 @@ class SECFiscalSeriesEvaluator:
                 diagnostics=["Operands do not share identical fiscal year start date."],
             )
 
-        # 6. Period Sequence Validity (Chronological & Duration progression)
         if right.end_date >= left.end_date:
             return SECQuarterDerivationEligibility(
                 target_quarter=target_quarter,
@@ -1291,7 +1320,6 @@ class SECFiscalSeriesEvaluator:
                     diagnostics=["Left operand duration must exceed right operand duration."],
                 )
 
-        # 7. Semantic Quality Policy
         left_ms = (left.match_strength or "").lower()
         right_ms = (right.match_strength or "").lower()
 
@@ -1308,7 +1336,6 @@ class SECFiscalSeriesEvaluator:
                 diagnostics=["Legacy concept variant in derivation chain."],
             )
 
-        # Confidence Propagation
         left_conf = (left.selection_confidence or "LOW").upper()
         right_conf = (right.selection_confidence or "LOW").upper()
 
@@ -1321,7 +1348,6 @@ class SECFiscalSeriesEvaluator:
         else:
             derived_confidence = "HIGH"
 
-        # Lineage diagnostics
         if left.selected_accession and right.selected_accession:
             if left.selected_accession == right.selected_accession:
                 diag.append(f"Strong same-filing lineage: both operands disclosed in filing {left.selected_accession}.")

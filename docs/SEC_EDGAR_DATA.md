@@ -345,16 +345,21 @@ Derived Standalone Quarter Fact
      - Standalone Quarter: `QUARTER_MIN_DAYS = 70`, `QUARTER_MAX_DAYS = 115`.
      - 6M YTD (Q2): `YTD_6M_MIN_DAYS = 150`, `YTD_6M_MAX_DAYS = 210`.
      - 9M YTD (Q3): `YTD_9M_MIN_DAYS = 240`, `YTD_9M_MAX_DAYS = 300`.
-3. **Inclusive Duration Convention**:
-   - All duration validations strictly adhere to the inclusive convention `duration_days = (end_date - start_date).days + 1`.
-4. **Fail-Closed Duration Validation**:
-   - Missing duration metadata (`duration_days=None`) or invalid date spans cannot positively prove quarter or YTD identity, regardless of `fiscal_period` claims.
-5. **Relational Standalone Identity**:
-   - Standalone Q2 identity prioritizes matching the `Q2_YTD.end_date` endpoint and progressing past `Q1.end_date`.
-   - Standalone Q3 identity prioritizes matching the `Q3_YTD.end_date` endpoint and progressing past `Q2_YTD.end_date`.
-   - Rough calendar offsets are only used as secondary fallback when cumulative anchors are absent.
-6. **Conflict Identity Alignment**:
-   - Standalone conflict classifiers use identical interval predicates as standalone fact candidates, ensuring period-specific conflict isolation without cross-quarter contamination.
+3. **Inclusive Duration Convention & Authoritative Duration Rule**:
+   - All interval durations are computed deterministically as `(end_date - start_date).days + 1`.
+   - If `duration_days` is `None` with complete dates, the computed inclusive duration is used (this is not date fabrication).
+   - If `duration_days` metadata is supplied, it MUST equal `(end_date - start_date).days + 1`; any metadata discrepancy fails closed (`None`).
+4. **Structured Conflict Fiscal Scope**:
+   - `SECFiscalSeriesConflict` records retain candidate `fiscal_year`, `fiscal_period`, `fiscal_years`, and `fiscal_periods`.
+   - `target_fiscal_year` evaluation cleanly filters out unrelated-year conflicts from blocking the target chain.
+5. **Strict Relational Quarter Boundaries**:
+   - Standalone Q2 must start strictly after Q1 ends: `start_date > Q1.end_date` (a candidate starting on `Q1.end_date` overlaps by 1 day and is rejected).
+   - Standalone Q3 must start strictly after Q2 YTD ends: `start_date > Q2_YTD.end_date` (a candidate starting on `Q2_YTD.end_date` overlaps by 1 day and is rejected).
+6. **Unified Interval Predicates for Points and Conflicts**:
+   - Standalone quarter points and structured conflicts use the exact same pure functions (`_check_standalone_q2_interval`, `_check_standalone_q3_interval`), preventing predicate divergence.
+7. **Strict Fiscal Period Contradiction Fail-Closed**:
+   - Proven Q1 dates with `fp != "Q1"`, proven Q2 dates with `fp != "Q2"`, or proven Q3 dates with `fp != "Q3"` fail closed as `PERIOD_IDENTITY_UNRESOLVED`.
+
 
 
 

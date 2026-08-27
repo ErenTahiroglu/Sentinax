@@ -99,8 +99,12 @@ from backend.engine.private.sec.fiscal_series import (
     SECFiscalSeriesPoint,
     SECFiscalSeries,
     SECQuarterDerivationEligibility,
+    SECIntervalMatchResult,
     SECFiscalSeriesAssembler,
     SECFiscalSeriesEvaluator,
+    _effective_inclusive_duration,
+    _check_standalone_q2_interval,
+    _check_standalone_q3_interval,
 )
 
 
@@ -178,8 +182,12 @@ __all__ = [
     "SECFiscalSeriesPoint",
     "SECFiscalSeries",
     "SECQuarterDerivationEligibility",
+    "SECIntervalMatchResult",
     "SECFiscalSeriesAssembler",
     "SECFiscalSeriesEvaluator",
+    "_effective_inclusive_duration",
+    "_check_standalone_q2_interval",
+    "_check_standalone_q3_interval",
 ]
 
 
