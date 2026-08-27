@@ -32,15 +32,15 @@ Marketstack operates on **per-ticker billing**: one ticker symbol requested cons
 
 ## 3. API Contract & Parameter Invariants
 
-- **Base Endpoint:** `https://api.marketstack.com/v1/eod`
+- **Base Endpoint:** `https://api.marketstack.com/v2/eod`
 - **Authentication:** `access_key` query parameter loaded from `MARKETSTACK_ACCESS_KEY` environment variable.
 - **Credential Safety:** The `access_key` is used exclusively for outbound network dispatch and is **never** logged, persisted, serialized, or stored in raw snapshot records or metadata.
 - **Request Parameters:**
-  * `symbols`: Provider alias (e.g. `MBG.XETRA`).
-  * `exchange`: Canonical Instrument Master MIC (e.g. `XETR`, `XPAR`, `XLON`).
+  * `symbols`: Provider alias (e.g. `MBG.XETR`).
   * `date_from` / `date_to`: Canonical `YYYY-MM-DD` date boundaries.
   * `limit`: `1000` (fits full 1-year daily trading observations in a single page).
   * `sort`: `ASC` (chronological ordering).
+- **Live Status:** `LIVE_PROVIDER_UNVERIFIED` (pending access key live probe; aliases subject to `PROVIDER_ALIAS_LIVE_VERIFICATION_PENDING`).
 
 ---
 
@@ -48,12 +48,12 @@ Marketstack operates on **per-ticker billing**: one ticker symbol requested cons
 
 1. **Exact Decimal Boundaries:**
    Parsed directly via `json.loads(raw_text, parse_float=Decimal)`. Python binary floats are strictly rejected.
-2. **Exchange / MIC Validation:**
-   Each returned observation row's `exchange` is validated against the canonical Instrument Master MIC (`expected_mic`). Cross-market collisions flag `INVALID_SOURCE_CONTEXT`.
+2. **Exact Exchange / MIC Validation:**
+   Each returned observation row's `exchange` is validated with exact string equality against the canonical Instrument Master MIC (`expected_mic`). Fuzzy or substring matches (e.g. `X` or `XETRA` for `XETR`) and missing exchange values flag `INVALID_SOURCE_CONTEXT`.
 3. **Symbol Validation:**
    Each row's `symbol` must match the requested alias.
-4. **Pagination Truncation:**
-   If `pagination.total > len(data)`, the snapshot records `TRUNCATED_RESPONSE` and aggregate status degrades from `COMPLETE` to `PARTIAL`.
+4. **Pagination Hardening:**
+   Validates positive integer bounds on `limit`, `offset`, `count`, and `total`. If `count != len(data)`, records `INVALID_PAGINATION`. If `pagination.total > len(data)`, records `TRUNCATED_RESPONSE`. Aggregate status degrades from `COMPLETE` to `PARTIAL`.
 5. **Corporate Action Signal:**
    When `split_factor != 1` or `dividend > 0`, `history_refresh_required = True` is set on the snapshot metadata without triggering nested HTTP requests.
 6. **Strict Point-in-Time:**

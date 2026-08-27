@@ -70,7 +70,7 @@ logger = logging.getLogger(__name__)
 
 MARKETSTACK_PROVIDER_NAME = "MARKETSTACK"
 MARKETSTACK_PROVIDER_VERSION = "1.0.0"
-MARKETSTACK_BASE_URL = "https://api.marketstack.com/v1/eod"
+MARKETSTACK_BASE_URL = "https://api.marketstack.com/v2/eod"
 
 
 def _parse_finite_decimal(value: Any) -> Optional[Decimal]:
@@ -300,12 +300,32 @@ class MarketstackEODProvider(DataProviderContract):
                 diagnostics=diagnostics,
             )
 
-        # Verify pagination completeness
-        total_count = pagination.get("total")
-        returned_count = len(data_list)
-        if isinstance(total_count, int) and total_count > returned_count:
+        # Validate pagination integer fields
+        p_limit = pagination.get("limit")
+        p_offset = pagination.get("offset")
+        p_count = pagination.get("count")
+        p_total = pagination.get("total")
+
+        if (
+            (isinstance(p_limit, int) and p_limit <= 0)
+            or (isinstance(p_offset, int) and p_offset < 0)
+            or (isinstance(p_count, int) and p_count < 0)
+            or (isinstance(p_total, int) and p_total < 0)
+        ):
             diagnostics.append(
-                f"TRUNCATED_RESPONSE: Marketstack pagination total ({total_count}) exceeds returned rows ({returned_count})."
+                f"INVALID_PAGINATION: Non-positive limit or negative pagination values encountered: "
+                f"limit={p_limit}, offset={p_offset}, count={p_count}, total={p_total}."
+            )
+
+        returned_count = len(data_list)
+        if isinstance(p_count, int) and p_count != returned_count:
+            diagnostics.append(
+                f"INVALID_PAGINATION: Pagination count ({p_count}) does not match returned row count ({returned_count})."
+            )
+
+        if isinstance(p_total, int) and (p_total > returned_count or (isinstance(p_count, int) and p_total > p_count)):
+            diagnostics.append(
+                f"TRUNCATED_RESPONSE: Marketstack pagination total ({p_total}) exceeds returned rows ({returned_count})."
             )
 
         parsed_observations: List[GlobalEODObservation] = []
@@ -345,21 +365,21 @@ class MarketstackEODProvider(DataProviderContract):
                     row_diags.append("NON_FINITE_DECIMAL: Non-finite value (NaN/Infinity) encountered in price or volume.")
 
                 # Verify Response Symbol Matches Requested Alias
-                row_symbol = str(row_dict.get("symbol", "")).strip().upper()
+                row_symbol = str(row_dict.get("symbol", "") or "").strip().upper()
                 if row_symbol != clean_symbol:
                     status = GlobalObservationStatus.INVALID_OBSERVATION
                     row_diags.append(
                         f"INVALID_SOURCE_CONTEXT: Row symbol '{row_symbol}' does not match requested symbol '{clean_symbol}'."
                     )
 
-                # Verify Response Exchange Matches Canonical Instrument MIC (if known)
-                row_exchange = str(row_dict.get("exchange", "")).strip().upper()
+                # Verify Response Exchange Matches Canonical Instrument MIC Exactly
+                row_exchange = str(row_dict.get("exchange", "") or "").strip().upper()
                 if expected_mic:
                     norm_mic = expected_mic.strip().upper()
-                    if row_exchange and norm_mic and not (row_exchange in norm_mic or norm_mic in row_exchange):
+                    if not row_exchange or row_exchange != norm_mic:
                         status = GlobalObservationStatus.INVALID_OBSERVATION
                         row_diags.append(
-                            f"INVALID_SOURCE_CONTEXT: Row exchange '{row_exchange}' does not match canonical MIC '{expected_mic}'."
+                            f"INVALID_SOURCE_CONTEXT: Row exchange '{row_exchange}' does not match canonical MIC '{norm_mic}'."
                         )
 
                 open_val = _parse_finite_decimal(row_dict.get("open"))
@@ -767,8 +787,6 @@ class MarketstackEODProvider(DataProviderContract):
             "limit": 1000,
             "sort": "ASC",
         }
-        if expected_mic:
-            params["exchange"] = expected_mic
         if date_from_val:
             params["date_from"] = date_from_val.isoformat()
         if date_to_val:
@@ -853,7 +871,7 @@ class MarketstackEODProvider(DataProviderContract):
             invalid_count = sum(1 for o in snapshot.observations if o.status == GlobalObservationStatus.INVALID_OBSERVATION)
             unresolved_count = sum(1 for o in snapshot.observations if o.status == GlobalObservationStatus.UNRESOLVED_IDENTITY)
             conflict_count = sum(1 for o in snapshot.observations if o.status == GlobalObservationStatus.DUPLICATE_CONFLICT)
-            has_truncation = any("TRUNCATED_RESPONSE" in d for d in snapshot.diagnostics)
+            has_truncation = any("TRUNCATED_RESPONSE" in d or "INVALID_PAGINATION" in d for d in snapshot.diagnostics)
 
             if snapshot.is_rate_limited or obs_count == 0 or valid_count == 0:
                 status = DataStatus.UNAVAILABLE
