@@ -9,11 +9,19 @@ Access Classification:
     - Capabilities: LOW_VOLUME, PER_SYMBOL_REQUEST, FREE_DAILY_LIMIT_CONSTRAINED, FREE_COMPACT_HISTORY.
 
 Hardening Invariants:
-    - Zero float usage: all OHLC prices and volumes are exact Decimal.
+    - Zero float usage: all OHLC prices and volumes are exact Decimal; Python float inputs are strictly rejected.
     - Missing fields remain None (missing != zero).
+    - Non-negative OHLC: all prices (open, high, low, close) and volume must be >= 0.
     - Non-finite values (NaN, Infinity, -Infinity) are rejected with invalid observation status.
     - Strict Point-in-Time semantics: trade_date (economic date) vs retrieved_at (network UTC).
     - published_at is None unless explicitly supplied (no fabrication).
+    - Response metadata symbol validation: "2. Symbol" in Meta Data must match requested symbol.
+    - Request identity binding: FetchContext with conflicting (canonical_instrument_id, provider_symbol) fails closed before network.
+    - Aggregate status calculation:
+        * No observations or 0 VALID observations -> UNAVAILABLE
+        * All observations VALID -> COMPLETE
+        * Mix of VALID and invalid/unresolved/conflict -> PARTIAL
+        * Rate limited -> UNAVAILABLE
     - Symbol identity resolves through InstrumentResolverService; unmapped aliases fail closed (UNRESOLVED_IDENTITY).
     - Preserves canonical InstrumentType (US_STOCK, EUROPEAN_STOCK, US_ETF, EUROPEAN_ETF).
     - Per-instrument snapshot scope: failure or absence of one symbol does not erase other instruments.
@@ -75,25 +83,40 @@ ALPHA_VANTAGE_COMPACT_LIMIT = 100
 
 
 def _parse_finite_decimal(value: Any) -> Optional[Decimal]:
-    """Parses a string/numeric value into an exact finite Decimal. Returns None if empty or invalid."""
+    """
+    Parses a string or integer value into an exact finite Decimal.
+    STRICT: Rejects Python float inputs to prevent loss-of-precision contamination.
+    """
     if value is None:
         return None
-    val_str = str(value).strip().replace(",", "")
-    if not val_str or val_str.lower() in ("none", "null", "nan"):
+    # Reject float inputs explicitly
+    if isinstance(value, float):
         return None
-    try:
-        d = Decimal(val_str)
-        if not d.is_finite():
+    if isinstance(value, Decimal):
+        return value if value.is_finite() else None
+    if isinstance(value, int):
+        return Decimal(value)
+    if isinstance(value, str):
+        val_str = value.strip().replace(",", "")
+        if not val_str or val_str.lower() in ("none", "null", "nan", "inf", "-inf", "infinity", "-infinity"):
             return None
-        return d
-    except (InvalidOperation, ValueError, TypeError):
-        return None
+        try:
+            d = Decimal(val_str)
+            if not d.is_finite():
+                return None
+            return d
+        except (InvalidOperation, ValueError, TypeError):
+            return None
+    return None
 
 
 def _check_non_finite_raw(value: Any) -> bool:
     """Returns True if the raw value explicitly represents a non-finite number."""
     if value is None:
         return False
+    if isinstance(value, float):
+        import math
+        return math.isnan(value) or math.isinf(value)
     val_str = str(value).strip().lower()
     return val_str in ("nan", "snan", "infinity", "+infinity", "-infinity", "inf", "-inf")
 
@@ -210,12 +233,42 @@ class AlphaVantageEODProvider(DataProviderContract):
                 diagnostics=diagnostics,
             )
 
+        # 3. Response Metadata Symbol Validation
         output_size = "compact"
-        meta_data = data.get("Meta Data", {})
-        if isinstance(meta_data, dict):
-            output_size = str(meta_data.get("4. Output Size", "compact")).lower()
+        meta_data = data.get("Meta Data")
+        if not meta_data or not isinstance(meta_data, dict) or "2. Symbol" not in meta_data:
+            diagnostics.append("INVALID_SOURCE_CONTEXT: Response contains time series but lacks authoritative '2. Symbol' in Meta Data.")
+            return GlobalEODSnapshot(
+                id=snap_id,
+                provider=ALPHA_VANTAGE_PROVIDER_NAME,
+                provider_symbol=clean_symbol,
+                retrieved_at=retrieved_at,
+                http_status=http_status,
+                payload_hash=payload_hash,
+                raw_payload=raw_str,
+                is_rate_limited=is_rate_limited,
+                diagnostics=diagnostics,
+            )
 
-        # 3. Parse Daily Observation Rows
+        resp_symbol = str(meta_data["2. Symbol"]).strip().upper()
+        output_size = str(meta_data.get("4. Output Size", "compact")).lower()
+
+        if resp_symbol != clean_symbol:
+            diagnostics.append(f"RESPONSE_SYMBOL_MISMATCH: Requested symbol '{clean_symbol}', but response metadata returned symbol '{resp_symbol}'.")
+            return GlobalEODSnapshot(
+                id=snap_id,
+                provider=ALPHA_VANTAGE_PROVIDER_NAME,
+                provider_symbol=clean_symbol,
+                retrieved_at=retrieved_at,
+                http_status=http_status,
+                payload_hash=payload_hash,
+                raw_payload=raw_str,
+                output_size=output_size,
+                is_rate_limited=is_rate_limited,
+                diagnostics=diagnostics,
+            )
+
+        # 4. Parse Daily Observation Rows
         parsed_observations: List[GlobalEODObservation] = []
         raw_rows_by_date: Dict[date, List[Dict[str, Any]]] = {}
 
@@ -250,13 +303,24 @@ class AlphaVantageEODProvider(DataProviderContract):
                 close_val = _parse_finite_decimal(row_dict.get("4. close"))
                 volume_val = _parse_finite_decimal(row_dict.get("5. volume"))
 
-                # Validate Close Price
+                # Validate Non-Negative OHLC Prices
+                if open_val is not None and open_val < Decimal("0"):
+                    status = GlobalObservationStatus.INVALID_OBSERVATION
+                    row_diags.append(f"NEGATIVE_PRICE: Negative open price {open_val}.")
+                if high_val is not None and high_val < Decimal("0"):
+                    status = GlobalObservationStatus.INVALID_OBSERVATION
+                    row_diags.append(f"NEGATIVE_PRICE: Negative high price {high_val}.")
+                if low_val is not None and low_val < Decimal("0"):
+                    status = GlobalObservationStatus.INVALID_OBSERVATION
+                    row_diags.append(f"NEGATIVE_PRICE: Negative low price {low_val}.")
+                if close_val is not None and close_val < Decimal("0"):
+                    status = GlobalObservationStatus.INVALID_OBSERVATION
+                    row_diags.append(f"NEGATIVE_PRICE: Negative close price {close_val}.")
+
+                # Validate Close Price Presence
                 if close_val is None:
                     status = GlobalObservationStatus.INVALID_OBSERVATION
                     row_diags.append("MISSING_CLOSE: Close price is missing, null, or non-finite.")
-                elif close_val < Decimal("0"):
-                    status = GlobalObservationStatus.INVALID_OBSERVATION
-                    row_diags.append(f"NEGATIVE_PRICE: Negative close price {close_val}.")
 
                 # Validate OHLC Envelope
                 if high_val is not None and low_val is not None:
@@ -325,7 +389,7 @@ class AlphaVantageEODProvider(DataProviderContract):
                 )
                 parsed_observations.append(obs)
 
-        # 4. Handle Duplicate Rows within Snapshot
+        # 5. Handle Duplicate Rows within Snapshot
         grouped_by_date: Dict[date, List[GlobalEODObservation]] = {}
         for obs in parsed_observations:
             grouped_by_date.setdefault(obs.trade_date, []).append(obs)
@@ -387,10 +451,35 @@ class AlphaVantageEODProvider(DataProviderContract):
         """
         retrieved_at = datetime.now(timezone.utc)
         provider_symbol = context.provider_symbol
+        canonical_id = context.canonical_instrument_id
 
-        if not provider_symbol and context.canonical_instrument_id and resolver:
+        # 1. Request Identity Binding Verification
+        if canonical_id and provider_symbol and resolver:
+            resolved_id = resolver.resolve_provider_symbol_to_instrument_id(
+                ALPHA_VANTAGE_PROVIDER_NAME, provider_symbol, as_of_date=context.effective_date
+            )
+            if resolved_id != canonical_id:
+                # Conflicting dual identity in FetchContext -> fail closed before network call!
+                return ProviderResponse(
+                    provider_name=self.provider_name,
+                    source_quality=self.source_quality,
+                    retrieved_at=retrieved_at,
+                    published_at=None,
+                    effective_date=context.effective_date,
+                    status=DataStatus.UNAVAILABLE,
+                    raw=None,
+                    warnings=[
+                        f"IDENTITY_MISMATCH: FetchContext provider_symbol '{provider_symbol}' resolves to {resolved_id}, "
+                        f"which mismatches canonical_instrument_id '{canonical_id}'."
+                    ],
+                    canonical_instrument_id=None,
+                    provider_symbol=provider_symbol,
+                )
+
+        # 2. Resolve provider_symbol if only canonical_instrument_id provided
+        if not provider_symbol and canonical_id and resolver:
             provider_symbol = resolver.resolve_instrument_id_to_provider_symbol(
-                context.canonical_instrument_id, ALPHA_VANTAGE_PROVIDER_NAME, as_of_date=context.effective_date
+                canonical_id, ALPHA_VANTAGE_PROVIDER_NAME, as_of_date=context.effective_date
             )
 
         if not provider_symbol:
@@ -403,11 +492,18 @@ class AlphaVantageEODProvider(DataProviderContract):
                 status=DataStatus.UNAVAILABLE,
                 raw=None,
                 warnings=["UNRESOLVED_SYMBOL: No provider_symbol supplied or resolved for Alpha Vantage request."],
-                canonical_instrument_id=context.canonical_instrument_id,
+                canonical_instrument_id=canonical_id,
                 provider_symbol=None,
             )
 
         clean_symbol = provider_symbol.strip().upper()
+
+        # Validate canonical ID if only symbol was given
+        if not canonical_id and resolver:
+            canonical_id = resolver.resolve_provider_symbol_to_instrument_id(
+                ALPHA_VANTAGE_PROVIDER_NAME, clean_symbol, as_of_date=context.effective_date
+            )
+
         api_key = self._api_key or os.getenv("ALPHA_VANTAGE_API_KEY") or os.getenv("ALPHAVANTAGE_API_KEY")
 
         if not api_key:
@@ -420,7 +516,7 @@ class AlphaVantageEODProvider(DataProviderContract):
                 status=DataStatus.UNAVAILABLE,
                 raw=None,
                 warnings=["AUTH_ERROR: ALPHA_VANTAGE_API_KEY is not configured in environment or provider instance."],
-                canonical_instrument_id=context.canonical_instrument_id,
+                canonical_instrument_id=canonical_id,
                 provider_symbol=clean_symbol,
             )
 
@@ -448,7 +544,7 @@ class AlphaVantageEODProvider(DataProviderContract):
                     status=DataStatus.UNAVAILABLE,
                     raw=None,
                     warnings=["RATE_LIMITED: HTTP 429 Too Many Requests from Alpha Vantage."],
-                    canonical_instrument_id=context.canonical_instrument_id,
+                    canonical_instrument_id=canonical_id,
                     provider_symbol=clean_symbol,
                 )
 
@@ -462,7 +558,7 @@ class AlphaVantageEODProvider(DataProviderContract):
                     status=DataStatus.UNAVAILABLE,
                     raw=None,
                     warnings=[f"SERVER_ERROR: HTTP {http_status} server error from Alpha Vantage."],
-                    canonical_instrument_id=context.canonical_instrument_id,
+                    canonical_instrument_id=canonical_id,
                     provider_symbol=clean_symbol,
                 )
 
@@ -471,7 +567,24 @@ class AlphaVantageEODProvider(DataProviderContract):
                 raw_text, clean_symbol, retrieved_at, http_status=http_status, resolver=resolver
             )
 
-            status = DataStatus.COMPLETE if snapshot.observations and not snapshot.is_rate_limited else DataStatus.UNAVAILABLE
+            # 3. Compute Aggregate Observation Counts and Status
+            obs_count = len(snapshot.observations)
+            valid_count = sum(1 for o in snapshot.observations if o.status == GlobalObservationStatus.VALID)
+            invalid_count = sum(1 for o in snapshot.observations if o.status == GlobalObservationStatus.INVALID_OBSERVATION)
+            unresolved_count = sum(1 for o in snapshot.observations if o.status == GlobalObservationStatus.UNRESOLVED_IDENTITY)
+            conflict_count = sum(1 for o in snapshot.observations if o.status == GlobalObservationStatus.DUPLICATE_CONFLICT)
+
+            if snapshot.is_rate_limited:
+                status = DataStatus.UNAVAILABLE
+            elif obs_count == 0:
+                status = DataStatus.UNAVAILABLE
+            elif valid_count == 0:
+                status = DataStatus.UNAVAILABLE
+            elif valid_count == obs_count:
+                status = DataStatus.COMPLETE
+            else:
+                status = DataStatus.PARTIAL
+
             return ProviderResponse(
                 provider_name=self.provider_name,
                 source_quality=self.source_quality,
@@ -481,13 +594,17 @@ class AlphaVantageEODProvider(DataProviderContract):
                 status=status,
                 raw=snapshot,
                 warnings=list(snapshot.diagnostics),
-                canonical_instrument_id=context.canonical_instrument_id,
+                canonical_instrument_id=canonical_id,
                 provider_symbol=clean_symbol,
                 source_metadata={
                     "payload_hash": snapshot.payload_hash,
                     "is_rate_limited": snapshot.is_rate_limited,
                     "output_size": snapshot.output_size,
-                    "observation_count": len(snapshot.observations),
+                    "observation_count": obs_count,
+                    "valid_count": valid_count,
+                    "invalid_count": invalid_count,
+                    "unresolved_count": unresolved_count,
+                    "conflict_count": conflict_count,
                 },
             )
 
@@ -501,7 +618,7 @@ class AlphaVantageEODProvider(DataProviderContract):
                 status=DataStatus.UNAVAILABLE,
                 raw=None,
                 warnings=[f"TIMEOUT: Alpha Vantage request timed out: {err}"],
-                canonical_instrument_id=context.canonical_instrument_id,
+                canonical_instrument_id=canonical_id,
                 provider_symbol=clean_symbol,
             )
         except Exception as err:
@@ -514,7 +631,7 @@ class AlphaVantageEODProvider(DataProviderContract):
                 status=DataStatus.UNAVAILABLE,
                 raw=None,
                 warnings=[f"NETWORK_ERROR: Network or connection error: {err}"],
-                canonical_instrument_id=context.canonical_instrument_id,
+                canonical_instrument_id=canonical_id,
                 provider_symbol=clean_symbol,
             )
 

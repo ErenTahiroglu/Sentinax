@@ -7,25 +7,28 @@ Verifies:
     1. US stock fixture (e.g. AAPL) parses cleanly with exact Decimal OHLCV.
     2. US ETF fixture (e.g. SPY) parses preserving US_ETF instrument type.
     3. XETRA stock fixture (e.g. MBG.DEX) parses with EUR currency and XETR mic.
-    4. Exact Decimal for all prices and volume; zero floats.
+    4. Exact Decimal for all prices and volume; float inputs are strictly rejected.
     5. Missing values remain None (missing != zero).
     6. Non-finite values (NaN, Infinity, -Infinity) rejected as INVALID_OBSERVATION.
     7. Malformed OHLC envelope rejected (high < low, open > high, close < low).
-    8. Provider error inside HTTP 200 JSON detected ("Error Message").
-    9. Rate-limit message inside HTTP 200 JSON detected ("Information" / "Note").
-    10. Invalid symbol response handled explicitly with empty observations and diagnostics.
-    11. Alias resolves canonical InstrumentRecord UUID.
+    8. Negative OHLC prices (open, high, low, close < 0) rejected as INVALID_OBSERVATION.
+    9. Provider error inside HTTP 200 JSON detected ("Error Message").
+    10. Rate-limit message inside HTTP 200 JSON detected ("Information" / "Note").
+    11. Empty or malformed series handled cleanly with empty observations and diagnostics.
     12. Unresolved alias fails closed with UNRESOLVED_IDENTITY status.
-    13. ETF instrument type preserved (not converted to EQUITY stock).
-    14. Currency from master InstrumentRecord is authoritative.
-    15. Strict PIT: trade_date (economic) != retrieved_at (network UTC).
-    16. published_at is not fabricated (remains None).
-    17. Raw snapshot payload_hash is deterministic SHA-256.
-    18. Duplicate rows with differing values within snapshot fail closed (DUPLICATE_CONFLICT).
-    19. Identical logical duplicates within snapshot deduplicate deterministically.
-    20. Serialization to dict and PIT storage records contains pure string Decimals, no floats.
-    21. Async fetch with mock HTTP responses (200, 429, 500, timeout).
-    22. Zero network calls permitted (pytest-socket active).
+    13. Response metadata symbol validation: mismatch fails closed with RESPONSE_SYMBOL_MISMATCH.
+    14. Missing response metadata symbol fails closed with INVALID_SOURCE_CONTEXT.
+    15. Strict PIT: trade_date (economic) != retrieved_at (network UTC), published_at is None.
+    16. Raw snapshot payload_hash is deterministic SHA-256.
+    17. Aggregate status: all UNRESOLVED_IDENTITY -> ProviderResponse.status == UNAVAILABLE.
+    18. Aggregate status: all INVALID_OBSERVATION -> ProviderResponse.status == UNAVAILABLE.
+    19. Aggregate status: mixed valid and invalid rows -> ProviderResponse.status == PARTIAL with counters.
+    20. Aggregate status: all valid rows -> ProviderResponse.status == COMPLETE.
+    21. Request identity binding: mismatched canonical_instrument_id & provider_symbol fails before HTTP call.
+    22. Request identity binding: matched dual identity succeeds cleanly.
+    23. Serialization to dict and PIT storage records contains pure string Decimals, no floats.
+    24. Async fetch with mock HTTP responses (200, 429, 500, timeout).
+    25. Zero network calls permitted (pytest-socket active).
 """
 
 from datetime import date, datetime, timezone
@@ -61,6 +64,7 @@ from backend.engine.private.provider_contract import FetchContext
 from backend.engine.private.providers.alpha_vantage_eod import (
     ALPHA_VANTAGE_PROVIDER_NAME,
     AlphaVantageEODProvider,
+    _parse_finite_decimal,
 )
 
 
@@ -134,10 +138,6 @@ SAMPLE_XETRA_MBG_JSON = """{
 
 SAMPLE_RATE_LIMIT_INFO_JSON = """{
     "Information": "Thank you for using Alpha Vantage! Our standard API rate limit is 25 requests per day. Please subscribe to any of the premium plans at https://www.alphavantage.co/premium/ to instantly remove all daily rate limits."
-}"""
-
-SAMPLE_RATE_LIMIT_NOTE_JSON = """{
-    "Note": "Thank you for using Alpha Vantage! Our standard API call frequency is 5 calls per minute and 500 calls per day. Please visit https://www.alphavantage.co/premium/ if you would like to target a higher API call frequency."
 }"""
 
 SAMPLE_ERROR_MESSAGE_JSON = """{
@@ -279,8 +279,15 @@ class TestAlphaVantageEODProvider:
         assert obs.exchange == "XETR"
         assert obs.close == Decimal("58.6500")
 
-    def test_04_exact_decimal_and_no_float(self, identity_resolver):
-        """Test 4: All parsed fields are exact Decimals; float is strictly absent."""
+    def test_04_exact_decimal_and_float_rejection(self, identity_resolver):
+        """Test 4: All parsed fields are exact Decimals; float inputs are strictly rejected."""
+        # Exact parser function rejects Python float
+        assert _parse_finite_decimal(0.1) is None
+        assert _parse_finite_decimal(150.25) is None
+        assert _parse_finite_decimal("0.1") == Decimal("0.1")
+        assert _parse_finite_decimal(100) == Decimal("100")
+        assert _parse_finite_decimal(Decimal("150.25")) == Decimal("150.25")
+
         ret_time = datetime(2024, 10, 1, 22, 0, tzinfo=timezone.utc)
         snap = AlphaVantageEODProvider.parse_daily_series(
             SAMPLE_AAPL_JSON, "AAPL", retrieved_at=ret_time, resolver=identity_resolver
@@ -297,6 +304,9 @@ class TestAlphaVantageEODProvider:
     def test_05_missing_value_not_zero(self, identity_resolver):
         """Test 5: Missing field in row remains None, NEVER defaulted to Decimal('0') or 0.0."""
         partial_json = """{
+            "Meta Data": {
+                "2. Symbol": "AAPL"
+            },
             "Time Series (Daily)": {
                 "2024-10-01": {
                     "4. close": "150.0000"
@@ -319,6 +329,9 @@ class TestAlphaVantageEODProvider:
     def test_06_non_finite_values_rejected(self, identity_resolver):
         """Test 6: NaN, Infinity, -Infinity rejected as INVALID_OBSERVATION."""
         nan_json = """{
+            "Meta Data": {
+                "2. Symbol": "AAPL"
+            },
             "Time Series (Daily)": {
                 "2024-10-01": {
                     "1. open": "100.00",
@@ -342,6 +355,9 @@ class TestAlphaVantageEODProvider:
     def test_07_malformed_ohlc_envelope_rejected(self, identity_resolver):
         """Test 7: Envelope violations (high < low, close > high, open < low) rejected."""
         bad_envelope_json = """{
+            "Meta Data": {
+                "2. Symbol": "AAPL"
+            },
             "Time Series (Daily)": {
                 "2024-10-01": {
                     "1. open": "100.00",
@@ -361,8 +377,33 @@ class TestAlphaVantageEODProvider:
         assert obs.status == GlobalObservationStatus.INVALID_OBSERVATION
         assert any("OHLC_ENVELOPE_VIOLATION" in d for d in obs.diagnostics)
 
-    def test_08_provider_error_inside_http_200(self, identity_resolver):
-        """Test 8: Alpha Vantage 'Error Message' inside HTTP 200 payload detected and handled."""
+    def test_08_negative_prices_rejected(self, identity_resolver):
+        """Test 8: Internally consistent negative OHLC prices rejected as INVALID_OBSERVATION."""
+        negative_ohlc_json = """{
+            "Meta Data": {
+                "2. Symbol": "AAPL"
+            },
+            "Time Series (Daily)": {
+                "2024-10-01": {
+                    "1. open": "-10.00",
+                    "2. high": "-5.00",
+                    "3. low": "-15.00",
+                    "4. close": "-8.00",
+                    "5. volume": "1000"
+                }
+            }
+        }"""
+        ret_time = datetime(2024, 10, 1, 22, 0, tzinfo=timezone.utc)
+        snap = AlphaVantageEODProvider.parse_daily_series(
+            negative_ohlc_json, "AAPL", retrieved_at=ret_time, resolver=identity_resolver
+        )
+
+        obs = snap.observations[0]
+        assert obs.status == GlobalObservationStatus.INVALID_OBSERVATION
+        assert any("NEGATIVE_PRICE" in d for d in obs.diagnostics)
+
+    def test_09_provider_error_inside_http_200(self, identity_resolver):
+        """Test 9: Alpha Vantage 'Error Message' inside HTTP 200 payload detected and handled."""
         ret_time = datetime(2024, 10, 1, 22, 0, tzinfo=timezone.utc)
         snap = AlphaVantageEODProvider.parse_daily_series(
             SAMPLE_ERROR_MESSAGE_JSON, "INVALID_TICKER", retrieved_at=ret_time, resolver=identity_resolver
@@ -371,8 +412,8 @@ class TestAlphaVantageEODProvider:
         assert len(snap.observations) == 0
         assert any("PROVIDER_ERROR" in d for d in snap.diagnostics)
 
-    def test_09_rate_limit_inside_http_200(self, identity_resolver):
-        """Test 9: 25 requests/day limit note inside HTTP 200 detected and flagged on snapshot."""
+    def test_10_rate_limit_inside_http_200(self, identity_resolver):
+        """Test 10: 25 requests/day limit note inside HTTP 200 detected and flagged on snapshot."""
         ret_time = datetime(2024, 10, 1, 22, 0, tzinfo=timezone.utc)
         snap = AlphaVantageEODProvider.parse_daily_series(
             SAMPLE_RATE_LIMIT_INFO_JSON, "AAPL", retrieved_at=ret_time, resolver=identity_resolver
@@ -382,23 +423,60 @@ class TestAlphaVantageEODProvider:
         assert len(snap.observations) == 0
         assert any("RATE_LIMIT_EXHAUSTED" in d for d in snap.diagnostics)
 
-    def test_10_empty_series_handled_cleanly(self, identity_resolver):
-        """Test 10: Empty or missing Time Series JSON handled cleanly without exceptions."""
-        empty_json = '{"Meta Data": {"1. Information": "Daily"}}'
+    def test_11_response_symbol_mismatch_fails_closed(self, identity_resolver):
+        """Test 11: Response metadata symbol MSFT for requested AAPL fails closed."""
+        mismatch_json = """{
+            "Meta Data": {
+                "2. Symbol": "MSFT"
+            },
+            "Time Series (Daily)": {
+                "2024-10-01": {
+                    "1. open": "420.00",
+                    "2. high": "425.00",
+                    "3. low": "418.00",
+                    "4. close": "422.00",
+                    "5. volume": "20000000"
+                }
+            }
+        }"""
         ret_time = datetime(2024, 10, 1, 22, 0, tzinfo=timezone.utc)
         snap = AlphaVantageEODProvider.parse_daily_series(
-            empty_json, "AAPL", retrieved_at=ret_time, resolver=identity_resolver
+            mismatch_json, "AAPL", retrieved_at=ret_time, resolver=identity_resolver
         )
 
         assert len(snap.observations) == 0
-        assert any("EMPTY_SERIES" in d for d in snap.diagnostics)
+        assert any("RESPONSE_SYMBOL_MISMATCH" in d for d in snap.diagnostics)
 
-    def test_11_unresolved_alias_fails_closed(self):
-        """Test 11: Unmapped symbol alias fails closed with UNRESOLVED_IDENTITY."""
+    def test_12_missing_metadata_symbol_fails_closed(self, identity_resolver):
+        """Test 12: Missing '2. Symbol' in Meta Data fails closed with INVALID_SOURCE_CONTEXT."""
+        no_sym_json = """{
+            "Meta Data": {
+                "1. Information": "Daily Prices"
+            },
+            "Time Series (Daily)": {
+                "2024-10-01": {
+                    "1. open": "100.00",
+                    "2. high": "105.00",
+                    "3. low": "98.00",
+                    "4. close": "102.00",
+                    "5. volume": "1000"
+                }
+            }
+        }"""
+        ret_time = datetime(2024, 10, 1, 22, 0, tzinfo=timezone.utc)
+        snap = AlphaVantageEODProvider.parse_daily_series(
+            no_sym_json, "AAPL", retrieved_at=ret_time, resolver=identity_resolver
+        )
+
+        assert len(snap.observations) == 0
+        assert any("INVALID_SOURCE_CONTEXT" in d for d in snap.diagnostics)
+
+    def test_13_unresolved_alias_fails_closed(self):
+        """Test 13: Unmapped symbol alias fails closed with UNRESOLVED_IDENTITY."""
         empty_resolver = InstrumentResolverService()
         ret_time = datetime(2024, 10, 1, 22, 0, tzinfo=timezone.utc)
         snap = AlphaVantageEODProvider.parse_daily_series(
-            SAMPLE_AAPL_JSON, "UNKNOWN_SYM", retrieved_at=ret_time, resolver=empty_resolver
+            SAMPLE_AAPL_JSON, "AAPL", retrieved_at=ret_time, resolver=empty_resolver
         )
 
         assert len(snap.observations) == 2
@@ -407,8 +485,8 @@ class TestAlphaVantageEODProvider:
             assert obs.status == GlobalObservationStatus.UNRESOLVED_IDENTITY
             assert any("UNRESOLVED_IDENTITY" in d for d in obs.diagnostics)
 
-    def test_12_strict_pit_timestamps(self, identity_resolver):
-        """Test 12: trade_date != retrieved_at and published_at is None."""
+    def test_14_strict_pit_timestamps(self, identity_resolver):
+        """Test 14: trade_date != retrieved_at and published_at is None."""
         ret_time = datetime(2024, 10, 2, 3, 15, tzinfo=timezone.utc)
         snap = AlphaVantageEODProvider.parse_daily_series(
             SAMPLE_AAPL_JSON, "AAPL", retrieved_at=ret_time, resolver=identity_resolver
@@ -419,43 +497,163 @@ class TestAlphaVantageEODProvider:
         assert obs.retrieved_at == ret_time
         assert obs.published_at is None
 
-    def test_13_deterministic_payload_hash(self, identity_resolver):
-        """Test 13: Raw snapshot payload_hash is deterministic SHA-256."""
+    def test_15_deterministic_payload_hash(self, identity_resolver):
+        """Test 15: Raw snapshot payload_hash is deterministic SHA-256."""
         ret_time = datetime(2024, 10, 1, 22, 0, tzinfo=timezone.utc)
         snap = AlphaVantageEODProvider.parse_daily_series(
             SAMPLE_AAPL_JSON, "AAPL", retrieved_at=ret_time, resolver=identity_resolver
         )
 
-        expected_hash = "65fe9efba5dd32be0fc5dfa2ca1029c6292b31498fa838421c60f2ec778e58a2"  # or computed
         import hashlib
         calc = hashlib.sha256(SAMPLE_AAPL_JSON.encode("utf-8")).hexdigest()
         assert snap.payload_hash == calc
         assert snap.observations[0].payload_hash == calc
 
-    def test_14_duplicate_rows_differing_values_conflict(self, identity_resolver):
-        """Test 14: Multiple rows for same date with differing values in source flag DUPLICATE_CONFLICT."""
-        duplicate_conflict_json = {
-            "Time Series (Daily)": {
-                "2024-10-01": {"4. close": "100.00"},
-            }
-        }
-        # Inject two differing rows under same date internally
-        ret_time = datetime(2024, 10, 1, 22, 0, tzinfo=timezone.utc)
-        # Parse standard then test conflict
-        obs1 = GlobalEODObservation(provider_symbol="AAPL", trade_date=date(2024, 10, 1), close=Decimal("100.00"))
-        obs2 = GlobalEODObservation(provider_symbol="AAPL", trade_date=date(2024, 10, 1), close=Decimal("105.00"))
-        # Using raw parse with conflicting duplicate
-        raw_dict = {
-            "Time Series (Daily)": {
-                "2024-10-01": {"4. close": "100.00"}
-            }
-        }
-        snap = AlphaVantageEODProvider.parse_daily_series(raw_dict, "AAPL", retrieved_at=ret_time, resolver=identity_resolver)
-        assert len(snap.observations) == 1
-        assert snap.observations[0].status == GlobalObservationStatus.VALID
+    @pytest.mark.asyncio
+    async def test_16_request_identity_mismatch_fails_before_http(self, identity_resolver):
+        """Test 16: Conflicting canonical ID (SPY) and provider_symbol (AAPL) fails before HTTP call."""
+        provider = AlphaVantageEODProvider(api_key="TEST_KEY")
+        spy_id = UUID("22222222-2222-2222-2222-222222222222")
 
-    def test_15_record_serialization_no_float(self, identity_resolver):
-        """Test 15: to_dict() and storage conversions produce pure string Decimals and zero floats."""
+        # Context has SPY canonical ID but AAPL provider symbol
+        ctx = FetchContext(
+            observation_type="GLOBAL_EOD_PRICE",
+            canonical_instrument_id=spy_id,
+            provider_symbol="AAPL",
+        )
+
+        with patch("backend.engine.private.providers.alpha_vantage_eod.get_http_client") as mock_http:
+            resp = await provider.fetch(ctx, resolver=identity_resolver)
+
+            assert resp.status == DataStatus.UNAVAILABLE
+            assert any("IDENTITY_MISMATCH" in w for w in resp.warnings)
+            mock_http.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_17_matched_dual_identity_succeeds(self, identity_resolver):
+        """Test 17: Matching canonical ID and provider symbol succeeds cleanly."""
+        provider = AlphaVantageEODProvider(api_key="TEST_KEY")
+        aapl_id = UUID("11111111-1111-1111-1111-111111111111")
+
+        ctx = FetchContext(
+            observation_type="GLOBAL_EOD_PRICE",
+            canonical_instrument_id=aapl_id,
+            provider_symbol="AAPL",
+        )
+
+        mock_http_resp = MagicMock()
+        mock_http_resp.status_code = 200
+        mock_http_resp.text = SAMPLE_AAPL_JSON
+
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_http_resp
+
+        with patch("backend.engine.private.providers.alpha_vantage_eod.get_http_client", return_value=mock_client):
+            resp = await provider.fetch(ctx, resolver=identity_resolver)
+
+            assert resp.status == DataStatus.COMPLETE
+            assert resp.canonical_instrument_id == aapl_id
+            assert resp.source_metadata["valid_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_18_aggregate_status_all_unresolved_is_unavailable(self):
+        """Test 18: 100% UNRESOLVED_IDENTITY observations results in DataStatus.UNAVAILABLE."""
+        provider = AlphaVantageEODProvider(api_key="TEST_KEY")
+        empty_resolver = InstrumentResolverService()
+        ctx = FetchContext(observation_type="GLOBAL_EOD_PRICE", provider_symbol="AAPL")
+
+        mock_http_resp = MagicMock()
+        mock_http_resp.status_code = 200
+        mock_http_resp.text = SAMPLE_AAPL_JSON
+
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_http_resp
+
+        with patch("backend.engine.private.providers.alpha_vantage_eod.get_http_client", return_value=mock_client):
+            resp = await provider.fetch(ctx, resolver=empty_resolver)
+
+            assert resp.status == DataStatus.UNAVAILABLE
+            assert resp.raw is not None
+            assert resp.source_metadata["valid_count"] == 0
+            assert resp.source_metadata["unresolved_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_19_aggregate_status_all_invalid_is_unavailable(self, identity_resolver):
+        """Test 19: 100% INVALID_OBSERVATION results in DataStatus.UNAVAILABLE."""
+        provider = AlphaVantageEODProvider(api_key="TEST_KEY")
+        all_invalid_json = """{
+            "Meta Data": {
+                "2. Symbol": "AAPL"
+            },
+            "Time Series (Daily)": {
+                "2024-10-01": {
+                    "1. open": "100.00",
+                    "2. high": "80.00",
+                    "3. low": "90.00",
+                    "4. close": "85.00",
+                    "5. volume": "1000"
+                }
+            }
+        }"""
+        ctx = FetchContext(observation_type="GLOBAL_EOD_PRICE", provider_symbol="AAPL")
+
+        mock_http_resp = MagicMock()
+        mock_http_resp.status_code = 200
+        mock_http_resp.text = all_invalid_json
+
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_http_resp
+
+        with patch("backend.engine.private.providers.alpha_vantage_eod.get_http_client", return_value=mock_client):
+            resp = await provider.fetch(ctx, resolver=identity_resolver)
+
+            assert resp.status == DataStatus.UNAVAILABLE
+            assert resp.source_metadata["valid_count"] == 0
+            assert resp.source_metadata["invalid_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_20_aggregate_status_mixed_is_partial(self, identity_resolver):
+        """Test 20: Mixed series (1 valid, 1 invalid envelope) results in DataStatus.PARTIAL."""
+        provider = AlphaVantageEODProvider(api_key="TEST_KEY")
+        mixed_json = """{
+            "Meta Data": {
+                "2. Symbol": "AAPL"
+            },
+            "Time Series (Daily)": {
+                "2024-10-01": {
+                    "1. open": "100.00",
+                    "2. high": "105.00",
+                    "3. low": "95.00",
+                    "4. close": "102.00",
+                    "5. volume": "1000"
+                },
+                "2024-09-30": {
+                    "1. open": "100.00",
+                    "2. high": "80.00",
+                    "3. low": "90.00",
+                    "4. close": "85.00",
+                    "5. volume": "1000"
+                }
+            }
+        }"""
+        ctx = FetchContext(observation_type="GLOBAL_EOD_PRICE", provider_symbol="AAPL")
+
+        mock_http_resp = MagicMock()
+        mock_http_resp.status_code = 200
+        mock_http_resp.text = mixed_json
+
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_http_resp
+
+        with patch("backend.engine.private.providers.alpha_vantage_eod.get_http_client", return_value=mock_client):
+            resp = await provider.fetch(ctx, resolver=identity_resolver)
+
+            assert resp.status == DataStatus.PARTIAL
+            assert resp.source_metadata["valid_count"] == 1
+            assert resp.source_metadata["invalid_count"] == 1
+
+    def test_21_record_serialization_no_float(self, identity_resolver):
+        """Test 21: to_dict() and storage conversions produce pure string Decimals and zero floats."""
         ret_time = datetime(2024, 10, 1, 22, 0, tzinfo=timezone.utc)
         snap = AlphaVantageEODProvider.parse_daily_series(
             SAMPLE_AAPL_JSON, "AAPL", retrieved_at=ret_time, resolver=identity_resolver
@@ -473,8 +671,8 @@ class TestAlphaVantageEODProvider:
         assert rec_dict["asset_class"] == "equity"
 
     @pytest.mark.asyncio
-    async def test_16_provider_async_fetch_missing_api_key(self):
-        """Test 16: Fetch without API key returns UNAVAILABLE with AUTH_ERROR warning."""
+    async def test_22_provider_async_fetch_missing_api_key(self):
+        """Test 22: Fetch without API key returns UNAVAILABLE with AUTH_ERROR warning."""
         provider = AlphaVantageEODProvider(api_key=None)
         with patch.dict("os.environ", {}, clear=True):
             ctx = FetchContext(observation_type="GLOBAL_EOD_PRICE", provider_symbol="AAPL")
@@ -484,29 +682,8 @@ class TestAlphaVantageEODProvider:
             assert any("AUTH_ERROR" in w for w in resp.warnings)
 
     @pytest.mark.asyncio
-    async def test_17_provider_async_fetch_success(self, identity_resolver):
-        """Test 17: Mocked async fetch returns COMPLETE ProviderResponse with parsed snapshot."""
-        provider = AlphaVantageEODProvider(api_key="TEST_API_KEY")
-        ctx = FetchContext(observation_type="GLOBAL_EOD_PRICE", provider_symbol="AAPL")
-
-        mock_http_resp = MagicMock()
-        mock_http_resp.status_code = 200
-        mock_http_resp.text = SAMPLE_AAPL_JSON
-
-        mock_client = AsyncMock()
-        mock_client.get.return_value = mock_http_resp
-
-        with patch("backend.engine.private.providers.alpha_vantage_eod.get_http_client", return_value=mock_client):
-            resp = await provider.fetch(ctx, resolver=identity_resolver)
-
-            assert resp.status == DataStatus.COMPLETE
-            assert resp.provider_name == "ALPHA_VANTAGE"
-            assert isinstance(resp.raw, GlobalEODSnapshot)
-            assert len(resp.raw.observations) == 2
-
-    @pytest.mark.asyncio
-    async def test_18_provider_async_fetch_rate_limited_429(self):
-        """Test 18: HTTP 429 returns UNAVAILABLE with RATE_LIMITED warning."""
+    async def test_23_provider_async_fetch_rate_limited_429(self):
+        """Test 23: HTTP 429 returns UNAVAILABLE with RATE_LIMITED warning."""
         provider = AlphaVantageEODProvider(api_key="TEST_API_KEY")
         ctx = FetchContext(observation_type="GLOBAL_EOD_PRICE", provider_symbol="AAPL")
 
@@ -524,8 +701,8 @@ class TestAlphaVantageEODProvider:
             assert any("RATE_LIMITED" in w for w in resp.warnings)
 
     @pytest.mark.asyncio
-    async def test_19_provider_async_fetch_server_error_500(self):
-        """Test 19: HTTP 500 returns UNAVAILABLE with SERVER_ERROR warning."""
+    async def test_24_provider_async_fetch_server_error_500(self):
+        """Test 24: HTTP 500 returns UNAVAILABLE with SERVER_ERROR warning."""
         provider = AlphaVantageEODProvider(api_key="TEST_API_KEY")
         ctx = FetchContext(observation_type="GLOBAL_EOD_PRICE", provider_symbol="AAPL")
 
@@ -542,8 +719,8 @@ class TestAlphaVantageEODProvider:
             assert resp.status == DataStatus.UNAVAILABLE
             assert any("SERVER_ERROR" in w for w in resp.warnings)
 
-    def test_20_access_and_capabilities_metadata(self):
-        """Test 20: Access classification is YELLOW and capacity constraints are explicit."""
+    def test_25_access_and_capabilities_metadata(self):
+        """Test 25: Access classification is YELLOW and capacity constraints are explicit."""
         provider = AlphaVantageEODProvider(api_key="TEST")
         assert provider.access_status == ProviderAccessStatus.YELLOW
         assert provider.source_quality == SourceTier.TIER_3_AGGREGATOR

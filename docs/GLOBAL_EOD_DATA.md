@@ -13,6 +13,7 @@ Sentinax utilizes **Alpha Vantage** (`TIME_SERIES_DAILY`) as the baseline low-vo
 | **History Output Size** | **`FREE_COMPACT_HISTORY` (~100 days)** | Standard free endpoint returns latest ~100 trading days (`compact`). Full multi-year history requires premium entitlement (`full`). |
 | **Pricing Policy** | **Raw / As-Traded Only** | Operates on raw as-traded daily prices (`open`, `high`, `low`, `close`, `volume`). No adjusted prices, splits, or dividend adjustments in this layer. |
 | **Fallback Policy** | **No Stooq / No yfinance Fallback** | Stooq and yfinance are strictly forbidden. Missing data reports `UNAVAILABLE` without fabricated fallbacks. |
+| **Live Verification State** | **`LIVE_PROVIDER_UNVERIFIED`** | No live Alpha Vantage API key was configured; implementation adheres strictly to official API documentation. |
 
 ---
 
@@ -32,15 +33,16 @@ Provider symbols are external aliases and must resolve to canonical `InstrumentR
 
 ## 3. Data Integrity & Decimal Guarantees
 
-1. **Exact Decimal Representation**:
+1. **Exact Decimal Representation & Float Rejection**:
    - `open`, `high`, `low`, `close`, and `volume` are parsed as pure Python `Decimal`.
-   - Floating-point numbers (`float`) are strictly prohibited in parser and models.
+   - Floating-point inputs (`float`) are explicitly rejected by the exact decimal parser to prevent loss-of-precision contamination.
 2. **Missing != Zero**:
    - Absent fields remain `None`. Missing volume or open price is never defaulted to `0` or `0.0`.
-3. **Non-Finite Value Defense**:
+3. **Non-Negative OHLC**:
+   - All prices (`open`, `high`, `low`, `close`) and `volume` must be `>= 0`. Negative values are flagged as `INVALID_OBSERVATION`.
+4. **Non-Finite Value Defense**:
    - Any occurrences of `NaN`, `sNaN`, `Infinity`, or `-Infinity` are rejected, flagging the observation as `INVALID_OBSERVATION`.
-4. **OHLC Envelope Validation**:
-   - `close >= 0` and `volume >= 0`.
+5. **OHLC Envelope Validation**:
    - `high >= low`.
    - `high >= open` and `high >= close` (when open/close are present).
    - `low <= open` and `low <= close` (when open/close are present).
@@ -48,25 +50,29 @@ Provider symbols are external aliases and must resolve to canonical `InstrumentR
 
 ---
 
-## 4. Point-in-Time (PIT) Semantics
+## 4. Point-in-Time (PIT) & Identity Semantics
 
 - **`trade_date`**: The economic trading session calendar date (`YYYY-MM-DD`).
 - **`retrieved_at`**: The UTC timestamp when Sentinax executed the HTTP request and captured the snapshot.
 - **`published_at`**: Set to `None`. Alpha Vantage daily endpoint does not provide authoritative historical first-publication timestamps per row.
+- **Request Identity Binding**:
+  - If a `FetchContext` specifies both `canonical_instrument_id` and `provider_symbol`, the provider verifies that the alias maps to the identical canonical UUID before making any network calls. Mismatches fail closed with `DataStatus.UNAVAILABLE` and `IDENTITY_MISMATCH` warning, saving API quota.
+- **Response Metadata Symbol Validation**:
+  - The `"2. Symbol"` field in `"Meta Data"` is validated against the requested symbol. If the response contains mismatched symbol metadata (e.g. requested `AAPL` but received `MSFT`), the parser fails closed with `RESPONSE_SYMBOL_MISMATCH` and produces zero valid observations.
 - **Per-Instrument Snapshot Scope**: Each API response is isolated to the requested symbol. Failure or missing data for one symbol never invalidates or supersedes other instruments in the database.
 
 ---
 
-## 5. API Error & Rate Limit Handling
+## 5. Aggregate Status Calculation
 
-Alpha Vantage often returns status messages and errors inside HTTP 200 JSON payloads. The adapter handles:
+`ProviderResponse.status` is computed strictly from observation validation results:
 
-1. **Rate Limit Exhaustion**:
-   - JSON responses containing `"Information"` or `"Note"` regarding the 25 requests/day limit flag `is_rate_limited = True`, returning `DataStatus.UNAVAILABLE` with diagnostic `RATE_LIMIT_EXHAUSTED`.
-2. **Invalid Symbol / Bad Parameter**:
-   - JSON responses with `"Error Message"` flag `DataStatus.UNAVAILABLE` with diagnostic `PROVIDER_ERROR`.
-3. **HTTP 429 & HTTP 5xx**:
-   - HTTP 429 yields `RATE_LIMITED`.
-   - HTTP 5xx yields `SERVER_ERROR`.
-4. **Network Timeouts**:
-   - Handled via `ProviderTimeoutError` returning `DataStatus.UNAVAILABLE` without hanging.
+| Condition | `ProviderResponse.status` | Description |
+| :--- | :--- | :--- |
+| Rate limited / Quota exceeded | **`UNAVAILABLE`** | Rate limit notice in JSON or HTTP 429. |
+| Observation count == 0 | **`UNAVAILABLE`** | Empty time series or provider error. |
+| Valid count == 0 | **`UNAVAILABLE`** | All rows are `UNRESOLVED_IDENTITY`, `INVALID_OBSERVATION`, or `DUPLICATE_CONFLICT`. |
+| Valid count == Observation count | **`COMPLETE`** | All returned observations parsed cleanly and resolved to master instruments. |
+| 0 < Valid count < Observation count | **`PARTIAL`** | Mixed series with both valid and invalid/unresolved/conflict rows. |
+
+Detailed breakdown counts (`valid_count`, `invalid_count`, `unresolved_count`, `conflict_count`) are surfaced in `source_metadata`.
