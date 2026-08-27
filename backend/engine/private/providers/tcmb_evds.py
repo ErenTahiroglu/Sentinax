@@ -99,6 +99,22 @@ class TCMBEVDSProvider(DataProviderContract):
                         provider_symbol=context.provider_symbol,
                     )
                 series_code = canonical_def.provider_series_code
+        elif context.provider_symbol:
+            from backend.engine.private.precious_metals.registry import PreciousMetalSeriesRegistry
+            pm_def = PreciousMetalSeriesRegistry.get(context.provider_symbol)
+            if pm_def and not pm_def.is_active:
+                return ProviderResponse(
+                    provider_name=self.provider_name,
+                    source_quality=self.source_quality,
+                    retrieved_at=datetime.now(timezone.utc),
+                    published_at=None,
+                    effective_date=None,
+                    status=DataStatus.UNAVAILABLE,
+                    raw=None,
+                    warnings=[f"Precious metals series {context.provider_symbol} is disabled in registry."],
+                    canonical_instrument_id=context.canonical_instrument_id,
+                    provider_symbol=context.provider_symbol,
+                )
 
         if not series_code:
             return ProviderResponse(
@@ -313,6 +329,17 @@ class TCMBEVDSProvider(DataProviderContract):
         return warnings
 
     def provenance(self, response: ProviderResponse) -> ProviderProvenance:
+        metadata: Dict[str, Any] = {}
+        if response.provider_symbol:
+            from backend.engine.private.precious_metals.registry import PreciousMetalSeriesRegistry
+            pm_def = PreciousMetalSeriesRegistry.get(response.provider_symbol)
+            if pm_def:
+                metadata["originating_source"] = pm_def.originating_source
+                metadata["metal"] = pm_def.metal.value
+                metadata["currency"] = pm_def.currency.value
+                metadata["quantity_unit"] = pm_def.quantity_unit.value
+                metadata["price_type"] = pm_def.price_type.value
+
         return ProviderProvenance(
             provider_name=self.provider_name,
             provider_version=self.provider_version,
@@ -322,6 +349,7 @@ class TCMBEVDSProvider(DataProviderContract):
             canonical_instrument_id=response.canonical_instrument_id,
             provider_symbol=response.provider_symbol,
             effective_date=response.effective_date,
+            metadata=metadata,
         )
 
     @staticmethod
