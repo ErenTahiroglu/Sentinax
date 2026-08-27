@@ -31,6 +31,10 @@ from backend.engine.private.market_data.tefas_models import (
     TefasFundPriceSnapshot,
     TefasObservationStatus,
 )
+from backend.engine.private.market_data.tefas_metrics_models import (
+    TefasFundCurrentMetricsObservation,
+    TefasFundMetricsSnapshot,
+)
 
 __all__ = [
     "MarketDataResolutionMode",
@@ -51,4 +55,6 @@ __all__ = [
     "TefasFundPriceObservation",
     "TefasFundPriceSnapshot",
     "TefasObservationStatus",
+    "TefasFundCurrentMetricsObservation",
+    "TefasFundMetricsSnapshot",
 ]

@@ -67,7 +67,7 @@ A diverse sample of funds across distinct asset categories was probed on 2026-08
 ### Key Observations:
 1. **Accounting Coherence:** The formula `sonFiyat * payAdet = portBuyukluk` holds consistently across the empirically sampled funds with relative residual error $< 0.000036\%$, which is strictly attributable to standard display precision rounding (`sonFiyat` rounded to 6 decimal places, `portBuyukluk` rounded to 2 decimal places).
 2. **Coherent Reporting Unit Basis:** Across the empirically sampled funds, `portBuyukluk` shares the exact same unit-currency basis as the returned `sonFiyat`.
-3. **Currency Authority & Capability Boundary:** TEFAS public endpoints report domestic fund prices and AUM on a TRY basis. However, for multi-pay-group funds, this represents only the primary reference class (see Section 6).
+3. **Currency Authority & Capability Boundary:** Across the verified sample, the public current endpoint returned a TRY-reference reporting basis. Sentinax therefore intentionally limits this adapter to canonical TRY instruments until share-class discrimination exists (see Section 6).
 
 ---
 
