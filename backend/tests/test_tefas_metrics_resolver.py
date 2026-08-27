@@ -624,3 +624,518 @@ def test_25_no_observation_deterministic_resolution_key():
     assert res1.status == MarketDataResolutionStatus.NO_ELIGIBLE_OBSERVATION
     assert res1.resolution_key == res2.resolution_key
     assert res1.resolution_key is not None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 11D.3.5 — Fail-Closed Type, Identity & Resolution-Key Hardening Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _create_well_formed_obs(
+    instrument_id: UUID,
+    symbol: str,
+    retrieved_at: datetime,
+    snap_id: UUID,
+    payload_hash: str,
+    parser_version: str = "1.0.0",
+    instrument_type=InstrumentType.TEFAS_FUND,
+) -> TefasFundCurrentMetricsObservation:
+    """Create a well-formed observation with correct lineage for isolation testing."""
+    return TefasFundCurrentMetricsObservation(
+        id=uuid4(),
+        snapshot_id=snap_id,
+        instrument_id=instrument_id,
+        provider="TEFAS",
+        provider_symbol=symbol,
+        portfolio_size=Decimal("1000000000.00"),
+        portfolio_size_currency=Currency.TRY,
+        outstanding_units=Decimal("10000000"),
+        investor_count=10000,
+        reported_current_unit_price=Decimal("100.00"),
+        instrument_type=instrument_type,
+        payload_hash=payload_hash,
+        retrieved_at=retrieved_at,
+        published_at=None,
+        effective_date=None,
+        status=TefasObservationStatus.VALID,
+        confidence_level=DataConfidenceLevel.MEDIUM,
+    )
+
+
+def _create_snap_raw(
+    instrument_id: UUID,
+    symbol: str,
+    retrieved_at: datetime,
+    observation,
+    payload_hash: str,
+    parser_version: str = "1.0.0",
+) -> TefasFundMetricsSnapshot:
+    """Create snapshot referencing a given observation object directly."""
+    s_id = uuid4()
+    if observation is not None:
+        observation.snapshot_id = s_id
+    return TefasFundMetricsSnapshot(
+        id=s_id,
+        provider="TEFAS",
+        provider_symbol=symbol,
+        retrieved_at=retrieved_at,
+        http_status=200,
+        payload_hash=payload_hash,
+        raw_payload=f'{{"fonKodu": "{symbol}"}}',
+        instrument_id=instrument_id,
+        endpoint="FUND_CURRENT_METRICS",
+        parser_version=parser_version,
+        observation=observation,
+    )
+
+
+def test_26_missing_instrument_type_fails_closed():
+    """Verify instrument_type=None is INELIGIBLE (positive membership required)."""
+    inst_id = uuid4()
+    query = TefasFundCurrentMetricsQueryKey(instrument_id=inst_id, provider_symbol="MAC")
+    ret_time = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+    payload_hash = "hash_type_none"
+    s_id = uuid4()
+
+    obs = TefasFundCurrentMetricsObservation(
+        id=uuid4(),
+        snapshot_id=s_id,
+        instrument_id=inst_id,
+        provider="TEFAS",
+        provider_symbol="MAC",
+        portfolio_size=Decimal("1000000000.00"),
+        portfolio_size_currency=Currency.TRY,
+        outstanding_units=Decimal("10000000"),
+        investor_count=10000,
+        payload_hash=payload_hash,
+        retrieved_at=ret_time,
+        status=TefasObservationStatus.VALID,
+        instrument_type=None,  # None -> INELIGIBLE
+    )
+    snap = TefasFundMetricsSnapshot(
+        id=s_id,
+        provider="TEFAS",
+        provider_symbol="MAC",
+        retrieved_at=ret_time,
+        http_status=200,
+        payload_hash=payload_hash,
+        raw_payload='{}',
+        instrument_id=inst_id,
+        endpoint="FUND_CURRENT_METRICS",
+        observation=obs,
+    )
+    res = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [snap])
+    assert res.status == MarketDataResolutionStatus.NO_ELIGIBLE_OBSERVATION
+
+
+def test_27_float_portfolio_size_fails_closed():
+    """Verify float portfolio_size is INELIGIBLE — no AttributeError raised."""
+    inst_id = uuid4()
+    query = TefasFundCurrentMetricsQueryKey(instrument_id=inst_id, provider_symbol="MAC")
+    ret_time = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+    payload_hash = "hash_float_psize"
+    s_id = uuid4()
+
+    obs = TefasFundCurrentMetricsObservation(
+        id=uuid4(),
+        snapshot_id=s_id,
+        instrument_id=inst_id,
+        provider="TEFAS",
+        provider_symbol="MAC",
+        portfolio_size=1000.0,  # type: ignore  # float, not Decimal
+        portfolio_size_currency=Currency.TRY,
+        outstanding_units=Decimal("10000000"),
+        investor_count=10000,
+        payload_hash=payload_hash,
+        retrieved_at=ret_time,
+        status=TefasObservationStatus.VALID,
+        instrument_type=InstrumentType.TEFAS_FUND,
+    )
+    snap = TefasFundMetricsSnapshot(
+        id=s_id,
+        provider="TEFAS",
+        provider_symbol="MAC",
+        retrieved_at=ret_time,
+        http_status=200,
+        payload_hash=payload_hash,
+        raw_payload='{}',
+        instrument_id=inst_id,
+        endpoint="FUND_CURRENT_METRICS",
+        observation=obs,
+    )
+    res = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [snap])
+    assert res.status == MarketDataResolutionStatus.NO_ELIGIBLE_OBSERVATION
+
+
+def test_28_string_portfolio_size_fails_closed():
+    """Verify string portfolio_size is INELIGIBLE — no coercion."""
+    inst_id = uuid4()
+    query = TefasFundCurrentMetricsQueryKey(instrument_id=inst_id, provider_symbol="MAC")
+    ret_time = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+    payload_hash = "hash_str_psize"
+    s_id = uuid4()
+
+    obs = TefasFundCurrentMetricsObservation(
+        id=uuid4(),
+        snapshot_id=s_id,
+        instrument_id=inst_id,
+        provider="TEFAS",
+        provider_symbol="MAC",
+        portfolio_size="1000000000.00",  # type: ignore  # str, not Decimal
+        portfolio_size_currency=Currency.TRY,
+        outstanding_units=Decimal("10000000"),
+        investor_count=10000,
+        payload_hash=payload_hash,
+        retrieved_at=ret_time,
+        status=TefasObservationStatus.VALID,
+        instrument_type=InstrumentType.TEFAS_FUND,
+    )
+    snap = TefasFundMetricsSnapshot(
+        id=s_id,
+        provider="TEFAS",
+        provider_symbol="MAC",
+        retrieved_at=ret_time,
+        http_status=200,
+        payload_hash=payload_hash,
+        raw_payload='{}',
+        instrument_id=inst_id,
+        endpoint="FUND_CURRENT_METRICS",
+        observation=obs,
+    )
+    res = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [snap])
+    assert res.status == MarketDataResolutionStatus.NO_ELIGIBLE_OBSERVATION
+
+
+def test_29_int_portfolio_size_fails_closed():
+    """Verify int portfolio_size is INELIGIBLE — canonical persisted metric must be Decimal."""
+    inst_id = uuid4()
+    query = TefasFundCurrentMetricsQueryKey(instrument_id=inst_id, provider_symbol="MAC")
+    ret_time = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+    payload_hash = "hash_int_psize"
+    s_id = uuid4()
+
+    obs = TefasFundCurrentMetricsObservation(
+        id=uuid4(),
+        snapshot_id=s_id,
+        instrument_id=inst_id,
+        provider="TEFAS",
+        provider_symbol="MAC",
+        portfolio_size=1000,  # type: ignore  # int, not Decimal
+        portfolio_size_currency=Currency.TRY,
+        outstanding_units=Decimal("10000000"),
+        investor_count=10000,
+        payload_hash=payload_hash,
+        retrieved_at=ret_time,
+        status=TefasObservationStatus.VALID,
+        instrument_type=InstrumentType.TEFAS_FUND,
+    )
+    snap = TefasFundMetricsSnapshot(
+        id=s_id,
+        provider="TEFAS",
+        provider_symbol="MAC",
+        retrieved_at=ret_time,
+        http_status=200,
+        payload_hash=payload_hash,
+        raw_payload='{}',
+        instrument_id=inst_id,
+        endpoint="FUND_CURRENT_METRICS",
+        observation=obs,
+    )
+    res = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [snap])
+    assert res.status == MarketDataResolutionStatus.NO_ELIGIBLE_OBSERVATION
+
+
+def test_30_float_outstanding_units_fails_closed():
+    """Verify float outstanding_units is INELIGIBLE — no Decimal(float) coercion."""
+    inst_id = uuid4()
+    query = TefasFundCurrentMetricsQueryKey(instrument_id=inst_id, provider_symbol="MAC")
+    ret_time = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+    payload_hash = "hash_float_units"
+    s_id = uuid4()
+
+    obs = TefasFundCurrentMetricsObservation(
+        id=uuid4(),
+        snapshot_id=s_id,
+        instrument_id=inst_id,
+        provider="TEFAS",
+        provider_symbol="MAC",
+        portfolio_size=Decimal("1000000000.00"),
+        portfolio_size_currency=Currency.TRY,
+        outstanding_units=1000.0,  # type: ignore  # float, not Decimal
+        investor_count=10000,
+        payload_hash=payload_hash,
+        retrieved_at=ret_time,
+        status=TefasObservationStatus.VALID,
+        instrument_type=InstrumentType.TEFAS_FUND,
+    )
+    snap = TefasFundMetricsSnapshot(
+        id=s_id,
+        provider="TEFAS",
+        provider_symbol="MAC",
+        retrieved_at=ret_time,
+        http_status=200,
+        payload_hash=payload_hash,
+        raw_payload='{}',
+        instrument_id=inst_id,
+        endpoint="FUND_CURRENT_METRICS",
+        observation=obs,
+    )
+    res = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [snap])
+    assert res.status == MarketDataResolutionStatus.NO_ELIGIBLE_OBSERVATION
+
+
+def test_31_string_outstanding_units_fails_closed():
+    """Verify string outstanding_units is INELIGIBLE — no coercion."""
+    inst_id = uuid4()
+    query = TefasFundCurrentMetricsQueryKey(instrument_id=inst_id, provider_symbol="MAC")
+    ret_time = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+    payload_hash = "hash_str_units"
+    s_id = uuid4()
+
+    obs = TefasFundCurrentMetricsObservation(
+        id=uuid4(),
+        snapshot_id=s_id,
+        instrument_id=inst_id,
+        provider="TEFAS",
+        provider_symbol="MAC",
+        portfolio_size=Decimal("1000000000.00"),
+        portfolio_size_currency=Currency.TRY,
+        outstanding_units="1000",  # type: ignore  # str, not Decimal
+        investor_count=10000,
+        payload_hash=payload_hash,
+        retrieved_at=ret_time,
+        status=TefasObservationStatus.VALID,
+        instrument_type=InstrumentType.TEFAS_FUND,
+    )
+    snap = TefasFundMetricsSnapshot(
+        id=s_id,
+        provider="TEFAS",
+        provider_symbol="MAC",
+        retrieved_at=ret_time,
+        http_status=200,
+        payload_hash=payload_hash,
+        raw_payload='{}',
+        instrument_id=inst_id,
+        endpoint="FUND_CURRENT_METRICS",
+        observation=obs,
+    )
+    res = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [snap])
+    assert res.status == MarketDataResolutionStatus.NO_ELIGIBLE_OBSERVATION
+
+
+def test_32_none_outstanding_units_still_selected():
+    """Verify outstanding_units=None is SELECTED (missing != malformed). Normalized to PARTIAL."""
+    inst_id = uuid4()
+    query = TefasFundCurrentMetricsQueryKey(instrument_id=inst_id, provider_symbol="MAC")
+    s = create_metrics_snapshot(
+        inst_id, "MAC",
+        retrieved_at=datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc),
+        outstanding_units=None,
+        investor_count=10000,
+    )
+    res = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [s])
+    assert res.status == MarketDataResolutionStatus.SELECTED
+    assert res.selected_observation.outstanding_units is None
+    norm = res.selected_observation.to_normalized_observation_record()
+    assert norm.data_status == DataStatus.PARTIAL
+
+
+def test_33_malformed_investor_count_resolver_fails_closed():
+    """Verify malformed investor_count (negative and bool) fails closed at resolver level."""
+    inst_id = uuid4()
+    query = TefasFundCurrentMetricsQueryKey(instrument_id=inst_id, provider_symbol="MAC")
+    ret_time = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+    # Negative
+    s_neg = create_metrics_snapshot(inst_id, "MAC", retrieved_at=ret_time, investor_count=-1, payload_hash="hash_inv_neg")
+    res_neg = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [s_neg])
+    assert res_neg.status == MarketDataResolutionStatus.NO_ELIGIBLE_OBSERVATION
+
+    # Bool (True)
+    s_bool = create_metrics_snapshot(inst_id, "MAC", retrieved_at=ret_time, investor_count=True, payload_hash="hash_inv_bool")  # type: ignore
+    res_bool = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [s_bool])
+    assert res_bool.status == MarketDataResolutionStatus.NO_ELIGIBLE_OBSERVATION
+
+
+def test_34_same_time_different_symbol_conflict():
+    """Verify same retrieved_at, same payload_hash, different provider symbols -> SNAPSHOT_CONFLICT."""
+    inst_id = uuid4()
+    query = TefasFundCurrentMetricsQueryKey(instrument_id=inst_id, provider_symbol="MAC")
+    ret_time = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+    payload_hash = "hash_same"
+
+    s1 = create_metrics_snapshot(inst_id, "MAC", retrieved_at=ret_time, payload_hash=payload_hash)
+    s2 = create_metrics_snapshot(inst_id, "XYZ", retrieved_at=ret_time, payload_hash=payload_hash)
+
+    res = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [s1, s2])
+    assert res.status == MarketDataResolutionStatus.SNAPSHOT_CONFLICT
+    assert "SNAPSHOT_CONFLICT" in res.diagnostics[0]
+
+
+def test_35_symbol_lineage_missing_vs_present():
+    """Verify snapshot symbol MAC vs observation symbol '' (empty) is INVALID_TEMPORAL_LINEAGE."""
+    inst_id = uuid4()
+    query = TefasFundCurrentMetricsQueryKey(instrument_id=inst_id, provider_symbol="MAC")
+    ret_time = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+    payload_hash = "hash_sym_mismatch"
+    s_id = uuid4()
+
+    # Case 1: snapshot=MAC, obs=""
+    obs1 = TefasFundCurrentMetricsObservation(
+        id=uuid4(), snapshot_id=s_id, instrument_id=inst_id,
+        provider="TEFAS", provider_symbol="",
+        portfolio_size=Decimal("1000000000.00"), portfolio_size_currency=Currency.TRY,
+        outstanding_units=Decimal("10000000"), investor_count=10000,
+        payload_hash=payload_hash, retrieved_at=ret_time,
+        status=TefasObservationStatus.VALID, instrument_type=InstrumentType.TEFAS_FUND,
+    )
+    snap1 = TefasFundMetricsSnapshot(
+        id=s_id, provider="TEFAS", provider_symbol="MAC",
+        retrieved_at=ret_time, http_status=200, payload_hash=payload_hash,
+        raw_payload='{}', instrument_id=inst_id, endpoint="FUND_CURRENT_METRICS",
+        observation=obs1,
+    )
+    res1 = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [snap1])
+    assert res1.status == MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE
+
+    # Case 2: snapshot="", obs=MAC
+    s_id2 = uuid4()
+    obs2 = TefasFundCurrentMetricsObservation(
+        id=uuid4(), snapshot_id=s_id2, instrument_id=inst_id,
+        provider="TEFAS", provider_symbol="MAC",
+        portfolio_size=Decimal("1000000000.00"), portfolio_size_currency=Currency.TRY,
+        outstanding_units=Decimal("10000000"), investor_count=10000,
+        payload_hash=payload_hash, retrieved_at=ret_time,
+        status=TefasObservationStatus.VALID, instrument_type=InstrumentType.TEFAS_FUND,
+    )
+    snap2 = TefasFundMetricsSnapshot(
+        id=s_id2, provider="TEFAS", provider_symbol="",
+        retrieved_at=ret_time, http_status=200, payload_hash=payload_hash,
+        raw_payload='{}', instrument_id=inst_id, endpoint="FUND_CURRENT_METRICS",
+        observation=obs2,
+    )
+    res2 = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [snap2])
+    assert res2.status == MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE
+
+
+def test_36_parser_version_changes_resolution_key():
+    """Verify that changing only parser_version produces a different resolution_key."""
+    inst_id = uuid4()
+    query = TefasFundCurrentMetricsQueryKey(instrument_id=inst_id, provider_symbol="MAC")
+    ret_time = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+    payload_hash = "hash_same_econ"
+
+    s1 = create_metrics_snapshot(inst_id, "MAC", retrieved_at=ret_time, payload_hash=payload_hash)
+    s1.parser_version = "1.0.0"
+    if s1.observation:
+        s1.observation.snapshot_id = s1.id
+
+    s2 = create_metrics_snapshot(inst_id, "MAC", retrieved_at=ret_time, payload_hash=payload_hash, snap_id=uuid4(), obs_id=uuid4())
+    s2.parser_version = "1.0.1"
+    if s2.observation:
+        s2.observation.snapshot_id = s2.id
+
+    res1 = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [s1])
+    res2 = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [s2])
+
+    assert res1.status == MarketDataResolutionStatus.SELECTED
+    assert res2.status == MarketDataResolutionStatus.SELECTED
+    # Different parser_version -> different resolution_key
+    assert res1.resolution_key != res2.resolution_key
+
+
+def test_37_uuid_independence_with_parser_version():
+    """Verify same parser version and economics with different UUIDs produce identical resolution_key."""
+    inst_id = uuid4()
+    query = TefasFundCurrentMetricsQueryKey(instrument_id=inst_id, provider_symbol="MAC")
+    ret_time = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+    payload_hash = "hash_uuid_indep"
+
+    s1 = create_metrics_snapshot(inst_id, "MAC", retrieved_at=ret_time, payload_hash=payload_hash, snap_id=uuid4(), obs_id=uuid4())
+    s1.parser_version = "1.0.0"
+    if s1.observation:
+        s1.observation.snapshot_id = s1.id
+
+    s2 = create_metrics_snapshot(inst_id, "MAC", retrieved_at=ret_time, payload_hash=payload_hash, snap_id=uuid4(), obs_id=uuid4())
+    s2.parser_version = "1.0.0"
+    if s2.observation:
+        s2.observation.snapshot_id = s2.id
+
+    res1 = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [s1])
+    res2 = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [s2])
+
+    assert res1.status == MarketDataResolutionStatus.SELECTED
+    assert res2.status == MarketDataResolutionStatus.SELECTED
+    assert res1.resolution_key == res2.resolution_key
+
+
+def test_38_no_observation_key_changes_with_symbol():
+    """Verify no-observation resolution_key changes when provider_symbol changes."""
+    inst_id = uuid4()
+    ret_time = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+    payload_hash = "hash_no_obs"
+
+    query_mac = TefasFundCurrentMetricsQueryKey(instrument_id=inst_id, provider_symbol="MAC")
+    s_mac = create_metrics_snapshot(inst_id, "MAC", retrieved_at=ret_time, has_observation=False, payload_hash=payload_hash)
+    res_mac = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query_mac, [s_mac])
+
+    query_xyz = TefasFundCurrentMetricsQueryKey(instrument_id=inst_id, provider_symbol="XYZ")
+    s_xyz = create_metrics_snapshot(inst_id, "XYZ", retrieved_at=ret_time, has_observation=False, payload_hash=payload_hash)
+    res_xyz = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query_xyz, [s_xyz])
+
+    assert res_mac.status == MarketDataResolutionStatus.NO_ELIGIBLE_OBSERVATION
+    assert res_xyz.status == MarketDataResolutionStatus.NO_ELIGIBLE_OBSERVATION
+    assert res_mac.resolution_key != res_xyz.resolution_key
+
+
+def test_39_no_observation_key_changes_with_parser_version():
+    """Verify no-observation resolution_key changes when parser_version changes."""
+    inst_id = uuid4()
+    query = TefasFundCurrentMetricsQueryKey(instrument_id=inst_id, provider_symbol="MAC")
+    ret_time = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+    payload_hash = "hash_no_obs_pv"
+
+    s1 = create_metrics_snapshot(inst_id, "MAC", retrieved_at=ret_time, has_observation=False, payload_hash=payload_hash, snap_id=uuid4())
+    s1.parser_version = "1.0.0"
+    s2 = create_metrics_snapshot(inst_id, "MAC", retrieved_at=ret_time, has_observation=False, payload_hash=payload_hash, snap_id=uuid4())
+    s2.parser_version = "2.0.0"
+
+    res1 = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [s1])
+    res2 = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [s2])
+
+    assert res1.resolution_key != res2.resolution_key
+
+
+def test_40_exact_decimal_regression():
+    """Verify Decimal('0.1000') remains exactly Decimal('0.1000') without quantization."""
+    inst_id = uuid4()
+    query = TefasFundCurrentMetricsQueryKey(instrument_id=inst_id, provider_symbol="MAC")
+
+    s = create_metrics_snapshot(
+        inst_id, "MAC",
+        retrieved_at=datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc),
+        portfolio_size=Decimal("0.1000"),
+    )
+    res = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [s])
+    assert res.status == MarketDataResolutionStatus.SELECTED
+    assert res.selected_observation.portfolio_size == Decimal("0.1000")
+    assert str(res.selected_observation.portfolio_size) == "0.1000"
+
+
+def test_41_valid_zero_values_complete():
+    """Verify Decimal('0') AUM, Decimal('0') units, investor_count=0 are eligible and COMPLETE."""
+    inst_id = uuid4()
+    query = TefasFundCurrentMetricsQueryKey(instrument_id=inst_id, provider_symbol="MAC")
+
+    s = create_metrics_snapshot(
+        inst_id, "MAC",
+        retrieved_at=datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc),
+        portfolio_size=Decimal("0"),
+        outstanding_units=Decimal("0"),
+        investor_count=0,
+    )
+    res = PointInTimeMarketDataResolver.resolve_tefas_current_metrics(query, [s])
+    assert res.status == MarketDataResolutionStatus.SELECTED
+    assert res.selected_observation.portfolio_size == Decimal("0")
+    norm = res.selected_observation.to_normalized_observation_record()
+    assert norm.data_status == DataStatus.COMPLETE
+

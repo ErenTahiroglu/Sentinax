@@ -95,6 +95,23 @@ def _tefas_current_metrics_observation_fingerprint(obs: TefasFundCurrentMetricsO
     return f"{inst_str}:{prov_str}:{sym_str}:{psize_str}:{curr_str}:{units_str}:{inv_str}:{price_str}:{type_str}:{status_str}"
 
 
+def _tefas_current_metrics_snapshot_fingerprint(snap: TefasFundMetricsSnapshot) -> str:
+    """
+    Computes a deterministic, UUID-independent stable snapshot source fingerprint for resolution key computation.
+    Captures economic/source semantics: provider, endpoint, instrument_id, provider_symbol,
+    retrieved_at, payload_hash, parser_version.
+    Excludes physical snapshot and observation UUIDs.
+    """
+    prov_str = (snap.provider or "").strip().upper()
+    endpoint_str = (snap.endpoint or "").strip().upper()
+    inst_str = str(snap.instrument_id) if snap.instrument_id else "None"
+    sym_str = (snap.provider_symbol or "").strip().upper()
+    ret_str = snap.retrieved_at.isoformat() if snap.retrieved_at else "None"
+    hash_str = (snap.payload_hash or "").strip()
+    parser_str = (snap.parser_version or "").strip()
+    return f"{prov_str}:{endpoint_str}:{inst_str}:{sym_str}:{ret_str}:{hash_str}:{parser_str}"
+
+
 def _tefas_snapshot_covers_target_date(snap: TefasFundPriceSnapshot, target: date) -> bool:
     """
     Determines whether a TEFAS snapshot has authority over target trade_date.
@@ -1669,6 +1686,7 @@ class PointInTimeMarketDataResolver:
 
         auth_snap: TefasFundMetricsSnapshot
         if len(frontier_snaps) > 1:
+            # 6a. Payload hash conflict
             hashes = {s.payload_hash for s in frontier_snaps}
             if len(hashes) > 1:
                 return MarketObservationResolutionResult(
@@ -1684,6 +1702,23 @@ class PointInTimeMarketDataResolver:
                     evaluation_snapshot_ids=eval_ids,
                     diagnostics=[f"SNAPSHOT_CONFLICT: Multiple differing payload hashes at identical retrieved_at {max_retrieved.isoformat()}."],
                 )
+            # 6b. Same-time different provider symbol conflict
+            symbols_at_frontier = {(s.provider_symbol or "").strip().upper() for s in frontier_snaps}
+            if len(symbols_at_frontier) > 1:
+                return MarketObservationResolutionResult(
+                    status=MarketDataResolutionStatus.SNAPSHOT_CONFLICT,
+                    resolution_mode=mode,
+                    as_of=as_of,
+                    observation_type=obs_type,
+                    effective_date=None,
+                    canonical_instrument_id=inst_id,
+                    provider=provider_name,
+                    originating_source=provider_name,
+                    semantic_key=sem_str,
+                    evaluation_snapshot_ids=eval_ids,
+                    diagnostics=[f"SNAPSHOT_CONFLICT: Multiple distinct provider symbols {symbols_at_frontier!r} at identical retrieved_at {max_retrieved.isoformat()}."],
+                )
+            # 6c. Observation content conflict
             obs_fps = set()
             for s in frontier_snaps:
                 if s.observation:
@@ -1704,7 +1739,7 @@ class PointInTimeMarketDataResolver:
                     evaluation_snapshot_ids=eval_ids,
                     diagnostics=["SNAPSHOT_CONFLICT: Differing observations at identical retrieved_at."],
                 )
-            auth_snap = min(frontier_snaps, key=lambda s: (s.payload_hash, str(s.provider_symbol)))
+            auth_snap = min(frontier_snaps, key=lambda s: (_tefas_current_metrics_snapshot_fingerprint(s),))
         else:
             auth_snap = frontier_snaps[0]
 
@@ -1712,9 +1747,10 @@ class PointInTimeMarketDataResolver:
         obs = auth_snap.observation
 
         if obs is None:
+            snap_fp = _tefas_current_metrics_snapshot_fingerprint(auth_snap)
             res_key_raw = (
                 f"TEFAS_FUND_CURRENT_METRICS:{mode.value}:{as_of.isoformat() if as_of else 'CURRENT'}:"
-                f"{provider_name}:{inst_id}:{auth_snap.retrieved_at.isoformat()}:{auth_snap.payload_hash}:NO_OBSERVATION"
+                f"{inst_id}:{snap_fp}:NO_OBSERVATION"
             )
             resolution_key = hashlib.sha256(res_key_raw.encode("utf-8")).hexdigest()
             return MarketObservationResolutionResult(
@@ -1804,24 +1840,26 @@ class PointInTimeMarketDataResolver:
                 evaluation_snapshot_ids=eval_ids,
                 diagnostics=[f"INVALID_TEMPORAL_LINEAGE: Observation instrument_id '{obs.instrument_id}' mismatches query '{inst_id}'."],
             )
-        if auth_snap.provider_symbol and obs.provider_symbol:
-            if obs.provider_symbol.strip().upper() != auth_snap.provider_symbol.strip().upper():
-                return MarketObservationResolutionResult(
-                    status=MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE,
-                    resolution_mode=mode,
-                    as_of=as_of,
-                    observation_type=obs_type,
-                    effective_date=None,
-                    snapshot_id=auth_snap.id,
-                    snapshot_hash=auth_snap.payload_hash,
-                    snapshot_retrieved_at=auth_snap.retrieved_at,
-                    canonical_instrument_id=inst_id,
-                    provider=provider_name,
-                    originating_source=provider_name,
-                    semantic_key=sem_str,
-                    evaluation_snapshot_ids=eval_ids,
-                    diagnostics=[f"INVALID_TEMPORAL_LINEAGE: Observation provider_symbol '{obs.provider_symbol}' mismatches snapshot symbol '{auth_snap.provider_symbol}'."],
-                )
+        # Symbol lineage: unconditional — missing vs present is also a mismatch
+        snap_sym_norm = (auth_snap.provider_symbol or "").strip().upper()
+        obs_sym_norm = (obs.provider_symbol or "").strip().upper()
+        if snap_sym_norm != obs_sym_norm:
+            return MarketObservationResolutionResult(
+                status=MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE,
+                resolution_mode=mode,
+                as_of=as_of,
+                observation_type=obs_type,
+                effective_date=None,
+                snapshot_id=auth_snap.id,
+                snapshot_hash=auth_snap.payload_hash,
+                snapshot_retrieved_at=auth_snap.retrieved_at,
+                canonical_instrument_id=inst_id,
+                provider=provider_name,
+                originating_source=provider_name,
+                semantic_key=sem_str,
+                evaluation_snapshot_ids=eval_ids,
+                diagnostics=[f"INVALID_TEMPORAL_LINEAGE: Observation provider_symbol '{obs.provider_symbol}' mismatches snapshot symbol '{auth_snap.provider_symbol}'."],
+            )
         if obs.retrieved_at is None or obs.retrieved_at.tzinfo is None or obs.retrieved_at != auth_snap.retrieved_at:
             return MarketObservationResolutionResult(
                 status=MarketDataResolutionStatus.INVALID_TEMPORAL_LINEAGE,
@@ -1874,36 +1912,55 @@ class PointInTimeMarketDataResolver:
                 diagnostics=["INVALID_TEMPORAL_LINEAGE: Current metrics observation has fabricated published_at."],
             )
 
-        # 8. Check Observation Eligibility
-        is_units_valid = True
-        if obs.outstanding_units is not None:
-            if isinstance(obs.outstanding_units, bool):
-                is_units_valid = False
-            else:
-                try:
-                    u_dec = Decimal(obs.outstanding_units)
-                    is_units_valid = u_dec.is_finite() and u_dec >= Decimal("0")
-                except Exception:
-                    is_units_valid = False
+        # 8. Check Observation Eligibility (exact type safety — no coercion)
 
-        is_investor_valid = True
-        if obs.investor_count is not None:
-            if isinstance(obs.investor_count, bool) or not isinstance(obs.investor_count, int) or obs.investor_count < 0:
-                is_investor_valid = False
+        # portfolio_size: must be actual Decimal, finite, >= 0
+        is_portfolio_size_valid = (
+            isinstance(obs.portfolio_size, Decimal)
+            and not isinstance(obs.portfolio_size, bool)
+            and obs.portfolio_size.is_finite()
+            and obs.portfolio_size >= Decimal("0")
+        )
+
+        # outstanding_units: None allowed; if present, must be actual Decimal, finite, >= 0
+        is_units_valid: bool
+        if obs.outstanding_units is None:
+            is_units_valid = True
+        elif (
+            not isinstance(obs.outstanding_units, Decimal)
+            or isinstance(obs.outstanding_units, bool)
+            or not obs.outstanding_units.is_finite()
+            or obs.outstanding_units < Decimal("0")
+        ):
+            is_units_valid = False
+        else:
+            is_units_valid = True
+
+        # investor_count: None allowed; if present, must be non-bool int >= 0
+        is_investor_valid: bool
+        if obs.investor_count is None:
+            is_investor_valid = True
+        elif isinstance(obs.investor_count, bool) or not isinstance(obs.investor_count, int) or obs.investor_count < 0:
+            is_investor_valid = False
+        else:
+            is_investor_valid = True
+
+        # instrument_type: must be explicit positive membership (None -> INELIGIBLE)
+        is_instrument_type_valid = obs.instrument_type in TEFAS_RESOLVER_ALLOWED_INSTRUMENT_TYPES
+
+        snap_fp = _tefas_current_metrics_snapshot_fingerprint(auth_snap)
 
         if (
             obs.status != TefasObservationStatus.VALID
-            or obs.portfolio_size is None
-            or not obs.portfolio_size.is_finite()
-            or obs.portfolio_size < Decimal("0")
+            or not is_portfolio_size_valid
             or obs.portfolio_size_currency != Currency.TRY
-            or (obs.instrument_type and obs.instrument_type not in TEFAS_RESOLVER_ALLOWED_INSTRUMENT_TYPES)
+            or not is_instrument_type_valid
             or not is_units_valid
             or not is_investor_valid
         ):
             res_key_raw = (
                 f"TEFAS_FUND_CURRENT_METRICS:{mode.value}:{as_of.isoformat() if as_of else 'CURRENT'}:"
-                f"{provider_name}:{inst_id}:{auth_snap.retrieved_at.isoformat()}:{auth_snap.payload_hash}:INELIGIBLE"
+                f"{inst_id}:{snap_fp}:INELIGIBLE"
             )
             resolution_key = hashlib.sha256(res_key_raw.encode("utf-8")).hexdigest()
             return MarketObservationResolutionResult(
@@ -1928,7 +1985,7 @@ class PointInTimeMarketDataResolver:
         obs_fp = _tefas_current_metrics_observation_fingerprint(obs)
         res_key_raw = (
             f"TEFAS_FUND_CURRENT_METRICS:{mode.value}:{as_of.isoformat() if as_of else 'CURRENT'}:"
-            f"{provider_name}:{inst_id}:{auth_snap.retrieved_at.isoformat()}:{auth_snap.payload_hash}:{obs_fp}"
+            f"{inst_id}:{snap_fp}:{obs_fp}"
         )
         resolution_key = hashlib.sha256(res_key_raw.encode("utf-8")).hexdigest()
 
