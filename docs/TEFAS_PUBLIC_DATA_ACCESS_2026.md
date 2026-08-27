@@ -72,7 +72,7 @@ All probes executed using ordinary Python `urllib` / `curl` with transparent Use
 ### C) Fund Universe Enumeration: `fonUnvanAra`
 - **Endpoint:** `POST https://www.tefas.gov.tr/api/funds/fonUnvanAra`
 - **Payload:** `{"aranan": "", "dil": "TR"}`
-- **Response:** Array of **2,589 active funds** with `fonKodu` and `fonUnvan`.
+- **Response:** Array of **2,589 searchable/public fund entries observed on 2026-08-27** with `fonKodu` and `fonUnvan`.
 
 ---
 
@@ -101,7 +101,7 @@ All probes executed using ordinary Python `urllib` / `curl` with transparent Use
 - **Platform Inception (>5Y):** Deprecated claim of `>=10Y` directly via standard public API is refuted; calls with `periyod > 60` fail with system error. Deeper historical bootstrap requires Phase 13 archive imports.
 - **Bulk vs Single Fund Semantics:**
   - `fonFiyatBilgiGetir` requires `fonKodu` (single fund per request).
-  - `fonUnvanAra` provides the master list of 2,589 fund codes.
+  - `fonUnvanAra` provides the master list of 2,589 searchable/public fund entries observed on 2026-08-27.
   - Daily incremental synchronization requires looping over the active portfolio fund universe.
 
 ---
@@ -141,7 +141,7 @@ All probes executed using ordinary Python `urllib` / `curl` with transparent Use
 ## 9. SourceTier Classification
 
 - **Recommended SourceTier:** `SourceTier.TIER_2_EXCHANGE` (Takasbank operates central clearing/settlement infrastructure and the official TEFAS fund distribution platform under SPK authority).
-- **Provider Access Status:** `GREEN_PUBLIC_API` (Direct, unattended JSON access verified).
+- **Provider Access Status:** `ProviderAccessStatus.YELLOW` (Official public web surface without developer SLA / quota endpoint).
 
 ---
 
@@ -149,13 +149,14 @@ All probes executed using ordinary Python `urllib` / `curl` with transparent Use
 
 ### Decision: **`GO_PUBLIC_LOW_FREQUENCY`**
 
-**Phase 11B Implementation Plan:**
-1. **Module:** `backend/engine/private/providers/tefas_eod.py`.
-2. **Endpoints Used:**
+**Phase 11B Implemented Scope:**
+1. **Module:** `backend/engine/private/providers/tefas_eod.py` (`TefasFundPriceProvider`).
+2. **Endpoint Implemented:**
    - `https://www.tefas.gov.tr/api/funds/fonFiyatBilgiGetir` (Historical and rolling 5-year daily prices).
-   - `https://www.tefas.gov.tr/api/funds/fonBilgiGetir` (Current valuation, AUM, investor count, outstanding units).
-   - `https://www.tefas.gov.tr/api/funds/fonUnvanAra` (Universe enumeration).
-3. **Invariants:**
+3. **Verified but DEFERRED Endpoints (Future Phases):**
+   - `https://www.tefas.gov.tr/api/funds/fonBilgiGetir` (Current valuation snapshot, AUM, investor count, outstanding units).
+   - `https://www.tefas.gov.tr/api/funds/fonUnvanAra` (Universe enumeration & discovery).
+4. **Invariants:**
    - Zero anti-bot evasion dependencies (pure Python standard library / existing `httpx`).
    - Strict `Decimal` parsing for prices and totals (no floats).
    - Snapshot immutability with SHA-256 `payload_hash` and UTC timezone-aware `retrieved_at`.

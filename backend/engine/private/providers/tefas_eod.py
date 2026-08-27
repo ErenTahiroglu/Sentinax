@@ -85,7 +85,7 @@ TEFAS_ALLOWED_INSTRUMENT_TYPES: Set[InstrumentType] = {
 def _parse_finite_decimal(value: Any) -> Optional[Decimal]:
     """
     Parses a string or integer value into an exact finite Decimal.
-    STRICT: Rejects Python float inputs to prevent loss-of-precision contamination.
+    STRICT: Rejects Python float inputs and comma-formatted strings to prevent loss-of-precision or misinterpretation.
     """
     if value is None:
         return None
@@ -96,8 +96,8 @@ def _parse_finite_decimal(value: Any) -> Optional[Decimal]:
     if isinstance(value, int):
         return Decimal(value)
     if isinstance(value, str):
-        val_str = value.strip().replace(",", "")
-        if not val_str or val_str.lower() in ("none", "null", "nan", "inf", "-inf", "infinity", "-infinity"):
+        val_str = value.strip()
+        if not val_str or "," in val_str or val_str.lower() in ("none", "null", "nan", "inf", "-inf", "infinity", "-infinity"):
             return None
         try:
             d = Decimal(val_str)
@@ -257,12 +257,15 @@ class TefasFundPriceProvider(DataProviderContract):
         # 3. Observation Parsing & Deduplication
         observations: List[TefasFundPriceObservation] = []
         seen_observations_by_date: Dict[date, Decimal] = {}
+        source_row_count = len(result_list)
+        malformed_row_count = 0
 
         for idx, row in enumerate(result_list):
             row_diags: List[str] = []
             status = TefasObservationStatus.VALID
 
             if not isinstance(row, dict):
+                malformed_row_count += 1
                 diagnostics.append(f"MALFORMED_ROW: Row {idx} is not an object: {row}.")
                 continue
 
@@ -404,6 +407,8 @@ class TefasFundPriceProvider(DataProviderContract):
             instrument_id=canonical_instrument_id,
             period_months=period_months,
             endpoint="FUND_PRICE_HISTORY",
+            source_row_count=source_row_count,
+            malformed_row_count=malformed_row_count,
             trade_date_range=trade_date_range,
             observations=observations,
             diagnostics=diagnostics,
@@ -413,7 +418,7 @@ class TefasFundPriceProvider(DataProviderContract):
     # DataProviderContract Execution
     # ─────────────────────────────────────────────────────────────────────────
 
-    async def fetch_data(self, context: FetchContext) -> ProviderResponse:
+    async def fetch(self, context: FetchContext) -> ProviderResponse:
         """
         Executes a low-frequency HTTP POST request to TEFAS for fund price history.
         """
@@ -623,6 +628,8 @@ class TefasFundPriceProvider(DataProviderContract):
                 canonical_instrument_id=canonical_id,
             )
 
+            source_row_count = snapshot.source_row_count
+            malformed_row_count = snapshot.malformed_row_count
             obs_count = len(snapshot.observations)
             valid_count = sum(1 for o in snapshot.observations if o.is_valid)
             invalid_count = sum(1 for o in snapshot.observations if o.status == TefasObservationStatus.INVALID_OBSERVATION)
@@ -630,9 +637,16 @@ class TefasFundPriceProvider(DataProviderContract):
             conflict_count = sum(1 for o in snapshot.observations if o.status == TefasObservationStatus.DUPLICATE_CONFLICT)
             context_mismatch_count = sum(1 for o in snapshot.observations if o.status == TefasObservationStatus.INVALID_SOURCE_CONTEXT)
 
-            if snapshot.is_rate_limited or obs_count == 0 or valid_count == 0:
+            if snapshot.is_rate_limited or valid_count == 0:
                 status = DataStatus.UNAVAILABLE
-            elif valid_count == obs_count and conflict_count == 0:
+            elif (
+                valid_count > 0
+                and malformed_row_count == 0
+                and invalid_count == 0
+                and unresolved_count == 0
+                and conflict_count == 0
+                and context_mismatch_count == 0
+            ):
                 status = DataStatus.COMPLETE
             else:
                 status = DataStatus.PARTIAL
@@ -651,7 +665,9 @@ class TefasFundPriceProvider(DataProviderContract):
                 source_metadata={
                     "payload_hash": snapshot.payload_hash,
                     "is_rate_limited": snapshot.is_rate_limited,
-                    "observation_count": obs_count,
+                    "source_row_count": source_row_count,
+                    "parsed_observation_count": obs_count,
+                    "malformed_row_count": malformed_row_count,
                     "valid_count": valid_count,
                     "invalid_count": invalid_count,
                     "unresolved_count": unresolved_count,

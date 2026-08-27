@@ -99,6 +99,12 @@ class OrchestrationResult:
 
     def to_dict(self) -> Dict[str, Any]:
         """Serializes full result preserving lineage and diagnostic history."""
+        raw_val = self.raw_payload
+        if hasattr(raw_val, "to_dict") and callable(raw_val.to_dict):
+            raw_val = raw_val.to_dict()
+        elif hasattr(raw_val, "to_record_dict") and callable(raw_val.to_record_dict):
+            raw_val = raw_val.to_record_dict()
+
         return {
             "observation_type": self.observation_type,
             "status": self.status.value,
@@ -118,7 +124,7 @@ class OrchestrationResult:
             "warnings": list(self.warnings),
             "missing_inputs": list(self.missing_inputs),
             "provenance": self.provenance.to_dict() if self.provenance else None,
-            "raw_payload": self.raw_payload,
+            "raw_payload": raw_val,
             "source_metadata": self.source_metadata,
         }
 

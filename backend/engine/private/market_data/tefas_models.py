@@ -151,6 +151,8 @@ class TefasFundPriceSnapshot:
     endpoint: str = "FUND_PRICE_HISTORY"
     parser_version: str = "1.0.0"
     is_rate_limited: bool = False
+    source_row_count: int = 0
+    malformed_row_count: int = 0
     trade_date_range: Tuple[Optional[date], Optional[date]] = (None, None)
     observations: List[TefasFundPriceObservation] = field(default_factory=list)
     diagnostics: List[str] = field(default_factory=list)
@@ -176,6 +178,8 @@ class TefasFundPriceSnapshot:
             payload_hash=self.payload_hash,
             response_metadata={
                 "is_rate_limited": self.is_rate_limited,
+                "source_row_count": self.source_row_count,
+                "malformed_row_count": self.malformed_row_count,
                 "observation_count": len(self.observations),
                 "trade_date_range": [
                     self.trade_date_range[0].isoformat() if self.trade_date_range[0] else None,
@@ -196,6 +200,8 @@ class TefasFundPriceSnapshot:
             "endpoint": self.endpoint,
             "parser_version": self.parser_version,
             "is_rate_limited": self.is_rate_limited,
+            "source_row_count": self.source_row_count,
+            "malformed_row_count": self.malformed_row_count,
             "trade_date_range": [
                 self.trade_date_range[0].isoformat() if self.trade_date_range[0] else None,
                 self.trade_date_range[1].isoformat() if self.trade_date_range[1] else None,

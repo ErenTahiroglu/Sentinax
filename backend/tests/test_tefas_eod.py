@@ -9,7 +9,7 @@ Test Coverage:
     3. Specialized TEFAS fund types acceptance (TEFAS_EQUITY, TEFAS_MONEY_MARKET, TEFAS_VARIABLE, TEFAS_BALANCED)
     4. UCITS_FUND rejection before HTTP (UNSUPPORTED_INSTRUMENT_TYPE)
     5. Non-fund AssetClass rejection before HTTP (BIST_STOCK, US_STOCK, etc.)
-    6. Unsupported / crypto instrument type rejection
+    6. Unsupported / commodity instrument type rejection
     7. Dual identity preflight mismatch rejection before HTTP (IDENTITY_MISMATCH)
     8. Unresolved identity / unknown symbol rejection before HTTP (UNRESOLVED_IDENTITY)
     9. Canonical ID only resolution to active TEFAS alias
@@ -31,8 +31,12 @@ Test Coverage:
     25. HTTP 500 upstream server error handling (UPSTREAM_ERROR -> UNAVAILABLE)
     26. Timeout and network exceptions handled without crashing
     27. Raw snapshot and normalized records serialization (SHA-256, UTC, TIER_2_EXCHANGE, YELLOW)
-    28. Defensive float rejection at helper parser boundary
+    28. Defensive float & comma string rejection at helper parser boundary
     29. Provider contract methods (normalize, validate, provenance) verification
+    30. Malformed non-dict row aggregate fail-closed accounting (yields PARTIAL status)
+    31. All malformed non-dict rows yields UNAVAILABLE status
+    32. DataProviderContract protocol satisfaction and fetch() execution
+    33. ProviderOrchestrator integration with TefasFundPriceProvider fallback chain
 
 Zero external network calls (pytest-socket enforced).
 """
@@ -69,7 +73,17 @@ from backend.engine.private.market_data.tefas_models import (
     TefasFundPriceSnapshot,
     TefasObservationStatus,
 )
-from backend.engine.private.provider_contract import FetchContext
+from backend.engine.private.orchestrator import (
+    OrchestrationResult,
+    ProviderOrchestrator,
+)
+from backend.engine.private.policy import SourcePolicy
+from backend.engine.private.provider_contract import (
+    DataProviderContract,
+    FetchContext,
+    ProviderProvenance,
+    ProviderResponse,
+)
 from backend.engine.private.providers.tefas_eod import (
     TEFAS_ALLOWED_INSTRUMENT_TYPES,
     TEFAS_BASE_URL,
@@ -371,7 +385,7 @@ async def test_04_ucits_fund_rejected_before_http(monkeypatch):
         effective_date=date(2026, 8, 27),
     )
 
-    resp = await provider.fetch_data(context)
+    resp = await provider.fetch(context)
     assert http_called is False
     assert resp.status == DataStatus.UNAVAILABLE
     assert any("UNSUPPORTED_INSTRUMENT_TYPE" in w for w in resp.warnings)
@@ -399,7 +413,7 @@ async def test_05_non_fund_rejected_before_http(monkeypatch):
         effective_date=date(2026, 8, 27),
     )
 
-    resp = await provider.fetch_data(context)
+    resp = await provider.fetch(context)
     assert http_called is False
     assert resp.status == DataStatus.UNAVAILABLE
     assert any("UNSUPPORTED_INSTRUMENT_TYPE" in w for w in resp.warnings)
@@ -445,7 +459,7 @@ async def test_06_commodity_instrument_type_rejected_before_http(monkeypatch):
         effective_date=date(2026, 8, 27),
     )
 
-    resp = await provider.fetch_data(context)
+    resp = await provider.fetch(context)
     assert http_called is False
     assert resp.status == DataStatus.UNAVAILABLE
     assert any("UNSUPPORTED_INSTRUMENT_TYPE" in w for w in resp.warnings)
@@ -474,7 +488,7 @@ async def test_07_dual_identity_preflight_mismatch_fails(monkeypatch):
         effective_date=date(2026, 8, 27),
     )
 
-    resp = await provider.fetch_data(context)
+    resp = await provider.fetch(context)
     assert http_called is False
     assert resp.status == DataStatus.UNAVAILABLE
     assert any("IDENTITY_MISMATCH" in w for w in resp.warnings)
@@ -500,7 +514,7 @@ async def test_08_symbol_only_unresolved_fails(monkeypatch):
         effective_date=date(2026, 8, 27),
     )
 
-    resp = await provider.fetch_data(context)
+    resp = await provider.fetch(context)
     assert http_called is False
     assert resp.status == DataStatus.UNAVAILABLE
     assert any("UNRESOLVED_IDENTITY" in w for w in resp.warnings)
@@ -537,7 +551,7 @@ async def test_09_canonical_id_only_resolves_symbol(monkeypatch):
         request_parameters={"period_months": 1},
     )
 
-    resp = await provider.fetch_data(context)
+    resp = await provider.fetch(context)
     assert resp.status == DataStatus.COMPLETE
     assert requested_body == {"fonKodu": "MAC", "dil": "TR", "periyod": 1}
     assert resp.canonical_instrument_id == mac_inst.id
@@ -649,7 +663,7 @@ async def test_13_period_valid_values(monkeypatch):
             request_parameters={"period_months": p},
         )
 
-        resp = await provider.fetch_data(context)
+        resp = await provider.fetch(context)
         assert resp.status == DataStatus.COMPLETE
         assert requested_period == p
 
@@ -678,7 +692,7 @@ async def test_14_period_invalid_values_rejected(monkeypatch):
             request_parameters={"period_months": invalid_p},
         )
 
-        resp = await provider.fetch_data(context)
+        resp = await provider.fetch(context)
         assert http_called is False
         assert resp.status == DataStatus.UNAVAILABLE
         assert any("INVALID_PERIOD" in w for w in resp.warnings)
@@ -768,7 +782,7 @@ async def test_19_mixed_valid_and_invalid_rows_yields_partial(monkeypatch):
         effective_date=date(2026, 8, 27),
     )
 
-    resp = await provider.fetch_data(context)
+    resp = await provider.fetch(context)
     assert resp.status == DataStatus.PARTIAL
     assert resp.source_metadata["valid_count"] == 1
     assert resp.source_metadata["invalid_count"] == 1
@@ -801,7 +815,7 @@ async def test_20_all_invalid_rows_yields_unavailable(monkeypatch):
         effective_date=date(2026, 8, 27),
     )
 
-    resp = await provider.fetch_data(context)
+    resp = await provider.fetch(context)
     assert resp.status == DataStatus.UNAVAILABLE
 
 
@@ -865,7 +879,7 @@ async def test_23_http_429_rate_limited(monkeypatch):
         effective_date=date(2026, 8, 27),
     )
 
-    resp = await provider.fetch_data(context)
+    resp = await provider.fetch(context)
     assert resp.status == DataStatus.UNAVAILABLE
     assert any("RATE_LIMITED" in w for w in resp.warnings)
     assert resp.source_metadata.get("is_rate_limited") is True
@@ -890,7 +904,7 @@ async def test_24_http_403_access_blocked(monkeypatch):
         effective_date=date(2026, 8, 27),
     )
 
-    resp = await provider.fetch_data(context)
+    resp = await provider.fetch(context)
     assert resp.status == DataStatus.UNAVAILABLE
     assert any("ACCESS_BLOCKED" in w for w in resp.warnings)
 
@@ -914,7 +928,7 @@ async def test_25_http_500_upstream_error(monkeypatch):
         effective_date=date(2026, 8, 27),
     )
 
-    resp = await provider.fetch_data(context)
+    resp = await provider.fetch(context)
     assert resp.status == DataStatus.UNAVAILABLE
     assert any("UPSTREAM_ERROR" in w for w in resp.warnings)
 
@@ -938,7 +952,7 @@ async def test_26_timeout_and_network_error_handled(monkeypatch):
         effective_date=date(2026, 8, 27),
     )
 
-    resp = await provider.fetch_data(context)
+    resp = await provider.fetch(context)
     assert resp.status == DataStatus.UNAVAILABLE
     assert any("TIMEOUT" in w for w in resp.warnings)
 
@@ -975,6 +989,8 @@ def test_27_raw_snapshot_and_normalized_records_serialization():
     assert raw_record.http_status == 200
     assert raw_record.content_type == "application/json"
     assert raw_record.payload_hash == snapshot.payload_hash
+    assert raw_record.response_metadata["source_row_count"] == 2
+    assert raw_record.response_metadata["malformed_row_count"] == 0
     assert raw_record.response_metadata["observation_count"] == 2
     assert raw_record.response_metadata["trade_date_range"] == ["2026-08-25", "2026-08-26"]
 
@@ -996,9 +1012,14 @@ def test_27_raw_snapshot_and_normalized_records_serialization():
 
 
 def test_28_defensive_float_rejection():
-    """Verify _parse_finite_decimal strictly rejects Python floats."""
+    """Verify _parse_finite_decimal strictly rejects Python floats and comma-formatted strings."""
+    # Strict float rejection
     assert _parse_finite_decimal(0.76165) is None
     assert _parse_finite_decimal(1.0) is None
+    # Strict comma string rejection
+    assert _parse_finite_decimal("0,76165") is None
+    assert _parse_finite_decimal("1,000.50") is None
+    # Valid canonical strings and objects
     assert _parse_finite_decimal(Decimal("0.76165")) == Decimal("0.76165")
     assert _parse_finite_decimal("0.76165") == Decimal("0.76165")
     assert _parse_finite_decimal(10) == Decimal("10")
@@ -1032,7 +1053,6 @@ def test_29_provider_contract_methods():
 
     # Provenance
     retrieved_at = datetime.now(timezone.utc)
-    from backend.engine.private.provider_contract import ProviderResponse
     mock_resp = ProviderResponse(
         provider_name="TEFAS",
         source_quality=SourceTier.TIER_2_EXCHANGE,
@@ -1049,3 +1069,154 @@ def test_29_provider_contract_methods():
     assert prov.provider_name == "TEFAS"
     assert prov.endpoint == "FUND_PRICE_HISTORY"
     assert prov.source_quality == SourceTier.TIER_2_EXCHANGE
+
+
+@pytest.mark.asyncio
+async def test_30_malformed_non_dict_row_yields_partial_status(monkeypatch):
+    """Verify payload with valid row and malformed non-dict row yields PARTIAL status and counts malformed rows."""
+    resolver, instruments = create_test_resolver()
+    mac_inst = instruments["MAC"]
+
+    raw_payload = {
+        "errorCode": None,
+        "errorMessage": None,
+        "resultList": [
+            {"fonKodu": "MAC", "tarih": "2026-08-25", "fiyat": 0.76165},
+            "CORRUPT_NON_DICT_ROW",
+        ]
+    }
+    def handler(request):
+        return httpx.Response(200, json=raw_payload)
+
+    monkeypatch.setattr("backend.engine.private.providers.tefas_eod.get_http_client", lambda: make_mock_client(handler))
+
+    provider = TefasFundPriceProvider(resolver=resolver)
+    context = FetchContext(
+        observation_type="TEFAS_FUND_PRICE",
+        canonical_instrument_id=mac_inst.id,
+        provider_symbol="MAC",
+        effective_date=date(2026, 8, 27),
+    )
+
+    resp = await provider.fetch(context)
+    assert resp.status == DataStatus.PARTIAL
+    assert resp.source_metadata["source_row_count"] == 2
+    assert resp.source_metadata["parsed_observation_count"] == 1
+    assert resp.source_metadata["malformed_row_count"] == 1
+    assert resp.source_metadata["valid_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_31_all_malformed_non_dict_rows_yields_unavailable_status(monkeypatch):
+    """Verify payload with only malformed non-dict rows yields UNAVAILABLE status."""
+    resolver, instruments = create_test_resolver()
+    mac_inst = instruments["MAC"]
+
+    raw_payload = {
+        "errorCode": None,
+        "errorMessage": None,
+        "resultList": [
+            "CORRUPT_ROW_1",
+            "CORRUPT_ROW_2",
+        ]
+    }
+    def handler(request):
+        return httpx.Response(200, json=raw_payload)
+
+    monkeypatch.setattr("backend.engine.private.providers.tefas_eod.get_http_client", lambda: make_mock_client(handler))
+
+    provider = TefasFundPriceProvider(resolver=resolver)
+    context = FetchContext(
+        observation_type="TEFAS_FUND_PRICE",
+        canonical_instrument_id=mac_inst.id,
+        provider_symbol="MAC",
+        effective_date=date(2026, 8, 27),
+    )
+
+    resp = await provider.fetch(context)
+    assert resp.status == DataStatus.UNAVAILABLE
+    assert resp.source_metadata["source_row_count"] == 2
+    assert resp.source_metadata["malformed_row_count"] == 2
+    assert resp.source_metadata["valid_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_32_data_provider_contract_compliance(monkeypatch):
+    """Verify TefasFundPriceProvider satisfies DataProviderContract protocol and fetch() returns valid ProviderResponse."""
+    resolver, instruments = create_test_resolver()
+    mac_inst = instruments["MAC"]
+
+    raw_payload = {
+        "errorCode": None,
+        "errorMessage": None,
+        "resultList": [
+            {"fonKodu": "MAC", "tarih": "2026-08-25", "fiyat": 0.76165}
+        ]
+    }
+    def handler(request):
+        return httpx.Response(200, json=raw_payload)
+
+    monkeypatch.setattr("backend.engine.private.providers.tefas_eod.get_http_client", lambda: make_mock_client(handler))
+
+    provider: DataProviderContract = TefasFundPriceProvider(resolver=resolver)
+    assert isinstance(provider, DataProviderContract)
+
+    context = FetchContext(
+        observation_type="TEFAS_FUND_PRICE",
+        canonical_instrument_id=mac_inst.id,
+        provider_symbol="MAC",
+        effective_date=date(2026, 8, 27),
+        request_parameters={"period_months": 1},
+    )
+
+    resp: ProviderResponse = await provider.fetch(context)
+    assert isinstance(resp, ProviderResponse)
+    assert resp.status == DataStatus.COMPLETE
+    assert resp.provider_name == "TEFAS"
+    assert resp.source_quality == SourceTier.TIER_2_EXCHANGE
+    assert resp.source_metadata["valid_count"] == 1
+    assert resp.source_metadata["malformed_row_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_33_orchestrator_integration(monkeypatch):
+    """Verify ProviderOrchestrator registers TefasFundPriceProvider and successfully executes request via fetch()."""
+    resolver, instruments = create_test_resolver()
+    mac_inst = instruments["MAC"]
+
+    raw_payload = {
+        "errorCode": None,
+        "errorMessage": None,
+        "resultList": [
+            {"fonKodu": "MAC", "tarih": "2026-08-25", "fiyat": 0.76165}
+        ]
+    }
+    def handler(request):
+        return httpx.Response(200, json=raw_payload)
+
+    monkeypatch.setattr("backend.engine.private.providers.tefas_eod.get_http_client", lambda: make_mock_client(handler))
+
+    orch = ProviderOrchestrator()
+    provider = TefasFundPriceProvider(resolver=resolver)
+    orch.register_provider(provider)
+
+    context = FetchContext(
+        observation_type="TEFAS_FUND_PRICE",
+        canonical_instrument_id=mac_inst.id,
+        provider_symbol="MAC",
+        effective_date=date(2026, 8, 27),
+        request_parameters={"period_months": 1, "resolver": resolver},
+    )
+    policy = SourcePolicy(
+        observation_type="TEFAS_FUND_PRICE",
+        ordered_provider_names=["TEFAS"],
+        required_fields=["provider"],
+        optional_fields=["provider_symbol"],
+    )
+
+    result: OrchestrationResult = await orch.execute(context, policy)
+    assert isinstance(result, OrchestrationResult)
+    assert result.status == DataStatus.COMPLETE
+    assert result.selected_provider == "TEFAS"
+    assert result.canonical_instrument_id == mac_inst.id
+    assert result.fallback_used is False
