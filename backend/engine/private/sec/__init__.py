@@ -106,6 +106,13 @@ from backend.engine.private.sec.fiscal_series import (
     _check_standalone_q2_interval,
     _check_standalone_q3_interval,
 )
+from backend.engine.private.sec.quarter_derivation import (
+    SECQuarterDerivationStatus,
+    SECQuarterDerivationResult,
+    SECQuarterDeriver,
+    _subtract_decimal_exact,
+    _compute_derivation_key,
+)
 
 
 __all__ = [
@@ -188,6 +195,11 @@ __all__ = [
     "_effective_inclusive_duration",
     "_check_standalone_q2_interval",
     "_check_standalone_q3_interval",
+    "SECQuarterDerivationStatus",
+    "SECQuarterDerivationResult",
+    "SECQuarterDeriver",
+    "_subtract_decimal_exact",
+    "_compute_derivation_key",
 ]
 
 

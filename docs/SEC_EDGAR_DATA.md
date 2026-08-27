@@ -360,6 +360,46 @@ Derived Standalone Quarter Fact
 7. **Strict Fiscal Period Contradiction Fail-Closed**:
    - Proven Q1 dates with `fp != "Q1"`, proven Q2 dates with `fp != "Q2"`, or proven Q3 dates with `fp != "Q3"` fail closed as `PERIOD_IDENTITY_UNRESOLVED`.
 
+---
+
+## 13. Phase 8B.3B — Exact Standalone Quarter Arithmetic
+
+### 13.1 Pipeline Integration
+Derivation arithmetic executes strictly **after** Phase 8B.3A eligibility verification:
+`Raw Fact` $\to$ `Canonical Candidate` $\to$ `Economic Period` $\to$ `PIT Winner` $\to$ `Fiscal Series` $\to$ `Derivation Eligibility` $\to$ `Standalone Quarter Derived Fact`.
+
+Arithmetic is executed ONLY when `eligibility.status == SECDerivationEligibilityStatus.ELIGIBLE`.
+
+### 13.2 Supported Derivations
+- **Q2 Standalone**: $Q2 = Q2\text{ YTD} - Q1$
+- **Q3 Standalone**: $Q3 = Q3\text{ YTD} - Q2\text{ YTD}$
+- **Q1**: Available as an original fact anchor only; no subtraction.
+- **Q4, TTM, FY**: Explicitly unsupported (`UNSUPPORTED_PERIOD`).
+
+### 13.3 Exact Decimal Arithmetic Contract
+1. **Zero Float Usage**: Absolutely no `float()` conversion. Operands and results are pure `Decimal`.
+2. **Local Context Precision**: Uses `decimal.localcontext()` with dynamically computed precision ($\ge 100$ digits) to prevent precision loss across $>28$-digit operands.
+3. **No Rounding or Cents Normalization**: Exact mathematical difference preserved without scale truncation.
+4. **Non-Finite Defense**: `NaN`, `+Infinity`, `-Infinity` fail closed as `NON_FINITE_OPERAND`.
+
+### 13.4 Derived Fact Semantics vs SEC-Reported
+1. **Derived Facts**: `is_derived = True`, `is_sec_reported = False`. Basis clearly labels fact as Sentinax-derived from SEC-reported cumulative facts.
+2. **Original Facts (`ORIGINAL_AVAILABLE`)**: `is_derived = False`, `is_sec_reported = True`, `derived_value = None`. The original fact point is preserved without generating synthetic duplicate numbers.
+3. **Lineage Preservation**: No single fake filing ID or accession is fabricated. Both `left` and `right` operand lineages (accessions, filing IDs, raw fact IDs, concepts) are preserved independently.
+
+### 13.5 Derived Interval Boundaries
+- `derived_start_date = right_operand.end_date + 1 day`
+- `derived_end_date = left_operand.end_date`
+- `derived_duration_days = (derived_end_date - derived_start_date).days + 1`
+- Must strictly fall within centralized bounds `QUARTER_MIN_DAYS (70) <= duration <= QUARTER_MAX_DAYS (115)`.
+
+### 13.6 Deterministic Derivation Key
+Derived facts generate a deterministic SHA-256 `derivation_key` over CIK, canonical concept, unit, target quarter, date interval, resolution mode, as_of timestamp, snapshot hash, operand raw fact IDs, and status.
+
+### 13.7 Excluded Metrics
+Phase 8B.3B does not perform FCF, EBITDA, margin, growth, ROE/ROIC, valuation, or FX conversions.
+
+
 
 
 
