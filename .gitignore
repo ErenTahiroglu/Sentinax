@@ -59,3 +59,7 @@ brand_assets/compressed/
 !.env.example
 .vscode/
 Thumbs.db
+
+# Antigravity Dynamic Memory
+.antigravity/memory.json
+.graphify/cache/
