@@ -44,11 +44,13 @@ BIST hisselerini kalite, moat gücü, bilanço ve değerleme metriklerine göre 
 
 Kullanıcının kendi portföyü üzerinde kişiselleştirilmiş yatırım karar analizi.
 
-**Temel prensipler:**
-- Eksik veri ≠ sıfır — `DataStatus.UNAVAILABLE` değeri `None`'dır, asla 0 değil
-- `PARTIAL` analiz geçerli ve yayınlanabilir bir sonuçtur
-- Veri uydurma yasaktır
-- Her veri noktası için kaynak + tarih izlenebilirliği (`ProviderProvenance`)
+**Temel prensipler ve Özellikler:**
+- **Point-in-Time (PIT) Çözümleme Katmanı:** BIST EOD, Global EOD (Tiingo) ve TEFAS EOD fon fiyatlarını/metriklerini deterministik, lookahead hatası barındırmayan ve UUID-bağımsız bir key yapısı ile çözümler.
+- **Güvenlik Kapıları (Fail-Closed):** Multi-pay-group/multi-currency riski taşıyan fonları ve TRY dışı TEFAS pay sınıflarını otomatik olarak devre dışı bırakır.
+- **Eksik veri ≠ sıfır:** `DataStatus.UNAVAILABLE` değeri `None`'dır, asla 0 değil.
+- **Kısmi Durum Desteği:** `PARTIAL` analiz geçerli ve yayınlanabilir bir sonuçtur.
+- **Veri uydurma yasaktır:** Geçmiş fiyat veya AUM verileri asla interpolasyonla veya uydurma tarihle üretilemez.
+- **Veri İzlenebilirliği:** Her veri noktası için kaynak + tarih izlenebilirliği (`ProviderProvenance`).
 
 ---
 
