@@ -28,6 +28,9 @@ from backend.engine.private.domain import (
 )
 from backend.engine.private.market_data.global_models import GlobalEODObservation
 from backend.engine.private.market_data.tefas_models import TefasFundPriceObservation
+from backend.engine.private.market_data.tefas_metrics_models import (
+    TefasFundCurrentMetricsObservation,
+)
 from backend.engine.private.precious_metals.constants import (
     PreciousMetalPriceType,
     PreciousMetalType,
@@ -107,6 +110,21 @@ class TefasFundPriceQueryKey:
 
 
 @dataclass(frozen=True)
+class TefasFundCurrentMetricsQueryKey:
+    """
+    Query key for resolving a Point-in-Time TEFAS Turkish Investment Fund current metrics observation (AUM, units, investors).
+    Authority is canonical instrument_id; provider is fixed to 'TEFAS'; provider_symbol is diagnostic only.
+    No trade_date or effective_date because current metrics have no source economic date.
+    """
+    instrument_id: UUID
+    provider_symbol: Optional[str] = None
+
+    def to_string(self) -> str:
+        sym = f"({self.provider_symbol})" if self.provider_symbol else ""
+        return f"TEFAS_FUND_CURRENT_METRICS:{self.instrument_id}{sym}@CURRENT"
+
+
+@dataclass(frozen=True)
 class PreciousMetalSemanticKey:
     """
     Fully dimensioned semantic query key for resolving a Precious Metal market observation.
@@ -181,6 +199,7 @@ class MarketObservationResolutionResult:
             PreciousMetalMarketObservation,
             GlobalEODObservation,
             TefasFundPriceObservation,
+            TefasFundCurrentMetricsObservation,
         ]
     ] = None
     selected_observation_id: Optional[UUID] = None

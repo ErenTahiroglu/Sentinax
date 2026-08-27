@@ -83,14 +83,23 @@ class TefasFundCurrentMetricsObservation:
 
     def to_normalized_observation_record(self) -> NormalizedObservationRecord:
         """Converts to canonical PIT storage model."""
+        is_investor_count_valid = (
+            self.investor_count is not None
+            and isinstance(self.investor_count, int)
+            and not isinstance(self.investor_count, bool)
+            and self.investor_count >= 0
+        )
+        is_units_valid = False
+        if self.outstanding_units is not None and not isinstance(self.outstanding_units, bool):
+            try:
+                units_dec = Decimal(self.outstanding_units)
+                is_units_valid = units_dec.is_finite() and units_dec >= Decimal("0")
+            except Exception:
+                is_units_valid = False
+
         if not self.is_valid:
             data_status = DataStatus.UNAVAILABLE
-        elif (
-            self.investor_count is not None
-            and self.outstanding_units is not None
-            and self.outstanding_units.is_finite()
-            and self.outstanding_units >= Decimal("0")
-        ):
+        elif is_investor_count_valid and is_units_valid:
             data_status = DataStatus.COMPLETE
         else:
             data_status = DataStatus.PARTIAL
