@@ -62,6 +62,14 @@ class TiingoCapability(Enum):
     LONG_HISTORY = "long_history"
 
 
+class MarketstackCapability(Enum):
+    """Capability indicators for Marketstack data access."""
+    FREE_TIER = "free_tier"
+    ROLLING_1Y_HISTORY = "rolling_1y_history"
+    SPLITS_AND_DIVIDENDS = "splits_and_dividends"
+    EOD_PRICES = "eod_prices"
+
+
 @dataclass
 class GlobalEODObservation:
     """
@@ -195,6 +203,7 @@ class GlobalEODSnapshot:
     http_status: int
     payload_hash: str
     raw_payload: str
+    endpoint: Optional[str] = None
     output_size: Optional[str] = "compact"
     start_date: Optional[date] = None
     end_date: Optional[date] = None
@@ -212,14 +221,25 @@ class GlobalEODSnapshot:
         if self.output_size:
             req_params["outputsize"] = self.output_size
         if self.start_date:
-            req_params["startDate"] = self.start_date.isoformat()
+            req_params["startDate" if self.provider != "MARKETSTACK" else "date_from"] = self.start_date.isoformat()
         if self.end_date:
-            req_params["endDate"] = self.end_date.isoformat()
+            req_params["endDate" if self.provider != "MARKETSTACK" else "date_to"] = self.end_date.isoformat()
+
+        if self.endpoint:
+            ep = self.endpoint
+        elif self.provider == "ALPHA_VANTAGE":
+            ep = "TIME_SERIES_DAILY"
+        elif self.provider == "TIINGO":
+            ep = "DAILY_PRICES"
+        elif self.provider == "MARKETSTACK":
+            ep = "EOD"
+        else:
+            ep = "EOD"
 
         return RawProviderSnapshotRecord(
             id=self.id,
             provider=self.provider,
-            endpoint="TIME_SERIES_DAILY" if self.provider == "ALPHA_VANTAGE" else "DAILY_PRICES",
+            endpoint=ep,
             request_params=req_params,
             retrieved_at=self.retrieved_at,
             http_status=self.http_status,

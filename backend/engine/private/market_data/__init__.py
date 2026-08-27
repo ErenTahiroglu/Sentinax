@@ -9,6 +9,7 @@ from backend.engine.private.market_data.global_models import (
     GlobalEODObservation,
     GlobalEODSnapshot,
     GlobalObservationStatus,
+    MarketstackCapability,
     TiingoCapability,
 )
 from backend.engine.private.market_data.models import (
@@ -31,6 +32,7 @@ __all__ = [
     "PointInTimeMarketDataResolver",
     "GlobalObservationStatus",
     "AlphaVantageCapability",
+    "MarketstackCapability",
     "TiingoCapability",
     "GlobalEODObservation",
     "GlobalEODSnapshot",
