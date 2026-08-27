@@ -68,14 +68,17 @@ TEFAS strictly enforces valid values for `periyod` representing duration in mont
    - Non-TEFAS instruments (`UCITS_FUND`, `BIST_STOCK`, `US_STOCK`, `GOLD`, `CRYPTO`) are rejected before HTTP dispatch with `UNSUPPORTED_INSTRUMENT_TYPE`.
 2. **Dual Identity Preflight**:
    - If both `canonical_instrument_id` and `provider_symbol` are provided, they must resolve to each other under `InstrumentResolverService`. Mismatches fail before HTTP with `IDENTITY_MISMATCH`.
-3. **Currency Authority**:
-   - Currency is sourced strictly from `InstrumentRecord.currency` in the Instrument Master (e.g. `TRY`, `USD`, `EUR`). TEFAS payload never overrides currency authority.
+3. **Currency Authority & TRY Capability Boundary**:
+   - Currency is sourced strictly from `InstrumentRecord.currency` in the Instrument Master.
+   - **MVP Policy (`PUBLIC_TEFAS_PRICE_SUPPORTED_CURRENCY = Currency.TRY ONLY`):** Because the public TEFAS JSON API exposes only undiscriminated reference prices without pay-group identifiers, Sentinax supports public TEFAS price authority **only for canonical TRY instruments**.
+   - Any non-TRY canonical instrument (e.g. `USD`, `EUR`, `GBP`) fails closed before HTTP dispatch with `DataStatus.UNAVAILABLE` and warning `AMBIGUOUS_PAY_GROUP_CURRENCY`.
+   - **No Synthetic FX Pricing:** Sentinax strictly avoids synthesizing foreign share-class prices via exchange rate conversion (`TRY price / FX rate`) in the absence of explicit dated share-class authority.
 4. **Metadata Immutability**:
    - TEFAS `fonUnvan` title is captured as snapshot metadata only and **never mutates or controls** canonical master instrument identity.
-5. **Multi-Pay-Group / Share-Class Ambiguity Warning**:
-   - Certain TEFAS-traded funds (e.g. `TPJ`) feature multiple pay groups (e.g. A Group TRY vs B Group USD) with distinct unit prices.
-   - The public TEFAS API exposes only a single un-discriminated price row per date (typically the primary TRY reference price).
-   - `TefasFundPriceProvider` is valid strictly for unambiguous single-currency funds; multi-pay-group funds must not be mapped to foreign-currency share classes under the un-discriminated `TEFAS:<CODE>` alias.
+5. **Multi-Pay-Group / Share-Class Fail-Closed Gate**:
+   - Multi-pay-group funds (e.g. `TPJ` with A Group TRY and B Group USD) return only a single reference price per date on public TEFAS endpoints.
+   - Canonical TRY instruments representing the primary TRY reference class remain supported.
+   - Canonical non-TRY share-class instruments fail closed until a dedicated share-class identity framework is implemented.
 
 ---
 

@@ -37,6 +37,10 @@ Test Coverage:
     31. All malformed non-dict rows yields UNAVAILABLE status
     32. DataProviderContract protocol satisfaction and fetch() execution
     33. ProviderOrchestrator integration with TefasFundPriceProvider fallback chain
+    34. Non-TRY currency rejection before HTTP for USD canonical instruments (AMBIGUOUS_PAY_GROUP_CURRENCY)
+    35. Non-TRY currency rejection before HTTP for EUR canonical instruments (AMBIGUOUS_PAY_GROUP_CURRENCY)
+    36. Dual identity mismatch precedence over currency checks (IDENTITY_MISMATCH before currency)
+    37. Multi-class control TPJ USD fixture fails closed across parser and fetch with zero valid observations
 
 Zero external network calls (pytest-socket enforced).
 """
@@ -619,16 +623,26 @@ def test_11_title_does_not_mutate_or_control_canonical_identity():
 
 
 def test_12_currency_authority_from_master():
-    """Verify currency is sourced from Instrument Master (preserves EUR, rejects missing currency)."""
+    """Verify currency authority from Master: TRY is valid, non-TRY is rejected as AMBIGUOUS_PAY_GROUP_CURRENCY, missing is rejected."""
     resolver, _ = create_test_resolver()
     retrieved_at = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
 
-    # 1. EUR Fund
+    # 1. TRY Fund -> Valid
+    raw_try = '{"errorCode": null, "errorMessage": null, "resultList": [{"fonKodu": "MAC", "tarih": "2026-08-25", "fiyat": 0.76165}]}'
+    snap_try = TefasFundPriceProvider.parse_daily_prices(raw_try, "MAC", retrieved_at, resolver=resolver)
+    assert snap_try.observations[0].currency == Currency.TRY
+    assert snap_try.observations[0].status == TefasObservationStatus.VALID
+    assert snap_try.observations[0].is_valid is True
+
+    # 2. EUR Fund -> Rejected by parser guard as AMBIGUOUS_PAY_GROUP_CURRENCY
     raw_eur = '{"errorCode": null, "errorMessage": null, "resultList": [{"fonKodu": "EURF", "tarih": "2026-08-25", "fiyat": 10.50}]}'
     snap_eur = TefasFundPriceProvider.parse_daily_prices(raw_eur, "EURF", retrieved_at, resolver=resolver)
     assert snap_eur.observations[0].currency == Currency.EUR
+    assert snap_eur.observations[0].status == TefasObservationStatus.INVALID_SOURCE_CONTEXT
+    assert snap_eur.observations[0].is_valid is False
+    assert any("AMBIGUOUS_PAY_GROUP_CURRENCY" in d for d in snap_eur.observations[0].diagnostics)
 
-    # 2. Missing Currency Fund
+    # 3. Missing Currency Fund
     raw_nocurr = '{"errorCode": null, "errorMessage": null, "resultList": [{"fonKodu": "NOCURR", "tarih": "2026-08-25", "fiyat": 1.00}]}'
     snap_nocurr = TefasFundPriceProvider.parse_daily_prices(raw_nocurr, "NOCURR", retrieved_at, resolver=resolver)
     assert snap_nocurr.observations[0].status == TefasObservationStatus.UNRESOLVED_IDENTITY
@@ -1220,3 +1234,163 @@ async def test_33_orchestrator_integration(monkeypatch):
     assert result.selected_provider == "TEFAS"
     assert result.canonical_instrument_id == mac_inst.id
     assert result.fallback_used is False
+
+
+@pytest.mark.asyncio
+async def test_34_non_try_currency_rejected_before_http_usd(monkeypatch):
+    """Verify canonical instrument with USD currency is rejected before HTTP with AMBIGUOUS_PAY_GROUP_CURRENCY."""
+    resolver = InstrumentResolverService()
+    usd_fund_id = uuid4()
+    usd_fund_inst = InstrumentRecord(
+        id=usd_fund_id,
+        canonical_name="TEB Portfoy Birinci Serbest (Doviz) Fonu B Grubu",
+        asset_class=AssetClass.FUND,
+        instrument_type=InstrumentType.TEFAS_FUND,
+        currency=Currency.USD,
+        mic="TEFA",
+        valid_from=date(2020, 1, 1),
+    )
+    resolver.register_instrument(usd_fund_inst)
+    resolver.register_alias(
+        ProviderAliasRecord(
+            instrument_id=usd_fund_id,
+            provider=TEFAS_PROVIDER_NAME,
+            provider_symbol="TPJ",
+            valid_from=date(2020, 1, 1),
+        )
+    )
+
+    http_called = False
+    def handler(request):
+        nonlocal http_called
+        http_called = True
+        return httpx.Response(200, json={"errorCode": None, "errorMessage": None, "resultList": []})
+
+    monkeypatch.setattr("backend.engine.private.providers.tefas_eod.get_http_client", lambda: make_mock_client(handler))
+
+    provider = TefasFundPriceProvider(resolver=resolver)
+    context = FetchContext(
+        observation_type="TEFAS_FUND_PRICE",
+        canonical_instrument_id=usd_fund_id,
+        provider_symbol="TPJ",
+        effective_date=date(2026, 8, 27),
+        request_parameters={"period_months": 1},
+    )
+
+    resp = await provider.fetch(context)
+    assert http_called is False
+    assert resp.status == DataStatus.UNAVAILABLE
+    assert any("AMBIGUOUS_PAY_GROUP_CURRENCY" in w for w in resp.warnings)
+
+
+@pytest.mark.asyncio
+async def test_35_non_try_currency_rejected_before_http_eur(monkeypatch):
+    """Verify canonical instrument with EUR currency is rejected before HTTP with AMBIGUOUS_PAY_GROUP_CURRENCY."""
+    resolver, instruments = create_test_resolver()
+    eur_inst = instruments["EURF"]
+
+    http_called = False
+    def handler(request):
+        nonlocal http_called
+        http_called = True
+        return httpx.Response(200, json={"errorCode": None, "errorMessage": None, "resultList": []})
+
+    monkeypatch.setattr("backend.engine.private.providers.tefas_eod.get_http_client", lambda: make_mock_client(handler))
+
+    provider = TefasFundPriceProvider(resolver=resolver)
+    context = FetchContext(
+        observation_type="TEFAS_FUND_PRICE",
+        canonical_instrument_id=eur_inst.id,
+        provider_symbol="EURF",
+        effective_date=date(2026, 8, 27),
+        request_parameters={"period_months": 1},
+    )
+
+    resp = await provider.fetch(context)
+    assert http_called is False
+    assert resp.status == DataStatus.UNAVAILABLE
+    assert any("AMBIGUOUS_PAY_GROUP_CURRENCY" in w for w in resp.warnings)
+
+
+@pytest.mark.asyncio
+async def test_36_dual_identity_mismatch_precedence_over_currency(monkeypatch):
+    """Verify dual identity mismatch takes precedence over currency checks."""
+    resolver, instruments = create_test_resolver()
+    mac_inst = instruments["MAC"]
+
+    http_called = False
+    def handler(request):
+        nonlocal http_called
+        http_called = True
+        return httpx.Response(200, json={"errorCode": None, "errorMessage": None, "resultList": []})
+
+    monkeypatch.setattr("backend.engine.private.providers.tefas_eod.get_http_client", lambda: make_mock_client(handler))
+
+    provider = TefasFundPriceProvider(resolver=resolver)
+    # Provided mac_inst.id (MAC) but symbol EURF (which resolves to EURF) -> IDENTITY_MISMATCH
+    context = FetchContext(
+        observation_type="TEFAS_FUND_PRICE",
+        canonical_instrument_id=mac_inst.id,
+        provider_symbol="EURF",
+        effective_date=date(2026, 8, 27),
+    )
+
+    resp = await provider.fetch(context)
+    assert http_called is False
+    assert resp.status == DataStatus.UNAVAILABLE
+    assert any("IDENTITY_MISMATCH" in w for w in resp.warnings)
+    # IDENTITY_MISMATCH occurred before currency check
+    assert not any("AMBIGUOUS_PAY_GROUP_CURRENCY" in w for w in resp.warnings)
+
+
+def test_37_multi_class_control_tpj_usd_fixture_fails_closed():
+    """Verify control TPJ response parsed against canonical USD instrument fails closed with no valid observation."""
+    resolver = InstrumentResolverService()
+    usd_fund_id = uuid4()
+    usd_fund_inst = InstrumentRecord(
+        id=usd_fund_id,
+        canonical_name="TEB Portfoy Birinci Serbest (Doviz) Fonu B Grubu",
+        asset_class=AssetClass.FUND,
+        instrument_type=InstrumentType.TEFAS_FUND,
+        currency=Currency.USD,
+        mic="TEFA",
+        valid_from=date(2020, 1, 1),
+    )
+    resolver.register_instrument(usd_fund_inst)
+    resolver.register_alias(
+        ProviderAliasRecord(
+            instrument_id=usd_fund_id,
+            provider=TEFAS_PROVIDER_NAME,
+            provider_symbol="TPJ",
+            valid_from=date(2020, 1, 1),
+        )
+    )
+
+    retrieved_at = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+    raw_tpj_payload = """
+    {
+      "errorCode": null,
+      "errorMessage": null,
+      "resultList": [
+        {"fonKodu": "TPJ", "tarih": "2026-08-27", "fiyat": 78.788601}
+      ]
+    }
+    """
+    snapshot = TefasFundPriceProvider.parse_daily_prices(
+        raw_tpj_payload,
+        provider_symbol="TPJ",
+        retrieved_at=retrieved_at,
+        resolver=resolver,
+        canonical_instrument_id=usd_fund_id,
+    )
+
+    assert len(snapshot.observations) == 1
+    obs = snapshot.observations[0]
+    # Status is INVALID_SOURCE_CONTEXT, is_valid is False
+    assert obs.status == TefasObservationStatus.INVALID_SOURCE_CONTEXT
+    assert obs.is_valid is False
+    assert obs.currency == Currency.USD
+    assert any("AMBIGUOUS_PAY_GROUP_CURRENCY" in d for d in obs.diagnostics)
+    # Valid trade date range is None, None because 0 valid observations exist
+    assert snapshot.trade_date_range == (None, None)
+

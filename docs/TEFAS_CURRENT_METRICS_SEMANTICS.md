@@ -65,9 +65,9 @@ A diverse sample of funds across distinct asset categories was probed on 2026-08
 | **TPJ** | Serbest (Döviz A/B) | `78.788601` | `29,580,953` | `2,330,641,898.71` | `2,330,641,888.75` | `-9.96` | `0.000000%` |
 
 ### Key Observations:
-1. **Accounting Coherence:** The formula `sonFiyat * payAdet = portBuyukluk` holds universally across all fund types with relative residual error $< 0.000036\%$, which is strictly attributable to standard display precision rounding (`sonFiyat` rounded to 6 decimal places, `portBuyukluk` rounded to 2 decimal places).
-2. **Coherent Reporting Unit Basis:** For every fund returned by TEFAS public API, `portBuyukluk` shares the exact same unit-currency basis as the returned `sonFiyat`.
-3. **Currency Authority:** TEFAS public endpoints report domestic fund prices and AUM on a TRY basis. However, for multi-pay-group funds, this represents only the primary reference class (see Section 6).
+1. **Accounting Coherence:** The formula `sonFiyat * payAdet = portBuyukluk` holds consistently across the empirically sampled funds with relative residual error $< 0.000036\%$, which is strictly attributable to standard display precision rounding (`sonFiyat` rounded to 6 decimal places, `portBuyukluk` rounded to 2 decimal places).
+2. **Coherent Reporting Unit Basis:** Across the empirically sampled funds, `portBuyukluk` shares the exact same unit-currency basis as the returned `sonFiyat`.
+3. **Currency Authority & Capability Boundary:** TEFAS public endpoints report domestic fund prices and AUM on a TRY basis. However, for multi-pay-group funds, this represents only the primary reference class (see Section 6).
 
 ---
 
@@ -127,7 +127,7 @@ When probing `TPJ` on TEFAS public endpoints:
 - `POST /api/funds/fonFiyatBilgiGetir` returns **exactly 1 row per date** with `fiyat = 78.788601`.
 - `POST /api/funds/fonBilgiGetir` returns `sonFiyat = 78.788601`, `payAdet = 29580953`, `portBuyukluk = 2330641898.71`.
 - **Zero pay-group or currency metadata is returned**. The returned price (`78.788601`) corresponds strictly to the **A Group TRY price**.
-- The **B Group USD price is completely absent** from the public TEFAS JSON API.
+- The probed 2026 public endpoints returned one undiscriminated TRY-reference row and did not expose the B-group USD row.
 
 ### C) Identity Collision in Single-Instrument Architecture
 In Sentinax:
@@ -153,12 +153,12 @@ In Sentinax:
 
 ### Recommended Scope for Phase 11D.2:
 - **Module:** `backend/engine/private/providers/tefas_metrics.py`
+- **Currency Capability Scope:** Phase 11D.2 supports canonical `Currency.TRY` instruments only. Non-TRY canonical TEFAS instruments are rejected before HTTP dispatch with `AMBIGUOUS_PAY_GROUP_CURRENCY`.
 - **Normalized Model:** `TefasFundCurrentMetrics` with:
-  - `portfolio_size`: `Decimal` (from `portBuyukluk`)
-  - `portfolio_size_currency`: `Currency` (resolved from `InstrumentRecord`)
+  - `portfolio_size`: `Decimal` (from `portBuyukluk`, in `Currency.TRY`)
+  - `portfolio_size_currency`: `Currency` (`Currency.TRY`)
   - `outstanding_units`: `Decimal` (from `payAdet`)
   - `investor_count`: `int` (from `yatirimciSayi`)
   - `reported_current_unit_price`: `Optional[Decimal]` (diagnostic from `sonFiyat`)
   - `category_name`: `Optional[str]` (raw metadata from `fonKategori`)
 - **Snapshot Model:** `TefasFundMetricsSnapshot` with immutable payload hash and UTC `retrieved_at`.
-- **Preflight Validation:** Reject multi-pay-group ambiguous funds where canonical instrument currency does not match public TEFAS TRY reference price.

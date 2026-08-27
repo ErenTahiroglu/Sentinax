@@ -24,7 +24,8 @@ Hardening Invariants:
     - Title metadata in time-series is CURRENT_METADATA_ONLY and does not control canonical identity.
     - Dual identity preflight: conflicting (canonical_instrument_id, provider_symbol) in FetchContext
       fails before HTTP with IDENTITY_MISMATCH.
-    - Currency is sourced from Instrument Master authority; never hardcoded TRY.
+    - Currency Authority & Scope: public TEFAS price history supports canonical Currency.TRY instruments only;
+      non-TRY canonical currencies fail closed with AMBIGUOUS_PAY_GROUP_CURRENCY before HTTP.
     - Supported period set: strictly {1, 3, 6, 12, 36, 60} months. Unsupported periods fail before HTTP.
     - Deduplication: identical prices on same trade_date deduplicate; differing prices record DUPLICATE_CONFLICT.
 """
@@ -343,6 +344,11 @@ class TefasFundPriceProvider(DataProviderContract):
                         if resolved_currency is None:
                             status = TefasObservationStatus.UNRESOLVED_IDENTITY
                             row_diags.append("MISSING_CURRENCY: Master instrument has no currency defined.")
+                        elif resolved_currency != Currency.TRY:
+                            status = TefasObservationStatus.INVALID_SOURCE_CONTEXT
+                            row_diags.append(
+                                f"AMBIGUOUS_PAY_GROUP_CURRENCY: TEFAS public prices only support TRY canonical instruments; got {resolved_currency.value}."
+                            )
                 else:
                     if status == TefasObservationStatus.VALID:
                         status = TefasObservationStatus.UNRESOLVED_IDENTITY
@@ -363,6 +369,11 @@ class TefasFundPriceProvider(DataProviderContract):
                     if resolved_currency is None:
                         status = TefasObservationStatus.UNRESOLVED_IDENTITY
                         row_diags.append("MISSING_CURRENCY: Master instrument has no currency defined.")
+                    elif resolved_currency != Currency.TRY:
+                        status = TefasObservationStatus.INVALID_SOURCE_CONTEXT
+                        row_diags.append(
+                            f"AMBIGUOUS_PAY_GROUP_CURRENCY: TEFAS public prices only support TRY canonical instruments; got {resolved_currency.value}."
+                        )
             elif not resolver:
                 if status == TefasObservationStatus.VALID:
                     status = TefasObservationStatus.UNRESOLVED_IDENTITY
@@ -534,6 +545,21 @@ class TefasFundPriceProvider(DataProviderContract):
                             status=DataStatus.UNAVAILABLE,
                             raw=None,
                             warnings=["MISSING_CURRENCY: Canonical instrument has no currency defined in Instrument Master."],
+                            canonical_instrument_id=canonical_id,
+                            provider_symbol=clean_symbol,
+                        )
+                    if inst.currency != Currency.TRY:
+                        return ProviderResponse(
+                            provider_name=self.provider_name,
+                            source_quality=self.source_quality,
+                            retrieved_at=retrieved_at,
+                            published_at=None,
+                            effective_date=context.effective_date,
+                            status=DataStatus.UNAVAILABLE,
+                            raw=None,
+                            warnings=[
+                                f"AMBIGUOUS_PAY_GROUP_CURRENCY: TEFAS public price history only supports canonical TRY instruments; got {inst.currency.value} for instrument '{canonical_id}' (TEFAS:{clean_symbol})."
+                            ],
                             canonical_instrument_id=canonical_id,
                             provider_symbol=clean_symbol,
                         )
