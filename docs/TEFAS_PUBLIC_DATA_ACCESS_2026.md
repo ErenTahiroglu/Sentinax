@@ -63,8 +63,8 @@ All probes executed using ordinary Python `urllib` / `curl` with transparent Use
   - `fonKodu`: 3-letter provider alias.
   - `sonFiyat`: Latest unit NAV price (e.g. `0.76165`).
   - `gunlukGetiri`: Daily return percentage (e.g. `0.8381`).
-  - `payAdet`: Outstanding shares / units (`5725524142`).
-  - `portBuyukluk`: Total portfolio size / AUM in TRY (`4360844111.72`).
+  - `payAdet`: Outstanding participation units (`5725524142`).
+  - `portBuyukluk`: Total portfolio size / Net Asset Value (e.g. `4360844111.72`).
   - `fonKategori`: Category string (e.g. `"Hisse Senedi Fonu"`).
   - `yatirimciSayi`: Total investor count (`36070`).
   - `pazarPayi`: Category market share (`1.64`).
@@ -86,7 +86,7 @@ All probes executed using ordinary Python `urllib` / `curl` with transparent Use
 | Unit Price | `fiyat` / `sonFiyat` | `fonFiyatBilgiGetir` / `fonBilgiGetir` | Yes | 5Y | Yes (Clean decimal) | **Yes** | `OFFICIAL_OBSERVED` |
 | Portfolio Size (AUM) | `portBuyukluk` | `fonBilgiGetir` | Yes | Current only | Yes (for current) | Optional | `CURRENT_ONLY_OBSERVED` |
 | Investor Count | `yatirimciSayi` | `fonBilgiGetir` | Yes | Current only | Yes (for current) | Optional | `CURRENT_ONLY_OBSERVED` |
-| Shares Outstanding | `payAdet` | `fonBilgiGetir` | Yes | Current only | Yes (for current) | Optional | `CURRENT_ONLY_OBSERVED` |
+| Outstanding Units | `payAdet` | `fonBilgiGetir` | Yes | Current only | Yes (for current) | Optional | `CURRENT_ONLY_OBSERVED` |
 | Fund Category | `fonKategori` | `fonBilgiGetir` | Yes | Current only | **No (Look-ahead)** | Optional | `CURRENT_METADATA_ONLY` |
 | ISIN | N/A | Excluded from public endpoints | No | N/A | N/A | Optional | `UNAVAILABLE_ON_PUBLIC_TEFAS` |
 | Currency | N/A | Implied TRY | No (Implicit TRY) | N/A | Verify via Master | **Yes** | `METADATA_AUTHORITY_REQUIRED` |
