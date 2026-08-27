@@ -235,9 +235,26 @@ Phase 8B.2B implements deterministic, auditable, and fail-closed winner resoluti
    - Candidates belonging to any snapshot ID in the equivalence class are eligible.
    - Deterministic canonical representative selection (e.g. `min(..., key=lambda s: str(s.id))`) ensures identical results regardless of input snapshot list ordering (`[S1, S2]` vs `[S2, S1]`).
    - If differing `payload_hash` values exist at the same boundary timestamp, resolution fails closed with `SNAPSHOT_CONFLICT`.
-5. **Cover-Date Defense-In-Depth**:
-   - Only `dei:EntityCommonStockSharesOutstanding` under canonical concept `SHARES_OUTSTANDING` is eligible for `COVER_DATE_CONTEXT`.
-   - Any other concept or taxonomy claiming `COVER_DATE_CONTEXT` is rejected.
+### 11.4 Phase 8B.2B.6 — Order-Independent Disclosure Reconciliation & Logical Filing Identity Hardening
+
+1. **Order-Independent Latest Disclosure Frontier**:
+   - Disclosure chronology comparator defines a strict partial order on filings.
+   - Cross-filing resolution evaluates pairwise dominance across all filing representatives rather than sequential list fold.
+   - The **Latest Disclosure Frontier** consists of all filings that are not strictly dominated by any other filing.
+   - Candidate input order permutations (`[A, B, C]`, `[C, B, A]`, etc.) yield identical economic results.
+2. **Intermediate Weak Alias Non-Blocking Policy**:
+   - An intermediate disclosure with lower semantic quality (e.g. `COMPATIBLE` alias) does NOT block or conflict with a later authoritative `EXACT` disclosure.
+   - If the single latest frontier member is `EXACT`, it supersedes earlier disclosures regardless of intermediate lower-quality facts.
+3. **Semantic-Quality Reconciliation on Frontier**:
+   - If the latest frontier member is `COMPATIBLE` and an earlier disclosure was `EXACT` with a differing value, it fails closed as `SEMANTIC_SCOPE_CONFLICT`.
+   - If multiple frontier members exist with differing values, it fails closed as `AMBIGUOUS_DISCLOSURE_ORDER`.
+   - If multiple frontier members exist with identical values, a deterministic tie-breaker selects the representative while other frontier members corroborate.
+4. **Logical Filing Identity & Deduplication**:
+   - `accession_number` constitutes the true logical SEC filing identity. UUID is internal storage identity, not economic identity.
+   - Multiple in-memory `SECFilingRecord` objects sharing the same accession and authority-relevant logical fingerprint (`CIK`, `accession`, `form`, `is_amendment`, `filing_date`, `report_date`, `acceptance_datetime`, `acceptance_local_datetime`, `acceptance_timezone_semantics`) are safely deduplicated to a single canonical filing identity.
+   - Dual identifiers (`accession_number` + `filing_id`) resolve validly when pointing to equivalent logical filing duplicates.
+   - Filings sharing the same accession but differing in authority-relevant metadata fail closed as conflicting filing records.
+
 
 
 

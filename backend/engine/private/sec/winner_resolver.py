@@ -1,18 +1,24 @@
 """
 backend/engine/private/sec/winner_resolver.py
 ===============================================
-SEC EDGAR Phase 8B.2B / 8B.2B.5: Snapshot-Scoped PIT Filing Precedence,
-Restatement Reconciliation & Winner Resolution Hardening.
+SEC EDGAR Phase 8B.2B / 8B.2B.5 / 8B.2B.6: Snapshot-Scoped PIT Filing Precedence,
+Restatement Reconciliation, Order-Independent Frontier Selection & Logical Filing Deduplication.
 
 Core Invariants:
     - Snapshot-Scoped Isolation: Only candidates from the selected evaluation snapshot (or logical snapshot
       equivalence class with identical payload_hash and retrieved_at) are considered.
       Older snapshot candidates are NEVER mixed in or resurrected in CURRENT_REPORTED.
+    - Logical Filing Identity: Accession number is the true logical filing identity. Identical in-memory
+      duplicate filing records (differing only by storage UUID) are safely deduplicated. Conflicting metadata
+      records fail closed.
     - Dual Filing Identifier Consistency: When both accession_number and filing_id are present on candidate,
-      both must resolve and agree on the exact same filing record.
+      both must resolve and agree on the exact same logical filing identity.
     - Local Acceptance Semantics: Naive local acceptance timestamps can only be compared chronologically if
       both have verified matching semantics ("SEC_EST_DOCUMENTED").
     - Snapshot Temporal Lineage: A candidate's filing cannot be dated or accepted after the snapshot was retrieved.
+    - Order-Independent Frontier Selection: Cross-filing resolution uses pairwise dominance under the disclosure
+      chronology partial order to extract the latest disclosure frontier. Candidate input list permutations
+      never alter the economic result.
     - Deterministic Mode Semantics:
         * CURRENT_REPORTED: Latest valid full CompanyFacts snapshot locally observed for the CIK.
         * SYSTEM_AS_OF: Latest valid full CompanyFacts snapshot with retrieved_at <= as_of.
@@ -136,8 +142,26 @@ class SECWinnerResolutionResult:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helper Functions: Semantic Quality & Disclosure Chronology
+# Helper Functions: Logical Fingerprint, Semantic Quality & Chronology
 # ─────────────────────────────────────────────────────────────────────────────
+
+def filing_logical_fingerprint(filing: SECFilingRecord) -> Tuple[Any, ...]:
+    """
+    Computes authority-relevant logical fingerprint for an SEC filing.
+    UUID alone is storage identity, not economic/logical filing difference.
+    """
+    return (
+        normalize_cik(filing.cik) if filing.cik else "",
+        (filing.accession_number or "").strip(),
+        (filing.form or "").strip().upper(),
+        bool(filing.is_amendment),
+        filing.filing_date,
+        filing.report_date,
+        filing.acceptance_datetime,
+        filing.acceptance_local_datetime,
+        filing.acceptance_timezone_semantics or "",
+    )
+
 
 def get_semantic_quality_rank(match_strength: str) -> int:
     """Lower rank means higher quality: EXACT (1) > COMPATIBLE (2) > LEGACY_COMPATIBLE (3)."""
@@ -243,7 +267,8 @@ def validate_company_facts_snapshot(
 class SECWinnerResolver:
     """
     Pure deterministic winner resolver for SEC canonical fact candidates.
-    Implements Snapshot-Scoped PIT Filing Precedence and Restatement Reconciliation.
+    Implements Snapshot-Scoped PIT Filing Precedence, Restatement Reconciliation,
+    and Order-Independent Latest Disclosure Frontier Selection.
     """
 
     @classmethod
@@ -351,46 +376,49 @@ class SECWinnerResolver:
             eval_snapshot_ids = {s.id for s in latest_candidates}
 
         # ─────────────────────────────────────────────────────────────────────
-        # 3. Collision-Resistant Filing Maps & Candidate Lineage Checks
+        # 3. Collision-Resistant Logical Filing Deduplication & Indexing
         # ─────────────────────────────────────────────────────────────────────
-        accession_map: Dict[str, SECFilingRecord] = {}
-        filing_id_map: Dict[UUID, SECFilingRecord] = {}
+        accession_groups: Dict[str, List[SECFilingRecord]] = {}
+        id_groups: Dict[UUID, List[SECFilingRecord]] = {}
         colliding_accessions: Set[str] = set()
         colliding_ids: Set[UUID] = set()
 
         for f in filings:
-            if f.accession_number:
+            if f.accession_number and f.accession_number.strip():
                 acc_key = f.accession_number.strip()
-                if acc_key in accession_map:
-                    existing = accession_map[acc_key]
-                    if (
-                        existing.id != f.id
-                        or existing.cik != f.cik
-                        or existing.form != f.form
-                        or existing.filing_date != f.filing_date
-                        or existing.report_date != f.report_date
-                        or existing.acceptance_datetime != f.acceptance_datetime
-                        or existing.acceptance_local_datetime != f.acceptance_local_datetime
-                    ):
-                        colliding_accessions.add(acc_key)
-                else:
-                    accession_map[acc_key] = f
-
+                accession_groups.setdefault(acc_key, []).append(f)
             if f.id:
-                if f.id in filing_id_map:
-                    existing = filing_id_map[f.id]
-                    if (
-                        existing.accession_number != f.accession_number
-                        or existing.cik != f.cik
-                        or existing.form != f.form
-                        or existing.filing_date != f.filing_date
-                        or existing.report_date != f.report_date
-                        or existing.acceptance_datetime != f.acceptance_datetime
-                        or existing.acceptance_local_datetime != f.acceptance_local_datetime
-                    ):
+                id_groups.setdefault(f.id, []).append(f)
+
+        accession_map: Dict[str, SECFilingRecord] = {}
+        filing_id_map: Dict[UUID, SECFilingRecord] = {}
+
+        # Evaluate accession groups
+        for acc_key, f_list in accession_groups.items():
+            fingerprints = {filing_logical_fingerprint(f) for f in f_list}
+            if len(fingerprints) > 1:
+                colliding_accessions.add(acc_key)
+                for f in f_list:
+                    if f.id:
                         colliding_ids.add(f.id)
-                else:
-                    filing_id_map[f.id] = f
+            else:
+                # All identical logical duplicates -> pick deterministic canonical representative
+                canonical_rep = min(f_list, key=lambda f: str(f.id) if f.id else "")
+                accession_map[acc_key] = canonical_rep
+                for f in f_list:
+                    if f.id:
+                        filing_id_map[f.id] = canonical_rep
+
+        # Evaluate remaining ID groups
+        for fid, f_list in id_groups.items():
+            if fid in colliding_ids:
+                continue
+            fingerprints = {filing_logical_fingerprint(f) for f in f_list}
+            if len(fingerprints) > 1:
+                colliding_ids.add(fid)
+            else:
+                if fid not in filing_id_map:
+                    filing_id_map[fid] = f_list[0]
 
         eligible_candidates: List[Tuple[SECPeriodizedFactCandidate, SECFilingRecord]] = []
         rejected_candidates: List[Dict[str, Any]] = []
@@ -522,7 +550,11 @@ class SECWinnerResolver:
                     continue
 
             if has_acc and has_id:
-                if filing_by_acc.id != filing_by_id.id or filing_by_acc.accession_number.strip() != filing_by_id.accession_number.strip():
+                # Both resolved: verify they resolve to the exact same logical filing
+                if (
+                    filing_by_acc.accession_number.strip() != filing_by_id.accession_number.strip()
+                    or filing_logical_fingerprint(filing_by_acc) != filing_logical_fingerprint(filing_by_id)
+                ):
                     rejected_candidates.append({
                         "candidate_id": str(cand.id),
                         "raw_fact_id": str(cand.raw_fact_id),
@@ -655,11 +687,11 @@ class SECWinnerResolver:
             )
 
         # ─────────────────────────────────────────────────────────────────────
-        # 4. Same-Filing Semantic Reconciliation
+        # 4. Same-Filing Semantic Reconciliation & Deterministic Tie-Breaking
         # ─────────────────────────────────────────────────────────────────────
         filing_groups: Dict[str, List[Tuple[SECPeriodizedFactCandidate, SECFilingRecord]]] = {}
         for cand, filing in eligible_candidates:
-            key = cand.accession_number.strip() if cand.accession_number else str(filing.id)
+            key = cand.accession_number.strip() if cand.accession_number else (filing.accession_number.strip() if filing.accession_number else str(filing.id))
             if key not in filing_groups:
                 filing_groups[key] = []
             filing_groups[key].append((cand, filing))
@@ -669,10 +701,17 @@ class SECWinnerResolver:
         diagnostics_list: List[str] = []
 
         for f_key, cand_list in filing_groups.items():
-            # Sort by semantic quality rank (ascending: EXACT=1 < COMPATIBLE=2 < LEGACY_COMPATIBLE=3), then variant_priority
+            # Sort by semantic quality rank (ascending: EXACT=1 < COMPATIBLE=2 < LEGACY_COMPATIBLE=3),
+            # then variant_priority, then deterministic presentation tie-breakers (taxonomy, concept, raw_fact_id)
             sorted_cands = sorted(
                 cand_list,
-                key=lambda item: (get_semantic_quality_rank(item[0].match_strength), item[0].variant_priority)
+                key=lambda item: (
+                    get_semantic_quality_rank(item[0].match_strength),
+                    item[0].variant_priority,
+                    item[0].taxonomy or "",
+                    item[0].source_concept or "",
+                    str(item[0].raw_fact_id),
+                )
             )
 
             top_cand, top_filing = sorted_cands[0]
@@ -720,7 +759,7 @@ class SECWinnerResolver:
             })
 
         # ─────────────────────────────────────────────────────────────────────
-        # 5. Cross-Filing Restatement & Amendment Reconciliation
+        # 5. Order-Independent Latest Disclosure Frontier Selection
         # ─────────────────────────────────────────────────────────────────────
         if len(filing_representatives) == 1:
             winner_rep = filing_representatives[0]
@@ -750,69 +789,69 @@ class SECWinnerResolver:
                 diagnostics=diagnostics_list or ["Single filing representative selected."],
                 eligible_candidate_ids=[c.id for c, f in eligible_candidates],
                 rejected_candidates=rejected_candidates,
-                corroborating_candidate_ids=all_corroborating_ids,
+                corroborating_candidate_ids=sorted(all_corroborating_ids, key=lambda u: str(u)),
                 superseded_candidate_ids=[],
             )
 
-        # Multiple filing representatives: sort/reconcile across filings
-        superseded_ids: List[UUID] = []
-        winner_rep = filing_representatives[0]
-        confidence_level: str = winner_rep["candidate"].classification_confidence
+        # Deterministic sorting of filing representatives for presentation & iteration
+        filing_representatives = sorted(
+            filing_representatives,
+            key=lambda rep: (
+                rep["filing"].accession_number or "",
+                str(rep["filing"].id) if rep["filing"].id else "",
+                rep["quality_rank"],
+                rep["candidate"].variant_priority,
+                str(rep["candidate"].raw_fact_id),
+            )
+        )
 
-        for next_rep in filing_representatives[1:]:
-            cmp = compare_filing_disclosure_order(winner_rep["filing"], next_rep["filing"])
+        # Compute Pairwise Dominance (Poset Maximal Elements)
+        # Representative i is strictly dominated if there exists j such that j is strictly later than i
+        dominated_indices: Set[int] = set()
+        n = len(filing_representatives)
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    continue
+                cmp = compare_filing_disclosure_order(
+                    filing_representatives[i]["filing"],
+                    filing_representatives[j]["filing"]
+                )
+                if cmp == FilingDisclosureComparison.B_LATER:
+                    dominated_indices.add(i)
+                    break
 
-            if cmp == FilingDisclosureComparison.UNORDERABLE or cmp == FilingDisclosureComparison.SAME:
-                if next_rep["candidate"].value != winner_rep["candidate"].value:
-                    return SECWinnerResolutionResult(
-                        mode=mode,
-                        status=SECWinnerStatus.AMBIGUOUS_DISCLOSURE_ORDER,
-                        cik=norm_target_cik,
-                        economic_group_key=economic_group_key,
-                        as_of=as_of,
-                        evaluation_snapshot_id=eval_snapshot.id,
-                        evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
-                        evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
-                        evaluation_snapshot_hash=eval_snapshot.payload_hash,
-                        selection_basis=f"Filings {winner_rep['filing'].accession_number} and {next_rep['filing'].accession_number} have unorderable disclosure chronology with differing values.",
-                        diagnostics=["Ambiguous disclosure order across multiple filings with differing values."],
-                        eligible_candidate_ids=[c.id for c, f in eligible_candidates],
-                        rejected_candidates=rejected_candidates,
-                    )
-                else:
-                    # Same value: prefer higher semantic quality
-                    if next_rep["quality_rank"] < winner_rep["quality_rank"]:
-                        all_corroborating_ids.append(winner_rep["candidate"].id)
-                        winner_rep = next_rep
-                    else:
-                        all_corroborating_ids.append(next_rep["candidate"].id)
+        latest_frontier = [
+            filing_representatives[i] for i in range(n) if i not in dominated_indices
+        ]
+        dominated_reps = [
+            filing_representatives[i] for i in range(n) if i in dominated_indices
+        ]
 
-            elif cmp == FilingDisclosureComparison.B_LATER:
-                # next_rep is chronologically later
-                # Check semantic quality
-                if next_rep["quality_rank"] <= winner_rep["quality_rank"]:
-                    # Later disclosure is same or higher quality: it wins!
-                    if next_rep["candidate"].value != winner_rep["candidate"].value:
-                        superseded_ids.append(winner_rep["candidate"].id)
-                        diagnostics_list.append(
-                            f"Later disclosure {next_rep['filing'].accession_number} ({next_rep['candidate'].value}) supersedes prior disclosure {winner_rep['filing'].accession_number} ({winner_rep['candidate'].value})."
-                        )
-                    else:
-                        all_corroborating_ids.append(winner_rep["candidate"].id)
-                    winner_rep = next_rep
-                    confidence_level = next_rep["candidate"].classification_confidence
+        # ─────────────────────────────────────────────────────────────────────
+        # 6. Reconcile Frontier against Dominated/Earlier Disclosures
+        # ─────────────────────────────────────────────────────────────────────
+        if len(latest_frontier) == 1:
+            winner_rep = latest_frontier[0]
+            winner_cand = winner_rep["candidate"]
+            winner_filing = winner_rep["filing"]
+            winner_rank = winner_rep["quality_rank"]
+            confidence_level = winner_cand.classification_confidence
 
-                else:
-                    # Later disclosure has LOWER semantic quality (e.g. older EXACT vs later COMPATIBLE)
-                    if next_rep["candidate"].value == winner_rep["candidate"].value:
-                        # Same value: select later or retain earlier with degraded confidence
-                        all_corroborating_ids.append(next_rep["candidate"].id)
-                        confidence_level = "MEDIUM"
-                        diagnostics_list.append(
-                            f"Later disclosure {next_rep['filing'].accession_number} has lower semantic quality ({next_rep['candidate'].match_strength}) but value corroborates ({next_rep['candidate'].value})."
-                        )
-                    else:
-                        # Different values with lower quality later: SEMANTIC_SCOPE_CONFLICT
+            # Semantic-quality check against all earlier/dominated disclosures
+            if winner_rank > 1:
+                # Later disclosure has lower quality (COMPATIBLE or LEGACY_COMPATIBLE)
+                # Check if any earlier disclosure had strictly higher quality
+                higher_quality_earlier = [
+                    rep for rep in dominated_reps
+                    if rep["quality_rank"] < winner_rank
+                ]
+                if higher_quality_earlier:
+                    conflicting_higher = [
+                        rep for rep in higher_quality_earlier
+                        if rep["candidate"].value != winner_cand.value
+                    ]
+                    if conflicting_higher:
                         return SECWinnerResolutionResult(
                             mode=mode,
                             status=SECWinnerStatus.SEMANTIC_SCOPE_CONFLICT,
@@ -823,45 +862,163 @@ class SECWinnerResolver:
                             evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
                             evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
                             evaluation_snapshot_hash=eval_snapshot.payload_hash,
-                            selection_basis=f"Later disclosure {next_rep['filing'].accession_number} has lower semantic quality ({next_rep['candidate'].match_strength}) with differing value {next_rep['candidate'].value} vs prior exact {winner_rep['candidate'].value}.",
+                            selection_basis=f"Later disclosure {winner_filing.accession_number} has lower semantic quality ({winner_cand.match_strength}) with differing value {winner_cand.value} vs prior higher-quality disclosure ({conflicting_higher[0]['candidate'].match_strength}) with value {conflicting_higher[0]['candidate'].value}.",
                             diagnostics=["Semantic scope conflict: cannot overwrite higher-quality fact with lower-quality alias of differing value."],
                             eligible_candidate_ids=[c.id for c, f in eligible_candidates],
                             rejected_candidates=rejected_candidates,
                         )
-
-            elif cmp == FilingDisclosureComparison.A_LATER:
-                # winner_rep is chronologically later
-                if winner_rep["quality_rank"] <= next_rep["quality_rank"]:
-                    if winner_rep["candidate"].value != next_rep["candidate"].value:
-                        superseded_ids.append(next_rep["candidate"].id)
                     else:
-                        all_corroborating_ids.append(next_rep["candidate"].id)
-                else:
-                    if winner_rep["candidate"].value == next_rep["candidate"].value:
-                        all_corroborating_ids.append(next_rep["candidate"].id)
+                        # Values match: downgrade confidence to MEDIUM
                         confidence_level = "MEDIUM"
-                    else:
-                        return SECWinnerResolutionResult(
-                            mode=mode,
-                            status=SECWinnerStatus.SEMANTIC_SCOPE_CONFLICT,
-                            cik=norm_target_cik,
-                            economic_group_key=economic_group_key,
-                            as_of=as_of,
-                            evaluation_snapshot_id=eval_snapshot.id,
-                            evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
-                            evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
-                            evaluation_snapshot_hash=eval_snapshot.payload_hash,
-                            selection_basis="Semantic scope conflict between differing quality disclosures.",
-                            diagnostics=["Semantic scope conflict across filings."],
-                            eligible_candidate_ids=[c.id for c, f in eligible_candidates],
-                            rejected_candidates=rejected_candidates,
+                        diagnostics_list.append(
+                            f"Later disclosure {winner_filing.accession_number} has lower semantic quality ({winner_cand.match_strength}) but value corroborates ({winner_cand.value})."
                         )
 
+            # Classify earlier reps into superseded vs corroborating
+            superseded_ids: List[UUID] = []
+            for rep in dominated_reps:
+                if rep["candidate"].value != winner_cand.value:
+                    superseded_ids.append(rep["candidate"].id)
+                    diagnostics_list.append(
+                        f"Later disclosure {winner_filing.accession_number} ({winner_cand.value}) supersedes prior disclosure {rep['filing'].accession_number} ({rep['candidate'].value})."
+                    )
+                else:
+                    all_corroborating_ids.append(rep["candidate"].id)
+
+            basis = (
+                f"Resolved via disclosure precedence from authoritative filing {winner_filing.accession_number} "
+                f"(form {winner_cand.form}, match {winner_cand.match_strength})."
+            )
+
+            return SECWinnerResolutionResult(
+                mode=mode,
+                status=SECWinnerStatus.SELECTED,
+                cik=norm_target_cik,
+                economic_group_key=economic_group_key,
+                as_of=as_of,
+                evaluation_snapshot_id=eval_snapshot.id,
+                evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
+                evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
+                evaluation_snapshot_hash=eval_snapshot.payload_hash,
+                selected_candidate=winner_cand,
+                selected_raw_fact_id=winner_cand.raw_fact_id,
+                selected_value=winner_cand.value,
+                selected_unit=winner_cand.unit,
+                selected_source_concept=winner_cand.source_concept,
+                selected_filing_id=winner_filing.id,
+                selected_accession_number=winner_cand.accession_number,
+                selected_form=winner_cand.form,
+                selection_confidence=confidence_level,
+                selection_basis=basis,
+                diagnostics=diagnostics_list or ["Resolved cross-filing disclosure precedence."],
+                eligible_candidate_ids=[c.id for c, f in eligible_candidates],
+                rejected_candidates=rejected_candidates,
+                corroborating_candidate_ids=sorted(all_corroborating_ids, key=lambda u: str(u)),
+                superseded_candidate_ids=sorted(superseded_ids, key=lambda u: str(u)),
+            )
+
+        # Multiple frontier members:
+        frontier_values = {rep["candidate"].value for rep in latest_frontier}
+        if len(frontier_values) > 1:
+            return SECWinnerResolutionResult(
+                mode=mode,
+                status=SECWinnerStatus.AMBIGUOUS_DISCLOSURE_ORDER,
+                cik=norm_target_cik,
+                economic_group_key=economic_group_key,
+                as_of=as_of,
+                evaluation_snapshot_id=eval_snapshot.id,
+                evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
+                evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
+                evaluation_snapshot_hash=eval_snapshot.payload_hash,
+                selection_basis=f"Multiple latest frontier filings have unorderable or identical disclosure chronology with differing values {frontier_values}.",
+                diagnostics=["Ambiguous disclosure order across multiple latest filings with differing values."],
+                eligible_candidate_ids=[c.id for c, f in eligible_candidates],
+                rejected_candidates=rejected_candidates,
+            )
+
+        # All frontier members have the same value
+        frontier_val = next(iter(frontier_values))
+        best_frontier_rank = min(rep["quality_rank"] for rep in latest_frontier)
+
+        # Check semantic scope conflict against dominated disclosures
+        if best_frontier_rank > 1:
+            higher_quality_earlier = [
+                rep for rep in dominated_reps
+                if rep["quality_rank"] < best_frontier_rank
+            ]
+            conflicting_higher = [
+                rep for rep in higher_quality_earlier
+                if rep["candidate"].value != frontier_val
+            ]
+            if conflicting_higher:
+                return SECWinnerResolutionResult(
+                    mode=mode,
+                    status=SECWinnerStatus.SEMANTIC_SCOPE_CONFLICT,
+                    cik=norm_target_cik,
+                    economic_group_key=economic_group_key,
+                    as_of=as_of,
+                    evaluation_snapshot_id=eval_snapshot.id,
+                    evaluation_snapshot_ids=sorted(list(eval_snapshot_ids), key=lambda u: str(u)),
+                    evaluation_snapshot_retrieved_at=eval_snapshot.retrieved_at,
+                    evaluation_snapshot_hash=eval_snapshot.payload_hash,
+                    selection_basis=f"Latest frontier disclosures have lower semantic quality with differing value {frontier_val} vs prior higher-quality disclosure ({conflicting_higher[0]['candidate'].match_strength}) with value {conflicting_higher[0]['candidate'].value}.",
+                    diagnostics=["Semantic scope conflict: cannot overwrite higher-quality fact with lower-quality alias of differing value."],
+                    eligible_candidate_ids=[c.id for c, f in eligible_candidates],
+                    rejected_candidates=rejected_candidates,
+                )
+
+        # Sort latest_frontier deterministically to pick best representative
+        sorted_frontier = sorted(
+            latest_frontier,
+            key=lambda rep: (
+                rep["quality_rank"],
+                rep["candidate"].variant_priority,
+                rep["candidate"].taxonomy or "",
+                rep["candidate"].source_concept or "",
+                str(rep["candidate"].raw_fact_id),
+                rep["filing"].accession_number or "",
+            )
+        )
+        winner_rep = sorted_frontier[0]
         winner_cand = winner_rep["candidate"]
         winner_filing = winner_rep["filing"]
 
+        # Other frontier members corroborate
+        for other_rep in sorted_frontier[1:]:
+            all_corroborating_ids.append(other_rep["candidate"].id)
+
+        # Check pairwise chronology between frontier members to determine confidence
+        has_unorderable_frontier = False
+        for i in range(len(latest_frontier)):
+            for j in range(i + 1, len(latest_frontier)):
+                cmp = compare_filing_disclosure_order(
+                    latest_frontier[i]["filing"],
+                    latest_frontier[j]["filing"]
+                )
+                if cmp == FilingDisclosureComparison.UNORDERABLE:
+                    has_unorderable_frontier = True
+                    break
+
+        confidence_level = winner_cand.classification_confidence
+        if has_unorderable_frontier:
+            confidence_level = "MEDIUM"
+            diagnostics_list.append(
+                "Disclosure order between latest frontier filings is unorderable; corroborated by identical value."
+            )
+
+        # Classify dominated reps into superseded vs corroborating
+        superseded_ids = []
+        for rep in dominated_reps:
+            if rep["candidate"].value != winner_cand.value:
+                superseded_ids.append(rep["candidate"].id)
+                diagnostics_list.append(
+                    f"Latest frontier disclosure {winner_filing.accession_number} ({winner_cand.value}) supersedes prior disclosure {rep['filing'].accession_number} ({rep['candidate'].value})."
+                )
+            else:
+                all_corroborating_ids.append(rep["candidate"].id)
+
         basis = (
-            f"Resolved via disclosure precedence from authoritative filing {winner_filing.accession_number} "
+            f"Resolved via latest disclosure frontier from authoritative filing {winner_filing.accession_number} "
             f"(form {winner_cand.form}, match {winner_cand.match_strength})."
         )
 
@@ -885,9 +1042,9 @@ class SECWinnerResolver:
             selected_form=winner_cand.form,
             selection_confidence=confidence_level,
             selection_basis=basis,
-            diagnostics=diagnostics_list or ["Resolved cross-filing disclosure precedence."],
+            diagnostics=diagnostics_list or ["Resolved cross-filing disclosure frontier precedence."],
             eligible_candidate_ids=[c.id for c, f in eligible_candidates],
             rejected_candidates=rejected_candidates,
-            corroborating_candidate_ids=all_corroborating_ids,
-            superseded_candidate_ids=superseded_ids,
+            corroborating_candidate_ids=sorted(all_corroborating_ids, key=lambda u: str(u)),
+            superseded_candidate_ids=sorted(superseded_ids, key=lambda u: str(u)),
         )

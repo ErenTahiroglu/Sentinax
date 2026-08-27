@@ -20,6 +20,7 @@ Tests:
     - Result Auditability & Diagnostics (74-82)
 """
 
+import itertools
 import pytest
 from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal
@@ -912,5 +913,229 @@ class TestSECCoverDateDefenseInDepth:
         )
         res_custom = SECWinnerResolver.resolve_winner(group_key, [c_custom], [s], [f])
         assert res_custom.status == SECWinnerStatus.NO_ELIGIBLE_CANDIDATE
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 18. Order-Independent Disclosure Permutations (Phase 8B.2B.6 Scenarios 31-35)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSECOrderIndependentPermutations:
+
+    def test_31_intermediate_lower_quality_does_not_block_latest_exact(self):
+        """Scenario 31: A (old EXACT 100) < B (mid COMPATIBLE 110) < C (latest EXACT 110).
+        All 6 candidate permutations must select C = 110."""
+        s = _make_snapshot(retrieved_at=datetime(2024, 12, 1, 18, 0, 0, tzinfo=timezone.utc))
+        f_a = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, filing_date=date(2022, 10, 1), acceptance_datetime=datetime(2022, 10, 1, 16, 0, 0, tzinfo=timezone.utc))
+        f_b = SECFilingRecord(cik="320193", accession_number="0002", form="10-K", is_amendment=False, filing_date=date(2023, 10, 1), acceptance_datetime=datetime(2023, 10, 1, 16, 0, 0, tzinfo=timezone.utc))
+        f_c = SECFilingRecord(cik="320193", accession_number="0003", form="10-K", is_amendment=False, filing_date=date(2024, 10, 1), acceptance_datetime=datetime(2024, 10, 1, 16, 0, 0, tzinfo=timezone.utc))
+
+        group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2021-10-01", "2022-09-30")
+
+        c_a = _make_periodized_candidate(snapshot_id=s.id, accession_number="0001", match_strength="EXACT", start_date=date(2021, 10, 1), end_date=date(2022, 9, 30), value=Decimal("100"))
+        c_b = _make_periodized_candidate(snapshot_id=s.id, accession_number="0002", match_strength="COMPATIBLE", start_date=date(2021, 10, 1), end_date=date(2022, 9, 30), value=Decimal("110"))
+        c_c = _make_periodized_candidate(snapshot_id=s.id, accession_number="0003", match_strength="EXACT", start_date=date(2021, 10, 1), end_date=date(2022, 9, 30), value=Decimal("110"))
+
+        cands = [c_a, c_b, c_c]
+        filings = [f_a, f_b, f_c]
+
+        for p_cands in itertools.permutations(cands):
+            for p_filings in itertools.permutations(filings):
+                res = SECWinnerResolver.resolve_winner(group_key, list(p_cands), [s], list(p_filings))
+                assert res.status == SECWinnerStatus.SELECTED
+                assert res.selected_value == Decimal("110")
+                assert res.selected_accession_number == "0003"
+                assert res.selected_candidate.id == c_c.id
+                assert c_a.id in res.superseded_candidate_ids
+                assert c_b.id in res.corroborating_candidate_ids
+
+    def test_32_three_exact_filings_all_permutations(self):
+        """Scenario 32: A (100) < B (105) < C (110) all EXACT. All permutations select C = 110."""
+        s = _make_snapshot(retrieved_at=datetime(2024, 12, 1, 18, 0, 0, tzinfo=timezone.utc))
+        f_a = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, filing_date=date(2022, 10, 1), acceptance_datetime=datetime(2022, 10, 1, 16, 0, 0, tzinfo=timezone.utc))
+        f_b = SECFilingRecord(cik="320193", accession_number="0002", form="10-K", is_amendment=False, filing_date=date(2023, 10, 1), acceptance_datetime=datetime(2023, 10, 1, 16, 0, 0, tzinfo=timezone.utc))
+        f_c = SECFilingRecord(cik="320193", accession_number="0003", form="10-K", is_amendment=False, filing_date=date(2024, 10, 1), acceptance_datetime=datetime(2024, 10, 1, 16, 0, 0, tzinfo=timezone.utc))
+
+        group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2021-10-01", "2022-09-30")
+
+        c_a = _make_periodized_candidate(snapshot_id=s.id, accession_number="0001", match_strength="EXACT", start_date=date(2021, 10, 1), end_date=date(2022, 9, 30), value=Decimal("100"))
+        c_b = _make_periodized_candidate(snapshot_id=s.id, accession_number="0002", match_strength="EXACT", start_date=date(2021, 10, 1), end_date=date(2022, 9, 30), value=Decimal("105"))
+        c_c = _make_periodized_candidate(snapshot_id=s.id, accession_number="0003", match_strength="EXACT", start_date=date(2021, 10, 1), end_date=date(2022, 9, 30), value=Decimal("110"))
+
+        cands = [c_a, c_b, c_c]
+        filings = [f_a, f_b, f_c]
+
+        for p_cands in itertools.permutations(cands):
+            for p_filings in itertools.permutations(filings):
+                res = SECWinnerResolver.resolve_winner(group_key, list(p_cands), [s], list(p_filings))
+                assert res.status == SECWinnerStatus.SELECTED
+                assert res.selected_value == Decimal("110")
+                assert res.selected_accession_number == "0003"
+                assert c_a.id in res.superseded_candidate_ids
+                assert c_b.id in res.superseded_candidate_ids
+
+    def test_33_true_latest_lower_quality_conflict(self):
+        """Scenario 33: A (old EXACT 100) < B (latest COMPATIBLE 110). Both input orders return SEMANTIC_SCOPE_CONFLICT."""
+        s = _make_snapshot(retrieved_at=datetime(2024, 12, 1, 18, 0, 0, tzinfo=timezone.utc))
+        f_a = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, filing_date=date(2023, 10, 1), acceptance_datetime=datetime(2023, 10, 1, 16, 0, 0, tzinfo=timezone.utc))
+        f_b = SECFilingRecord(cik="320193", accession_number="0002", form="10-K", is_amendment=False, filing_date=date(2024, 10, 1), acceptance_datetime=datetime(2024, 10, 1, 16, 0, 0, tzinfo=timezone.utc))
+
+        group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2022-10-01", "2023-09-30")
+
+        c_a = _make_periodized_candidate(snapshot_id=s.id, accession_number="0001", match_strength="EXACT", start_date=date(2022, 10, 1), end_date=date(2023, 9, 30), value=Decimal("100"))
+        c_b = _make_periodized_candidate(snapshot_id=s.id, accession_number="0002", match_strength="COMPATIBLE", start_date=date(2022, 10, 1), end_date=date(2023, 9, 30), value=Decimal("110"))
+
+        for p_cands in itertools.permutations([c_a, c_b]):
+            for p_filings in itertools.permutations([f_a, f_b]):
+                res = SECWinnerResolver.resolve_winner(group_key, list(p_cands), [s], list(p_filings))
+                assert res.status == SECWinnerStatus.SEMANTIC_SCOPE_CONFLICT
+
+    def test_34_latest_lower_quality_same_value(self):
+        """Scenario 34: A (old EXACT 100) < B (latest COMPATIBLE 100). Both input orders return SELECTED with MEDIUM confidence."""
+        s = _make_snapshot(retrieved_at=datetime(2024, 12, 1, 18, 0, 0, tzinfo=timezone.utc))
+        f_a = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, filing_date=date(2023, 10, 1), acceptance_datetime=datetime(2023, 10, 1, 16, 0, 0, tzinfo=timezone.utc))
+        f_b = SECFilingRecord(cik="320193", accession_number="0002", form="10-K", is_amendment=False, filing_date=date(2024, 10, 1), acceptance_datetime=datetime(2024, 10, 1, 16, 0, 0, tzinfo=timezone.utc))
+
+        group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2022-10-01", "2023-09-30")
+
+        c_a = _make_periodized_candidate(snapshot_id=s.id, accession_number="0001", match_strength="EXACT", start_date=date(2022, 10, 1), end_date=date(2023, 9, 30), value=Decimal("100"))
+        c_b = _make_periodized_candidate(snapshot_id=s.id, accession_number="0002", match_strength="COMPATIBLE", start_date=date(2022, 10, 1), end_date=date(2023, 9, 30), value=Decimal("100"))
+
+        for p_cands in itertools.permutations([c_a, c_b]):
+            for p_filings in itertools.permutations([f_a, f_b]):
+                res = SECWinnerResolver.resolve_winner(group_key, list(p_cands), [s], list(p_filings))
+                assert res.status == SECWinnerStatus.SELECTED
+                assert res.selected_value == Decimal("100")
+                assert res.selected_accession_number == "0002"
+                assert res.selection_confidence == "MEDIUM"
+
+    def test_35_unorderable_frontier(self):
+        """Scenario 35: A and B unorderable. Different values -> AMBIGUOUS_DISCLOSURE_ORDER. Same values -> SELECTED with MEDIUM."""
+        s = _make_snapshot(retrieved_at=datetime(2024, 12, 1, 18, 0, 0, tzinfo=timezone.utc))
+        f_a = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, filing_date=date(2024, 10, 1), acceptance_local_datetime=datetime(2024, 10, 1, 16, 0, 0), acceptance_timezone_semantics=None)
+        f_b = SECFilingRecord(cik="320193", accession_number="0002", form="10-K", is_amendment=False, filing_date=date(2024, 10, 1), acceptance_local_datetime=datetime(2024, 10, 1, 17, 0, 0), acceptance_timezone_semantics=None)
+
+        group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2023-10-01", "2024-09-28")
+
+        # Differing values -> AMBIGUOUS_DISCLOSURE_ORDER
+        c_a_diff = _make_periodized_candidate(snapshot_id=s.id, accession_number="0001", value=Decimal("100"))
+        c_b_diff = _make_periodized_candidate(snapshot_id=s.id, accession_number="0002", value=Decimal("110"))
+
+        for p_cands in itertools.permutations([c_a_diff, c_b_diff]):
+            res = SECWinnerResolver.resolve_winner(group_key, list(p_cands), [s], [f_a, f_b])
+            assert res.status == SECWinnerStatus.AMBIGUOUS_DISCLOSURE_ORDER
+
+        # Same values -> SELECTED with MEDIUM confidence
+        c_a_same = _make_periodized_candidate(snapshot_id=s.id, accession_number="0001", value=Decimal("100"))
+        c_b_same = _make_periodized_candidate(snapshot_id=s.id, accession_number="0002", value=Decimal("100"))
+
+        for p_cands in itertools.permutations([c_a_same, c_b_same]):
+            res = SECWinnerResolver.resolve_winner(group_key, list(p_cands), [s], [f_a, f_b])
+            assert res.status == SECWinnerStatus.SELECTED
+            assert res.selected_value == Decimal("100")
+            assert res.selection_confidence == "MEDIUM"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 19. Logical Filing Deduplication & Dual ID Hardening (Phase 8B.2B.6 Scenarios 36-38)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSECLogicalFilingDeduplication:
+
+    def test_36_identical_logical_filing_duplicates_deduplicate_safely(self):
+        """Scenario 36: Two filing records with same accession, different UUID, same logical metadata."""
+        s = _make_snapshot()
+        f1_id = uuid4()
+        f2_id = uuid4()
+        f1 = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, id=f1_id, filing_date=date(2024, 9, 28))
+        f2 = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, id=f2_id, filing_date=date(2024, 9, 28))
+
+        group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2023-10-01", "2024-09-28")
+        c = _make_periodized_candidate(snapshot_id=s.id, accession_number="0001", filing_id=None)
+
+        res1 = SECWinnerResolver.resolve_winner(group_key, [c], [s], [f1, f2])
+        assert res1.status == SECWinnerStatus.SELECTED
+
+        res2 = SECWinnerResolver.resolve_winner(group_key, [c], [s], [f2, f1])
+        assert res2.status == SECWinnerStatus.SELECTED
+
+    def test_37_logical_duplicate_with_dual_id(self):
+        """Scenario 37: Two equivalent filing records with same accession X, candidate has accession X and filing_id B."""
+        s = _make_snapshot()
+        f1_id = uuid4()
+        f2_id = uuid4()
+        f1 = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, id=f1_id, filing_date=date(2024, 9, 28))
+        f2 = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, id=f2_id, filing_date=date(2024, 9, 28))
+
+        group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2023-10-01", "2024-09-28")
+        c = _make_periodized_candidate(snapshot_id=s.id, accession_number="0001", filing_id=f2_id)
+
+        res = SECWinnerResolver.resolve_winner(group_key, [c], [s], [f1, f2])
+        assert res.status == SECWinnerStatus.SELECTED
+
+    def test_38_true_filing_collision_fails_closed(self):
+        """Scenario 38: Conflicting filing records with same accession but different form/date metadata fail closed."""
+        s = _make_snapshot()
+        f1 = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, filing_date=date(2024, 9, 28))
+        f2 = SECFilingRecord(cik="320193", accession_number="0001", form="10-Q", is_amendment=False, filing_date=date(2024, 9, 28))
+
+        group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2023-10-01", "2024-09-28")
+        c = _make_periodized_candidate(snapshot_id=s.id, accession_number="0001")
+
+        res = SECWinnerResolver.resolve_winner(group_key, [c], [s], [f1, f2])
+        assert res.status == SECWinnerStatus.NO_ELIGIBLE_CANDIDATE
+        assert any("Conflicting duplicate filings" in r["reason"] for r in res.rejected_candidates)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 20. Same-Filing Deterministic Ties (Phase 8B.2B.6 Scenarios 39-41)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSECSameFilingDeterministicTies:
+
+    def test_39_same_filing_identical_rank_priority_value_tie_break(self):
+        """Scenario 39: Two same-filing candidates with identical quality rank, priority, and value.
+        Reverse input order yields identical selected representation."""
+        s = _make_snapshot()
+        f = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, filing_date=date(2024, 9, 28))
+        group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2023-10-01", "2024-09-28")
+
+        c1 = _make_periodized_candidate(
+            snapshot_id=s.id, accession_number="0001", match_strength="EXACT", variant_priority=10,
+            source_concept="ConceptAlpha", value=Decimal("100")
+        )
+        c2 = _make_periodized_candidate(
+            snapshot_id=s.id, accession_number="0001", match_strength="EXACT", variant_priority=10,
+            source_concept="ConceptBeta", value=Decimal("100")
+        )
+
+        res1 = SECWinnerResolver.resolve_winner(group_key, [c1, c2], [s], [f])
+        res2 = SECWinnerResolver.resolve_winner(group_key, [c2, c1], [s], [f])
+
+        assert res1.status == SECWinnerStatus.SELECTED
+        assert res2.status == SECWinnerStatus.SELECTED
+        assert res1.selected_source_concept == res2.selected_source_concept
+        assert res1.selected_candidate.id == res2.selected_candidate.id
+        assert res1.selected_value == res2.selected_value == Decimal("100")
+
+    def test_conflicting_exact_values_in_same_filing_still_ambiguous(self):
+        """Preserve: differing values for EXACT candidates in same filing still returns AMBIGUOUS_WITHIN_FILING."""
+        s = _make_snapshot()
+        f = SECFilingRecord(cik="320193", accession_number="0001", form="10-K", is_amendment=False, filing_date=date(2024, 9, 28))
+        group_key = ("0000320193", "REVENUE", "USD", "annual_duration", "2023-10-01", "2024-09-28")
+
+        c1 = _make_periodized_candidate(
+            snapshot_id=s.id, accession_number="0001", match_strength="EXACT", variant_priority=10,
+            source_concept="ConceptAlpha", value=Decimal("100")
+        )
+        c2 = _make_periodized_candidate(
+            snapshot_id=s.id, accession_number="0001", match_strength="EXACT", variant_priority=10,
+            source_concept="ConceptBeta", value=Decimal("105")
+        )
+
+        res1 = SECWinnerResolver.resolve_winner(group_key, [c1, c2], [s], [f])
+        assert res1.status == SECWinnerStatus.AMBIGUOUS_WITHIN_FILING
+        res2 = SECWinnerResolver.resolve_winner(group_key, [c2, c1], [s], [f])
+        assert res2.status == SECWinnerStatus.AMBIGUOUS_WITHIN_FILING
+
 
 
