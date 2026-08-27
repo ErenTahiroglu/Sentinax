@@ -49,8 +49,9 @@ class InstrumentType(Enum):
     EUROPEAN_ETF = "european_etf"
 
     # Commodities
-    GOLD = "gold"               # Physical gold / ALTIN.S1
+    GOLD = "gold"               # Physical gold
     SILVER = "silver"
+    COMMODITY_CERTIFICATE = "commodity_certificate" # Exchange-traded commodity certificates (e.g. ALTIN.S1)
 
     # FX
     USD_TRY = "usd_try"
