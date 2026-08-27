@@ -1,58 +1,43 @@
-# 🛑 Stooq Global Historical EOD — Production Feasibility Gate Review
+# 🔍 Stooq Global Historical EOD — Production Access Feasibility Review
 
 ## 1. Executive Summary & Verdict
 
-| Assessment Field | Result |
-| :--- | :--- |
-| **Provider Candidate** | **Stooq** (`stooq.com`) |
-| **Audit Date** | August 27, 2026 |
-| **Proposed Role** | Global Historical EOD (US/EU Stocks & ETFs long-horizon history >= 5Y) |
-| **Access Classification** | **`RED`** (Unsuitable for automated production backend) |
-| **Final Feasibility Verdict** | **`FAIL` (NO-GO)** |
+| Assessment Dimension | Status / Verdict | Basis |
+| :--- | :--- | :--- |
+| **Provider Candidate** | **Stooq** (`stooq.com`) | Evaluated as a potential multi-year historical EOD data provider. |
+| **Audit Date** | August 27, 2026 | Phase 10B.1.5 evidence resolution. |
+| **No-Key Unattended Access** | **`FAIL`** | Unattended HTTP requests receive a client-side JavaScript browser verification challenge rather than CSV data. |
+| **API Key Contract** | **`UNVERIFIED`** | Third-party reports suggest an `apikey` parameter/flow may exist, but Sentinax has not independently verified the official contract. |
+| **Key-Based Automation** | **`UNVERIFIED`** | Untested in automated backend without an official key contract. |
+| **Price Adjustment Semantics** | **`UNVERIFIED`** | Conflicting reports on whether default historical series are raw or split/dividend-adjusted. |
+| **Volume Adjustment Semantics**| **`UNKNOWN`** | Unspecified whether volume is adjusted alongside price. |
+| **Candidate Classification** | **`YELLOW_CANDIDATE_BLOCKED`** | Feasible only if a legitimate, stable, machine-readable key contract is formally verified. |
+| **Final Feasibility Verdict** | **`ACCESS_CONTRACT_UNVERIFIED` (CONDITIONAL_NO_GO)** | **Do NOT implement a Stooq adapter in current phase.** |
 
 ---
 
-## 2. Technical Findings & Live Access Inspection
+## 2. Verified Technical Evidence
 
-### 2.1 Current No-Key & Anti-Bot Behavior
-- Direct HTTP requests to the commonly referenced historical CSV endpoint (`https://stooq.com/q/d/l/?s=aapl.us&i=d`) return `HTTP/1.1 200 OK` containing a client-side **JavaScript Proof-of-Work (PoW) Anti-Bot Challenge** rather than CSV data.
-- The challenge executes a client-side SHA-256 hash puzzle (`crypto.subtle.digest`) before posting to `/__verify` to obtain a session cookie. Standard HTTP clients (e.g., `httpx`, `curl`, `aiohttp`) receive the HTML challenge payload and 0 observations.
-- `robots.txt` explicitly disallows all automated crawlers:
-  ```text
-  User-agent: Bingbot
-  Allow: /
+### 2.1 Unauthenticated HTTP Client Access
+- Direct HTTP GET requests to the historical download endpoint (e.g., `https://stooq.com/q/d/l/?s=aapl.us&i=d`) return `HTTP/1.1 200 OK` with `Content-Type: text/html` containing an OpenResty/client-side JavaScript Proof-of-Work (PoW) verification challenge.
+- Unattended, zero-trust backend HTTP clients (e.g. `httpx`, `curl`) fail to receive CSV data.
+- **Rule**: Sentinax will **not** programmatically solve or bypass browser challenges/CAPTCHAs.
 
-  User-agent: Googlebot
-  Allow: /
+### 2.2 Robots.txt Authority
+- Observations of `robots.txt` were inconsistent across independent verification environments and are **not** used as the primary feasibility authority.
 
-  User-agent: *
-  Disallow: /
-  ```
+### 2.3 API Key & Official Contract State
+- Sentinax has not verified an official self-service API key portal or usage agreement on Stooq.
+- If legitimate manual key enrollment exists and provides machine-readable CSV downloads, it may be evaluated in a future setup verification step. Until then, `API_KEY_CONTRACT` remains `UNVERIFIED`.
 
-### 2.2 API Key & Developer Portal
-- Stooq does **not** provide an official public API, developer portal, or self-service API key provisioning system.
-- Community third-party scrapers rely on browser emulation, session sniffing, or manual bulk zip file downloads.
-
-### 2.3 Quota & Error Handling
-- Quotas are **undisclosed** (`UNKNOWN`).
-- Scraping triggers undisclosed IP rate limits ("Exceeded the daily hits limit") followed by immediate anti-bot challenges and IP blocks.
-
-### 2.4 Price Adjustment & Corporate Action Semantics
-- **Adjustment Default**: Web downloads on Stooq default to **split-adjusted** and **dividend-adjusted** prices.
-- **Raw Price Isolation**: The endpoint does not cleanly separate unadjusted raw daily prices without manual browser UI interactions.
-- **Volume Semantics**: `UNKNOWN` (unspecified whether volume is adjusted alongside splits).
-- **Semantics Classification**: `PRICE_ADJUSTMENT_SEMANTICS_UNVERIFIED`.
-
-### 2.5 Point-in-Time (PIT) Semantics
-- Stooq provides ex-post adjusted retrospective snapshots.
-- Does not expose `published_at` or point-in-time publication timestamps.
+### 2.4 Price & Corporate Action Adjustment Semantics
+- Historical sources disagree on whether Stooq's default CSV stream reflects raw as-traded prices, split-adjusted prices, or total-return dividend-adjusted prices.
+- **Policy**: The return engine and risk models must **not** ingest Stooq data until exact corporate action adjustment semantics are formally verified.
 
 ---
 
-## 3. Compliance & Reliability Conclusion
+## 3. Conclusion & Next Steps
 
-1. **Anti-Bot Policy Violation**: Sentinax architecture forbids bypassing anti-bot challenges (CAPTCHA, JavaScript PoW miners, or Cloudflare/OpenResty gates).
-2. **Robots.txt Conflict**: Programmatic scraping directly violates Stooq's `User-agent: * Disallow: /` directive.
-3. **No Production SLA**: Lack of a formal API and commercial SLA creates severe reliability risks for institutional-grade portfolio risk engines.
-
-**Recommendation**: Do not implement a Stooq adapter (`stooq.py`). Retain Alpha Vantage for validated low-volume EOD ingestion, and evaluate official commercial API providers (e.g. EODHD, Tiingo, Polygon) for long-horizon multi-year risk history in subsequent phases.
+1. **Current Decision**: **NO ADAPTER IMPLEMENTATION**.
+2. **Current State**: Phase 10A Alpha Vantage adapter remains the primary low-volume EOD ingestion channel.
+3. **Future Path**: If a documented, legitimate Stooq key acquisition flow is established by the user, a secondary verification phase may probe key-based automated CSV retrieval.
