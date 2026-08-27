@@ -66,27 +66,39 @@ Candidate definitions (subject to authenticated metadata proof):
    - Economic date MUST originate from either explicit `trade_date` or verified outer filename (`KMPYYYYAAGG.zip`).
    - If both are supplied and mismatch, parser fails closed with `BISTKMTPSchemaDriftError`.
    - If neither exists, parsing fails closed with `MISSING_EFFECTIVE_DATE`. System clock is never used.
-2. **Purity Representation & Scale**:
-   - Summary benchmarks (`Fiyatlar` sheet): Purity is `None` (summary benchmarks do not declare purity).
-   - Granular transaction series (`Seri İstatistikleri`): Raw purity text and value are preserved. Purity scale is classified as `"PER_MILLE"` (e.g. `995.0`) or `"PERCENT"` (e.g. `99.9%`), with `fineness_per_mille` calculated strictly where verified.
-3. **Settlement Term Semantics (No Default `T+0`)**:
-   - `settlement_term` is `None` (unknown) unless explicitly established by source data.
-   - `None` (unknown settlement) and `"T+0"` (explicit T+0 settlement) are strictly non-equivalent.
-4. **Snapshot Lineage**:
+2. **Authoritative Metal-Specific Purity Scale (No Magnitude Heuristics)**:
+   - **BIST Gold Convention**: Saflık is declared per mille ($x/1000$, standard minimum threshold $995.0$). `purity_scale = "PER_MILLE"`, `fineness_per_mille = raw_purity_val` (valid range: $0 < \text{val} \le 1000$).
+   - **BIST Silver Convention**: Saflık is declared in percent ($x/100$, standard minimum threshold $99.9\%$). `purity_scale = "PERCENT"`, `fineness_per_mille = raw_purity_val \times 10` (valid range: $0 < \text{val} \le 100$).
+   - **Unsupported/Unknown Metals**: Preserves raw value/text, sets `purity_scale = "UNKNOWN"`, and canonical `fineness_per_mille = None` (forbidden to infer scale from numeric magnitude).
+   - **Summary Benchmarks (`Fiyatlar` sheet)**: Purity is `None` (summary benchmarks do not declare purity).
+3. **Raw Settlement Provenance & No-Fabrication Date Policy**:
+   - `Takas Tarihi` cell text is preserved verbatim in `raw_value_date_text` (e.g. `"2608"`).
+   - Arbitrary rollover or current-year attachment is strictly forbidden (`value_date = None`, `settlement_term = None`).
+   - Literal `"T+0"` tokens explicitly set `settlement_term = "T+0"` and `value_date = effective_date`.
+4. **Finite Decimal & Discrete Integral Counts**:
+   - `parse_kmtp_decimal` and `TCMBEVDSProvider._parse_exact_decimal` reject `NaN`, `sNaN`, `+Infinity`, `-Infinity`.
+   - `parse_kmtp_int` strictly rejects floats, non-integral values (e.g. `"1.5"` $\to$ `None`), and negative counts.
+   - `Decimal("0")` remains valid where zero is semantically permitted.
+5. **Snapshot Lineage**:
    - `to_normalized_observation_record()` preserves `snapshot_id` from raw snapshot record. No synthetic UUIDs are generated during conversion.
 
 ---
 
 ## 5. Cross-Source Semantic Comparability
 
-To prevent invalid financial comparisons, `PreciousMetalCrossSourceComparator` enforces strict 8-dimensional equivalence:
+To prevent invalid financial comparisons, `PreciousMetalCrossSourceComparator` enforces strict multi-dimensional equivalence:
 
 ```
-(metal, price_currency, quantity_unit, price_quantity, price_type, purity_semantics, settlement_term, effective_date)
+(metal, price_currency, quantity_unit, price_quantity, price_type, purity_semantics, settlement_semantics, effective_date)
 ```
 
-1. **`CONSISTENT`**: All 8 dimensions match AND `price_a == price_b`.
-2. **`DIVERGENT`**: All 8 dimensions match BUT `price_a != price_b`.
-3. **`NOT_COMPARABLE`**: Any dimension differs (e.g. `TRY/KG` vs `USD/OZ`, `995‰` vs `None`, `REFERENCE` vs `WEIGHTED_AVERAGE`, or `None` vs `T+0`).
+1. **`CONSISTENT`**: All dimensions match AND `price_a == price_b`.
+2. **`DIVERGENT`**: All dimensions match BUT `price_a != price_b`.
+3. **`NOT_COMPARABLE`**: Any dimension differs:
+   - Currency mismatch (`TRY` vs `USD`).
+   - Unit mismatch (`KG` vs `TROY_OZ`).
+   - Price type mismatch (`REFERENCE` vs `WEIGHTED_AVERAGE`).
+   - Purity unverified/missing: Both observations MUST have authoritative canonical `fineness_per_mille` that are equal. Observations with `fineness_per_mille = None` (including summary benchmarks) fail closed to `NOT_COMPARABLE`.
+   - Settlement mismatch (`None` vs `"T+0"`, or differing `raw_value_date_text`).
 
 Cross-source comparison never fabricates an average or reconciles differing units silently.

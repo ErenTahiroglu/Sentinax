@@ -63,23 +63,15 @@ class PreciousMetalCrossSourceComparator:
             reasons.append(f"PRICE_TYPE_MISMATCH: {obs_a.price_type.value} vs {obs_b.price_type.value}")
 
         # 7. Purity / Fineness Semantics
-        # If canonical fineness is available on both, compare fineness_per_mille
-        if obs_a.fineness_per_mille is not None and obs_b.fineness_per_mille is not None:
-            if obs_a.fineness_per_mille != obs_b.fineness_per_mille:
-                reasons.append(
-                    f"PURITY_FINENESS_MISMATCH: {obs_a.fineness_per_mille}‰ vs {obs_b.fineness_per_mille}‰"
-                )
-        else:
-            # Fallback to raw purity value, scale, and legacy purity
-            if (
-                obs_a.raw_purity_value != obs_b.raw_purity_value
-                or obs_a.purity_scale != obs_b.purity_scale
-                or obs_a.purity != obs_b.purity
-            ):
-                reasons.append(
-                    f"PURITY_MISMATCH: val={obs_a.raw_purity_value or obs_a.purity} (scale={obs_a.purity_scale}) vs "
-                    f"val={obs_b.raw_purity_value or obs_b.purity} (scale={obs_b.purity_scale})"
-                )
+        # Fail closed: require known authoritative canonical fineness on both observations and equality
+        if obs_a.fineness_per_mille is None or obs_b.fineness_per_mille is None:
+            reasons.append(
+                "PURITY_UNVERIFIED_OR_MISSING: Authoritative canonical fineness required on both observations."
+            )
+        elif obs_a.fineness_per_mille != obs_b.fineness_per_mille:
+            reasons.append(
+                f"PURITY_FINENESS_MISMATCH: {obs_a.fineness_per_mille}‰ vs {obs_b.fineness_per_mille}‰"
+            )
 
         # 8. Settlement Term (Strict exact comparison; None is UNKNOWN, never defaulted to T+0)
         if obs_a.settlement_term != obs_b.settlement_term:
@@ -87,7 +79,13 @@ class PreciousMetalCrossSourceComparator:
                 f"SETTLEMENT_MISMATCH: '{obs_a.settlement_term}' vs '{obs_b.settlement_term}'"
             )
 
-        # 9. Value Date (if specified on either side)
+        # 9. Raw Settlement / Value Date Text
+        if obs_a.raw_value_date_text != obs_b.raw_value_date_text:
+            reasons.append(
+                f"RAW_SETTLEMENT_TEXT_MISMATCH: '{obs_a.raw_value_date_text}' vs '{obs_b.raw_value_date_text}'"
+            )
+
+        # 10. Value Date (if specified on either side)
         if obs_a.value_date != obs_b.value_date:
             reasons.append(
                 f"VALUE_DATE_MISMATCH: {obs_a.value_date} vs {obs_b.value_date}"

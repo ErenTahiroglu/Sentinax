@@ -100,6 +100,7 @@ class PreciousMetalMarketObservation:
     purity_scale: Optional[str] = None              # "PER_MILLE", "PERCENT", or "UNKNOWN"
     fineness_per_mille: Optional[Decimal] = None    # Canonical per-mille fineness if unambiguously verified
 
+    raw_value_date_text: Optional[str] = None       # Raw settlement/value-date string from source (e.g. "2608", "T+0")
     value_date: Optional[date] = None               # Explicit settlement/value date
     settlement_term: Optional[str] = None           # Explicit settlement term (e.g. "T+0", "T+1", None if unknown)
 
@@ -137,6 +138,7 @@ class PreciousMetalMarketObservation:
             "raw_purity_text": self.raw_purity_text,
             "purity_scale": self.purity_scale,
             "fineness_per_mille": str(self.fineness_per_mille) if self.fineness_per_mille is not None else None,
+            "raw_value_date_text": self.raw_value_date_text,
             "value_date": self.value_date.isoformat() if self.value_date else None,
             "settlement_term": self.settlement_term,
             "volume": str(self.volume) if self.volume is not None else None,
@@ -181,6 +183,7 @@ class PreciousMetalMarketObservation:
             "raw_purity_text": self.raw_purity_text,
             "purity_scale": self.purity_scale,
             "fineness_per_mille": str(self.fineness_per_mille) if self.fineness_per_mille is not None else None,
+            "raw_value_date_text": self.raw_value_date_text,
             "value_date": self.value_date.isoformat() if self.value_date else None,
             "settlement_term": self.settlement_term,
             "provider": self.provider,

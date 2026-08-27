@@ -395,12 +395,146 @@ class TestBISTKMTPParser:
         assert silver_series[0].purity_scale == "PERCENT"
         assert silver_series[0].fineness_per_mille == Decimal("999.0")
 
+    def test_07b_gold_and_silver_purity_semantics(self):
+        """Scenario 7b: Metal-specific BIST purity rules (Gold=per mille, Silver=percent)."""
+        seri_rows = {
+            2: {
+                "A": "Seriler", "B": "Kıymetli Maden", "C": "Tip", "D": "Market Segment", "E": "Bar Tipi",
+                "F": "Fiyat Birimi", "G": "Ağırlık", "H": "Ağırlık Birimi", "I": "Ayar", "J": "Kasa",
+                "K": "Takas Tarihi", "L": "Adet", "M": "TL İşlem Hacmi", "N": "USD İşlem Hacmi",
+                "O": "EURO İşlem Hacmi", "P": "İşlem Sayısı", "Q": "AOF", "R": "En Yüksek Fiyat",
+                "S": "En Düşük Fiyat", "T": "Kapanış Fiyatı"
+            },
+            3: {
+                "A": "AU_TEST_995", "B": "Altın", "F": "TRY/KG", "I": "995", "K": "2608", "Q": "7140000"
+            },
+            4: {
+                "A": "AG_TEST_999", "B": "Gümüş", "F": "TRY/KG", "I": "99.9", "K": "2608", "Q": "105000"
+            }
+        }
+        xlsx_bytes = build_mock_kmtp_xlsx(fiyatlar_rows={}, seri_rows=seri_rows)
+        observations = BISTKMTPBulletinParser.parse_xlsx_bytes(xlsx_bytes, trade_date=date(2024, 10, 1))
+
+        gold_obs = next(o for o in observations if o.metal == PreciousMetalType.GOLD)
+        assert gold_obs.raw_purity_text == "995"
+        assert gold_obs.raw_purity_value == Decimal("995")
+        assert gold_obs.purity_scale == "PER_MILLE"
+        assert gold_obs.fineness_per_mille == Decimal("995")
+
+        silver_obs = next(o for o in observations if o.metal == PreciousMetalType.SILVER)
+        assert silver_obs.raw_purity_text == "99.9"
+        assert silver_obs.raw_purity_value == Decimal("99.9")
+        assert silver_obs.purity_scale == "PERCENT"
+        assert silver_obs.fineness_per_mille == Decimal("999.0")
+
+    def test_07c_magnitude_heuristic_absent(self):
+        """Scenario 7c: Unknown metals with arbitrary numeric purities do NOT infer PER_MILLE/PERCENT."""
+        seri_rows = {
+            2: {
+                "A": "Seriler", "B": "Kıymetli Maden", "F": "USD/OZ", "I": "Ayar", "K": "Takas Tarihi", "Q": "AOF"
+            },
+            3: {
+                "A": "UNKNOWN_995", "B": "BilinmeyenMaden", "F": "USD/OZ", "I": "995", "K": "2608", "Q": "1000"
+            },
+            4: {
+                "A": "UNKNOWN_999", "B": "BilinmeyenMaden", "F": "USD/OZ", "I": "99.9", "K": "2608", "Q": "1000"
+            }
+        }
+        xlsx_bytes = build_mock_kmtp_xlsx(fiyatlar_rows={}, seri_rows=seri_rows)
+        observations = BISTKMTPBulletinParser.parse_xlsx_bytes(xlsx_bytes, trade_date=date(2024, 10, 1))
+
+        obs_995 = next(o for o in observations if o.raw_symbol == "UNKNOWN_995_AOF")
+        assert obs_995.purity_scale == "UNKNOWN"
+        assert obs_995.fineness_per_mille is None
+        assert obs_995.status == PreciousMetalObservationStatus.UNSUPPORTED_METAL
+
+        obs_999 = next(o for o in observations if o.raw_symbol == "UNKNOWN_999_AOF")
+        assert obs_999.purity_scale == "UNKNOWN"
+        assert obs_999.fineness_per_mille is None
+        assert obs_999.status == PreciousMetalObservationStatus.UNSUPPORTED_METAL
+
+    def test_07d_purity_bounds_rejection(self):
+        """Scenario 7d: Out-of-bounds fineness (e.g. >1000‰ or >100%) marks INVALID_OBSERVATION."""
+        seri_rows = {
+            2: {"A": "Seriler", "B": "Kıymetli Maden", "F": "TRY/KG", "I": "Ayar", "Q": "AOF"},
+            3: {"A": "AU_OVER", "B": "Altın", "F": "TRY/KG", "I": "1005", "Q": "7140000"},
+            4: {"A": "AG_OVER", "B": "Gümüş", "F": "TRY/KG", "I": "105", "Q": "105000"},
+        }
+        xlsx_bytes = build_mock_kmtp_xlsx(fiyatlar_rows={}, seri_rows=seri_rows)
+        observations = BISTKMTPBulletinParser.parse_xlsx_bytes(xlsx_bytes, trade_date=date(2024, 10, 1))
+
+        au_over = next(o for o in observations if o.raw_symbol == "AU_OVER_AOF")
+        assert au_over.status == PreciousMetalObservationStatus.INVALID_OBSERVATION
+        assert au_over.fineness_per_mille is None
+        assert any("Invalid gold fineness" in d for d in au_over.diagnostics)
+
+        ag_over = next(o for o in observations if o.raw_symbol == "AG_OVER_AOF")
+        assert ag_over.status == PreciousMetalObservationStatus.INVALID_OBSERVATION
+        assert ag_over.fineness_per_mille is None
+        assert any("Invalid silver fineness" in d for d in ag_over.diagnostics)
+
+    def test_07e_raw_takas_tarihi_provenance_no_year_fabrication(self):
+        """Scenario 7e: Takas Tarihi '2608' is retained verbatim in raw_value_date_text with None value_date."""
+        seri_rows = {
+            2: {"A": "Seriler", "B": "Kıymetli Maden", "F": "TRY/KG", "I": "Ayar", "K": "Takas Tarihi", "Q": "AOF"},
+            3: {"A": "AU_2608", "B": "Altın", "F": "TRY/KG", "I": "995", "K": "2608", "Q": "7140000"},
+        }
+        xlsx_bytes = build_mock_kmtp_xlsx(fiyatlar_rows={}, seri_rows=seri_rows)
+        observations = BISTKMTPBulletinParser.parse_xlsx_bytes(xlsx_bytes, trade_date=date(2024, 10, 1))
+
+        obs = observations[0]
+        assert obs.raw_value_date_text == "2608"
+        assert obs.value_date is None
+        assert obs.settlement_term is None
+        # Verify serialization includes raw_value_date_text
+        d = obs.to_dict()
+        assert d["raw_value_date_text"] == "2608"
+        norm = obs.to_normalized_observation_record()
+        assert norm.observation_data["raw_value_date_text"] == "2608"
+
+    def test_07f_literal_t_plus_zero_settlement(self):
+        """Scenario 7f: Literal 'T+0' sets settlement_term='T+0' and value_date=effective_date."""
+        seri_rows = {
+            2: {"A": "Seriler", "B": "Kıymetli Maden", "F": "TRY/KG", "I": "Ayar", "K": "Takas Tarihi", "Q": "AOF"},
+            3: {"A": "AU_T0", "B": "Altın", "F": "TRY/KG", "I": "995", "K": "T+0", "Q": "7140000"},
+        }
+        xlsx_bytes = build_mock_kmtp_xlsx(fiyatlar_rows={}, seri_rows=seri_rows)
+        observations = BISTKMTPBulletinParser.parse_xlsx_bytes(xlsx_bytes, trade_date=date(2024, 10, 1))
+
+        obs = observations[0]
+        assert obs.raw_value_date_text == "T+0"
+        assert obs.settlement_term == "T+0"
+        assert obs.value_date == date(2024, 10, 1)
+
     def test_08_zero_float_conversion_rejected(self):
         """Scenario 8: Float input to parse_kmtp_decimal strictly raises TypeError."""
         with pytest.raises(TypeError, match="Float input prohibited"):
             parse_kmtp_decimal(4615.96)
         with pytest.raises(TypeError, match="Float input prohibited"):
             parse_kmtp_int(12.0)
+
+    def test_08b_finite_decimal_rejection(self):
+        """Scenario 8b: parse_kmtp_decimal rejects non-finite Decimals and parses valid zero."""
+        assert parse_kmtp_decimal("NaN") is None
+        assert parse_kmtp_decimal("sNaN") is None
+        assert parse_kmtp_decimal("Infinity") is None
+        assert parse_kmtp_decimal("-Infinity") is None
+        assert parse_kmtp_decimal("+inf") is None
+        assert parse_kmtp_decimal(Decimal("NaN")) is None
+        assert parse_kmtp_decimal(Decimal("Infinity")) is None
+        assert parse_kmtp_decimal("0") == Decimal("0")
+        assert parse_kmtp_decimal("0.00") == Decimal("0.00")
+
+    def test_08c_integral_count_discrete_and_non_negative(self):
+        """Scenario 8c: parse_kmtp_int strictly rejects non-integral counts and negative counts."""
+        assert parse_kmtp_int("1.5") is None
+        assert parse_kmtp_int(Decimal("1.9")) is None
+        assert parse_kmtp_int("-5") is None
+        assert parse_kmtp_int("-1") is None
+        assert parse_kmtp_int("0") == 0
+        assert parse_kmtp_int(0) == 0
+        assert parse_kmtp_int("42") == 42
+        assert parse_kmtp_int(Decimal("42")) == 42
 
     def test_09_malformed_price_becomes_none(self):
         """Scenario 9: Missing or malformed price remains None (never 0.0) and marks INVALID_OBSERVATION."""
@@ -683,6 +817,16 @@ class TestTCMBEVDSPreciousMetals:
         norm_bad = provider.normalize(bad_payload, is_precious_metal=True)
         assert norm_bad["value"] is None
 
+    def test_17b_evds_finite_decimal_rejection(self):
+        """Scenario 17b: EVDS exact decimal normalization rejects non-finite values."""
+        assert TCMBEVDSProvider._parse_exact_decimal("NaN") is None
+        assert TCMBEVDSProvider._parse_exact_decimal("sNaN") is None
+        assert TCMBEVDSProvider._parse_exact_decimal("Infinity") is None
+        assert TCMBEVDSProvider._parse_exact_decimal("-Infinity") is None
+        assert TCMBEVDSProvider._parse_exact_decimal("+inf") is None
+        assert TCMBEVDSProvider._parse_exact_decimal("0") == Decimal("0")
+        assert TCMBEVDSProvider._parse_exact_decimal("0.0") == Decimal("0.0")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. Cross-Source Strict Semantic Comparability Tests
@@ -848,6 +992,92 @@ class TestPreciousMetalCrossSourceComparator:
         assert res.status == ComparabilityStatus.NOT_COMPARABLE
         assert any("PURITY" in r for r in res.reasons)
 
+    def test_22b_purity_both_unknown_is_not_comparable(self):
+        """Scenario 22b: Two observations both with unknown purity (None) fail closed to NOT_COMPARABLE."""
+        t_date = date(2024, 10, 1)
+        obs_a = PreciousMetalMarketObservation(
+            metal=PreciousMetalType.GOLD,
+            market=PreciousMetalMarket.BIST_KMTP,
+            effective_date=t_date,
+            price=Decimal("4615.96"),
+            price_currency=Currency.USD,
+            quantity_unit=PreciousMetalUnit.TROY_OZ,
+            price_type=PreciousMetalPriceType.WEIGHTED_AVERAGE,
+            fineness_per_mille=None,
+        )
+        obs_b = PreciousMetalMarketObservation(
+            metal=PreciousMetalType.GOLD,
+            market=PreciousMetalMarket.TCMB_EVDS,
+            effective_date=t_date,
+            price=Decimal("4615.96"),
+            price_currency=Currency.USD,
+            quantity_unit=PreciousMetalUnit.TROY_OZ,
+            price_type=PreciousMetalPriceType.WEIGHTED_AVERAGE,
+            fineness_per_mille=None,
+        )
+
+        res = PreciousMetalCrossSourceComparator.compare(obs_a, obs_b)
+        assert res.status == ComparabilityStatus.NOT_COMPARABLE
+        assert res.is_comparable is False
+        assert any("PURITY" in r for r in res.reasons)
+
+    def test_22c_purity_known_equal_is_comparable(self):
+        """Scenario 22c: Two observations with verified equal fineness are comparable."""
+        t_date = date(2024, 10, 1)
+        obs_a = PreciousMetalMarketObservation(
+            metal=PreciousMetalType.GOLD,
+            market=PreciousMetalMarket.BIST_KMTP,
+            effective_date=t_date,
+            price=Decimal("4615.96"),
+            price_currency=Currency.USD,
+            quantity_unit=PreciousMetalUnit.TROY_OZ,
+            price_type=PreciousMetalPriceType.WEIGHTED_AVERAGE,
+            fineness_per_mille=Decimal("995.0"),
+        )
+        obs_b = PreciousMetalMarketObservation(
+            metal=PreciousMetalType.GOLD,
+            market=PreciousMetalMarket.TCMB_EVDS,
+            effective_date=t_date,
+            price=Decimal("4615.96"),
+            price_currency=Currency.USD,
+            quantity_unit=PreciousMetalUnit.TROY_OZ,
+            price_type=PreciousMetalPriceType.WEIGHTED_AVERAGE,
+            fineness_per_mille=Decimal("995.0"),
+        )
+
+        res = PreciousMetalCrossSourceComparator.compare(obs_a, obs_b)
+        assert res.status == ComparabilityStatus.CONSISTENT
+        assert res.is_comparable is True
+
+    def test_22d_purity_known_different_is_not_comparable(self):
+        """Scenario 22d: Two observations with differing fineness (995 vs 999) => NOT_COMPARABLE."""
+        t_date = date(2024, 10, 1)
+        obs_995 = PreciousMetalMarketObservation(
+            metal=PreciousMetalType.GOLD,
+            market=PreciousMetalMarket.BIST_KMTP,
+            effective_date=t_date,
+            price=Decimal("4615.96"),
+            price_currency=Currency.USD,
+            quantity_unit=PreciousMetalUnit.TROY_OZ,
+            price_type=PreciousMetalPriceType.WEIGHTED_AVERAGE,
+            fineness_per_mille=Decimal("995.0"),
+        )
+        obs_999 = PreciousMetalMarketObservation(
+            metal=PreciousMetalType.GOLD,
+            market=PreciousMetalMarket.TCMB_EVDS,
+            effective_date=t_date,
+            price=Decimal("4615.96"),
+            price_currency=Currency.USD,
+            quantity_unit=PreciousMetalUnit.TROY_OZ,
+            price_type=PreciousMetalPriceType.WEIGHTED_AVERAGE,
+            fineness_per_mille=Decimal("999.0"),
+        )
+
+        res = PreciousMetalCrossSourceComparator.compare(obs_995, obs_999)
+        assert res.status == ComparabilityStatus.NOT_COMPARABLE
+        assert res.is_comparable is False
+        assert any("PURITY" in r for r in res.reasons)
+
     def test_23_different_settlement_or_unknown_settlement_is_not_comparable(self):
         """Scenario 23: Differing settlement term (None vs T+0) => NOT_COMPARABLE."""
         t_date = date(2024, 10, 1)
@@ -859,6 +1089,7 @@ class TestPreciousMetalCrossSourceComparator:
             price_currency=Currency.TRY,
             quantity_unit=PreciousMetalUnit.KG,
             price_type=PreciousMetalPriceType.REFERENCE,
+            fineness_per_mille=Decimal("995.0"),
             settlement_term=None,
         )
         obs_t0 = PreciousMetalMarketObservation(
@@ -869,12 +1100,43 @@ class TestPreciousMetalCrossSourceComparator:
             price_currency=Currency.TRY,
             quantity_unit=PreciousMetalUnit.KG,
             price_type=PreciousMetalPriceType.REFERENCE,
+            fineness_per_mille=Decimal("995.0"),
             settlement_term="T+0",
         )
 
         res = PreciousMetalCrossSourceComparator.compare(obs_none, obs_t0)
         assert res.status == ComparabilityStatus.NOT_COMPARABLE
         assert any("SETTLEMENT_MISMATCH" in r for r in res.reasons)
+
+    def test_23b_raw_settlement_text_mismatch_is_not_comparable(self):
+        """Scenario 23b: Differing raw settlement strings ('2608' vs '2708') => NOT_COMPARABLE."""
+        t_date = date(2024, 10, 1)
+        obs_a = PreciousMetalMarketObservation(
+            metal=PreciousMetalType.GOLD,
+            market=PreciousMetalMarket.BIST_KMTP,
+            effective_date=t_date,
+            price=Decimal("7135618.04"),
+            price_currency=Currency.TRY,
+            quantity_unit=PreciousMetalUnit.KG,
+            price_type=PreciousMetalPriceType.REFERENCE,
+            fineness_per_mille=Decimal("995.0"),
+            raw_value_date_text="2608",
+        )
+        obs_b = PreciousMetalMarketObservation(
+            metal=PreciousMetalType.GOLD,
+            market=PreciousMetalMarket.BIST_KMTP,
+            effective_date=t_date,
+            price=Decimal("7135618.04"),
+            price_currency=Currency.TRY,
+            quantity_unit=PreciousMetalUnit.KG,
+            price_type=PreciousMetalPriceType.REFERENCE,
+            fineness_per_mille=Decimal("995.0"),
+            raw_value_date_text="2708",
+        )
+
+        res = PreciousMetalCrossSourceComparator.compare(obs_a, obs_b)
+        assert res.status == ComparabilityStatus.NOT_COMPARABLE
+        assert any("RAW_SETTLEMENT_TEXT_MISMATCH" in r for r in res.reasons)
 
     def test_24_serialization_to_generic_pit_records_preserves_lineage(self):
         """Scenario 24: Precious metals models preserve snapshot lineage without generating fake UUIDs."""

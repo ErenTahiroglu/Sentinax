@@ -399,10 +399,11 @@ class TCMBEVDSProvider(DataProviderContract):
         if val_str is None:
             return None
         cleaned = str(val_str).strip()
-        if cleaned in ("", "-", "null", "None"):
+        if cleaned.lower() in ("", "-", "null", "none", "nan", "snan", "inf", "+inf", "-inf", "infinity", "+infinity", "-infinity"):
             return None
         try:
-            return Decimal(cleaned.replace(",", "."))
+            d = Decimal(cleaned.replace(",", "."))
+            return d if d.is_finite() else None
         except (InvalidOperation, ValueError, TypeError):
             return None
 

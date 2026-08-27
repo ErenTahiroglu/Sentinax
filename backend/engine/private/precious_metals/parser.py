@@ -51,18 +51,21 @@ class BISTKMTPSchemaDriftError(BISTKMTPParserError):
 
 def parse_kmtp_decimal(val: Any) -> Optional[Decimal]:
     """
-    Parses numeric string or int to Decimal.
+    Parses numeric string, int, or Decimal to exact finite Decimal.
     Strictly forbids float inputs to prevent precision loss.
+    Rejects NaN, sNaN, Infinity, -Infinity.
     """
     if val is None:
         return None
     if isinstance(val, float):
         raise TypeError(f"Float input prohibited for exact monetary/quantity arithmetic: {val}")
-    if isinstance(val, (int, Decimal)):
-        return Decimal(str(val))
+    if isinstance(val, int):
+        return Decimal(val)
+    if isinstance(val, Decimal):
+        return val if val.is_finite() else None
     if isinstance(val, str):
         cleaned = val.strip().replace(" ", "").replace("\xa0", "")
-        if not cleaned or cleaned in ("-", "--", "N/A", "null", "None", "."):
+        if not cleaned or cleaned.lower() in ("-", "--", "n/a", "null", "none", ".", "nan", "snan", "inf", "+inf", "-inf", "infinity", "+infinity", "-infinity"):
             return None
         # Handle comma as decimal separator if dot is thousand sep (e.g. 7.140.695,58)
         if "," in cleaned and "." in cleaned:
@@ -73,22 +76,31 @@ def parse_kmtp_decimal(val: Any) -> Optional[Decimal]:
         elif "," in cleaned and "." not in cleaned:
             cleaned = cleaned.replace(",", ".")
         try:
-            return Decimal(cleaned)
+            d = Decimal(cleaned)
+            return d if d.is_finite() else None
         except InvalidOperation:
             return None
     return None
 
 
 def parse_kmtp_int(val: Any) -> Optional[int]:
-    """Parses integer string or int. Strictly rejects floats."""
+    """
+    Parses integer string or int.
+    Strictly rejects floats, non-integral values (e.g. '1.5' or Decimal('1.9')), and negative counts.
+    """
     if val is None:
         return None
     if isinstance(val, float):
         raise TypeError(f"Float input prohibited: {val}")
     if isinstance(val, int):
-        return val
+        return val if val >= 0 else None
     d = parse_kmtp_decimal(val)
-    return int(d) if d is not None else None
+    if d is None or not d.is_finite() or d < Decimal("0"):
+        return None
+    # Reject non-integral numbers: fractional part must be strictly 0
+    if d != d.to_integral_value():
+        return None
+    return int(d)
 
 
 def parse_unit_and_currency(unit_str: str) -> Tuple[Optional[Currency], Optional[PreciousMetalUnit]]:
@@ -496,32 +508,41 @@ class BISTKMTPBulletinParser:
             if qty_unit is None:
                 qty_unit = PreciousMetalUnit.KG
 
-            # Parse purity (Ayar) with explicit scale and fineness
+            # Parse purity (Ayar) with authoritative metal-specific scale and fineness
             raw_purity_text = cells.get("I", "").strip() or None
             raw_purity_val = parse_kmtp_decimal(raw_purity_text)
             purity_scale: Optional[str] = None
             fineness_per_mille: Optional[Decimal] = None
+            purity_diag: Optional[str] = None
 
             if raw_purity_val is not None:
-                if raw_purity_val >= Decimal("500"):
+                if metal == PreciousMetalType.GOLD and not is_unsupported:
                     purity_scale = "PER_MILLE"
-                    fineness_per_mille = raw_purity_val
-                elif Decimal("0") < raw_purity_val <= Decimal("100"):
+                    if Decimal("0") < raw_purity_val <= Decimal("1000"):
+                        fineness_per_mille = raw_purity_val
+                    else:
+                        purity_diag = f"Invalid gold fineness value '{raw_purity_val}': must be between 0 and 1000."
+                elif metal == PreciousMetalType.SILVER and not is_unsupported:
                     purity_scale = "PERCENT"
-                    fineness_per_mille = raw_purity_val * Decimal("10")
+                    if Decimal("0") < raw_purity_val <= Decimal("100"):
+                        fineness_per_mille = raw_purity_val * Decimal("10")
+                    else:
+                        purity_diag = f"Invalid silver fineness value '{raw_purity_val}': must be between 0 and 100%."
                 else:
                     purity_scale = "UNKNOWN"
+                    fineness_per_mille = None
 
-            # Parse settlement/value date without fabricating T+0
-            settlement_raw = cells.get("K", "").strip()
+            # Parse settlement/value date preserving exact raw text without fabricating year
+            raw_settlement = cells.get("K", "").strip() or None
+            raw_value_date_text = raw_settlement
             settlement_term: Optional[str] = None
             value_date: Optional[date] = None
 
-            if settlement_raw == "T+0":
+            if raw_settlement == "T+0":
                 settlement_term = "T+0"
                 value_date = effective_date
-            elif settlement_raw:
-                # Raw token like "2608" preserved in symbol/diagnostics, not fabricated as T+0
+            else:
+                # Raw token like "2608" preserved in raw_value_date_text, not fabricated as T+0 or attached with arbitrary year
                 settlement_term = None
                 value_date = None
 
@@ -545,12 +566,16 @@ class BISTKMTPBulletinParser:
             close = parse_kmtp_decimal(cells.get("T"))
 
             # Determine status & diagnostic
+            diag: List[str] = []
             if is_unsupported:
                 status = PreciousMetalObservationStatus.UNSUPPORTED_METAL
-                diag = [f"Unsupported precious metal '{metal_str}' in series '{series_code}'."]
+                diag.append(f"Unsupported precious metal '{metal_str}' in series '{series_code}'.")
+                conf = DataConfidenceLevel.NONE
+            elif purity_diag is not None:
+                status = PreciousMetalObservationStatus.INVALID_OBSERVATION
+                diag.append(purity_diag)
                 conf = DataConfidenceLevel.NONE
             else:
-                diag = []
                 status = PreciousMetalObservationStatus.VALID
                 conf = DataConfidenceLevel.HIGH
 
@@ -569,6 +594,7 @@ class BISTKMTPBulletinParser:
                     raw_purity_text=raw_purity_text,
                     purity_scale=purity_scale,
                     fineness_per_mille=fineness_per_mille,
+                    raw_value_date_text=raw_value_date_text,
                     settlement_term=settlement_term,
                     value_date=value_date,
                     volume=volume,
@@ -599,6 +625,7 @@ class BISTKMTPBulletinParser:
                     raw_purity_text=raw_purity_text,
                     purity_scale=purity_scale,
                     fineness_per_mille=fineness_per_mille,
+                    raw_value_date_text=raw_value_date_text,
                     settlement_term=settlement_term,
                     value_date=value_date,
                     volume=volume,
@@ -633,7 +660,10 @@ class BISTKMTPBulletinParser:
                 obs.price_type,
                 obs.price_currency,
                 obs.quantity_unit,
-                obs.purity,
+                obs.raw_purity_value,
+                obs.purity_scale,
+                obs.fineness_per_mille,
+                obs.raw_value_date_text,
                 obs.settlement_term,
                 obs.raw_symbol,
             )
