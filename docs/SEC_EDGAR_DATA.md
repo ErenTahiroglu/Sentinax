@@ -335,10 +335,27 @@ Derived Standalone Quarter Fact
    - Evaluator resolves target fiscal chains via explicit `target_fiscal_start_date`, or a single unambiguous fiscal year start.
    - If multiple fiscal chains exist in the series (e.g. multi-year series) without explicit disambiguation, or if differing start dates exist under the same `fiscal_year` metadata, the evaluator fails closed with `AMBIGUOUS_FISCAL_CHAIN`.
    - Arbitrary `[0]` selection is strictly forbidden.
-5. **Interval-Based Standalone Quarter Identity**:
-   - Quarter identity (Q1, Q2, Q3) requires interval-based proof relative to the resolved fiscal start date and prior quarter boundaries.
-   - `fp` (fiscal period) metadata serves as corroborating helper evidence, never sole quarter authority.
-   - Dates indicating Q1 cannot be treated as Q2/Q3 solely due to `fp` claims; date and `fp` contradictions fail closed with `PERIOD_IDENTITY_UNRESOLVED`.
+### 12.5 Phase 8B.3A.6 — Fiscal Anchor Semantics & Central Period-Bound Reuse
+
+1. **Standalone Quarter Start is NOT Fiscal Start**:
+   - Standalone Q2 (Apr 1) and Q3 (Jul 1) start dates are never treated as candidate fiscal-year starts.
+   - Fiscal starts originate strictly from cumulative/start-of-year anchors: Q1 `QUARTER_DURATION`, Q2/Q3 `YTD_DURATION`, or `ANNUAL_DURATION`.
+2. **Centralized Period Thresholds**:
+   - Reuses centralized inclusive duration bounds directly from `period_context.py`:
+     - Standalone Quarter: `QUARTER_MIN_DAYS = 70`, `QUARTER_MAX_DAYS = 115`.
+     - 6M YTD (Q2): `YTD_6M_MIN_DAYS = 150`, `YTD_6M_MAX_DAYS = 210`.
+     - 9M YTD (Q3): `YTD_9M_MIN_DAYS = 240`, `YTD_9M_MAX_DAYS = 300`.
+3. **Inclusive Duration Convention**:
+   - All duration validations strictly adhere to the inclusive convention `duration_days = (end_date - start_date).days + 1`.
+4. **Fail-Closed Duration Validation**:
+   - Missing duration metadata (`duration_days=None`) or invalid date spans cannot positively prove quarter or YTD identity, regardless of `fiscal_period` claims.
+5. **Relational Standalone Identity**:
+   - Standalone Q2 identity prioritizes matching the `Q2_YTD.end_date` endpoint and progressing past `Q1.end_date`.
+   - Standalone Q3 identity prioritizes matching the `Q3_YTD.end_date` endpoint and progressing past `Q2_YTD.end_date`.
+   - Rough calendar offsets are only used as secondary fallback when cumulative anchors are absent.
+6. **Conflict Identity Alignment**:
+   - Standalone conflict classifiers use identical interval predicates as standalone fact candidates, ensuring period-specific conflict isolation without cross-quarter contamination.
+
 
 
 

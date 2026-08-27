@@ -434,8 +434,10 @@ class TestSECQ3DerivationEligibility:
                 SECFiscalSeriesPoint(winner_result=w2, economic_period_kind=SECEconomicPeriodKind.YTD_DURATION, start_date=date(2024, 1, 1), end_date=date(2024, 6, 30), duration_days=182, fiscal_year=2024, fiscal_period="Q2", selected_value=Decimal("220"), selected_accession="0002", selected_filing_id=None, evaluation_snapshot_id=None, evaluation_snapshot_ids=[], evaluation_snapshot_retrieved_at=datetime(2024, 10, 1, tzinfo=timezone.utc), evaluation_snapshot_hash="hash_same", source_concept=None, match_strength="EXACT", selection_confidence="HIGH", is_comparative=False, is_amendment=False),
             ]
         )
-        elig = SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(s, "Q3", target_fiscal_start_date=date(2024, 1, 1))
-        assert elig.status == SECDerivationEligibilityStatus.PERIOD_SEQUENCE_INVALID
+        pair_elig = SECFiscalSeriesEvaluator._validate_derivation_pair(
+            target_quarter="Q3", expected_formula="Q3_YTD - Q2_YTD", left=s.points[0], right=s.points[1], series=s
+        )
+        assert pair_elig.status == SECDerivationEligibilityStatus.PERIOD_SEQUENCE_INVALID
 
     def test_21_fiscal_starts_differ_for_q3_returns_fiscal_start_mismatch(self):
         """Scenario 21: Q2 YTD and Q3 YTD have differing start dates -> FISCAL_START_MISMATCH or AMBIGUOUS_FISCAL_CHAIN."""
@@ -860,4 +862,289 @@ class TestSECFiscalSeriesHardening8B3A5:
         assert elig.status == SECDerivationEligibilityStatus.ELIGIBLE
         assert elig.left_operand.selected_value == Decimal("220")
         assert elig.right_operand.selected_value == Decimal("100")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. Phase 8B.3A.6 Hardening (Scenarios 47-59)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSECFiscalSeriesHardening8B3A6:
+
+    def test_47_target_fiscal_year_normal_chain_original_q2_available(self):
+        """Scenario 27: FY2024 (Q1 Jan-Mar, Q2 YTD Jan-Jun, Q2 standalone Apr-Jun) evaluate Q2 with target_fiscal_year=2024 -> ORIGINAL_AVAILABLE."""
+        w1 = _make_winner_result(fiscal_year=2024, fiscal_period="Q1", start_date=date(2024, 1, 1), end_date=date(2024, 3, 31), duration_days=91, value=Decimal("100"))
+        w2_ytd = _make_winner_result(
+            fiscal_year=2024, economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            fiscal_period="Q2", start_date=date(2024, 1, 1), end_date=date(2024, 6, 30), duration_days=182, value=Decimal("220")
+        )
+        w2_standalone = _make_winner_result(
+            fiscal_year=2024, economic_period_kind=SECEconomicPeriodKind.QUARTER_DURATION,
+            fiscal_period="Q2", start_date=date(2024, 4, 1), end_date=date(2024, 6, 30), duration_days=91, value=Decimal("120")
+        )
+
+        series = SECFiscalSeriesAssembler.assemble_series([w1, w2_ytd, w2_standalone])[0]
+        # Standalone Apr 1 start date must NOT create ambiguity with Jan 1 fiscal start
+        elig = SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(series, "Q2", target_fiscal_year=2024)
+
+        assert elig.status == SECDerivationEligibilityStatus.ORIGINAL_AVAILABLE
+        assert elig.left_operand.selected_value == Decimal("120")
+
+    def test_48_auto_q2_normal_chain_original_available(self):
+        """Scenario 28: Same FY2024 data without target start or year -> single Jan 1 chain inferred -> ORIGINAL_AVAILABLE."""
+        w1 = _make_winner_result(fiscal_year=2024, fiscal_period="Q1", start_date=date(2024, 1, 1), end_date=date(2024, 3, 31), duration_days=91, value=Decimal("100"))
+        w2_ytd = _make_winner_result(
+            fiscal_year=2024, economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            fiscal_period="Q2", start_date=date(2024, 1, 1), end_date=date(2024, 6, 30), duration_days=182, value=Decimal("220")
+        )
+        w2_standalone = _make_winner_result(
+            fiscal_year=2024, economic_period_kind=SECEconomicPeriodKind.QUARTER_DURATION,
+            fiscal_period="Q2", start_date=date(2024, 4, 1), end_date=date(2024, 6, 30), duration_days=91, value=Decimal("120")
+        )
+
+        series = SECFiscalSeriesAssembler.assemble_series([w1, w2_ytd, w2_standalone])[0]
+        elig = SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(series, "Q2")
+
+        assert elig.status == SECDerivationEligibilityStatus.ORIGINAL_AVAILABLE
+        assert elig.left_operand.selected_value == Decimal("120")
+
+    def test_49_auto_q2_derivation_chain_eligible(self):
+        """Scenario 29: Q1 Jan-Mar + Q2 YTD Jan-Jun, no standalone, no explicit target -> ELIGIBLE."""
+        w1 = _make_winner_result(fiscal_year=2024, fiscal_period="Q1", start_date=date(2024, 1, 1), end_date=date(2024, 3, 31), duration_days=91, value=Decimal("100"))
+        w2_ytd = _make_winner_result(
+            fiscal_year=2024, economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            fiscal_period="Q2", start_date=date(2024, 1, 1), end_date=date(2024, 6, 30), duration_days=182, value=Decimal("220")
+        )
+
+        series = SECFiscalSeriesAssembler.assemble_series([w1, w2_ytd])[0]
+        elig = SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(series, "Q2")
+
+        assert elig.status == SECDerivationEligibilityStatus.ELIGIBLE
+        assert elig.expected_formula == "Q2_YTD - Q1"
+        assert elig.left_operand.selected_value == Decimal("220")
+        assert elig.right_operand.selected_value == Decimal("100")
+
+    def test_50_target_fiscal_year_q3_normal_chain_original_available(self):
+        """Scenario 30: Q2 YTD Jan-Jun + Q3 YTD Jan-Sep + Q3 standalone Jul-Sep -> ORIGINAL_AVAILABLE Q3."""
+        w2_ytd = _make_winner_result(
+            fiscal_year=2024, economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            fiscal_period="Q2", start_date=date(2024, 1, 1), end_date=date(2024, 6, 30), duration_days=182, value=Decimal("220")
+        )
+        w3_ytd = _make_winner_result(
+            fiscal_year=2024, economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            fiscal_period="Q3", start_date=date(2024, 1, 1), end_date=date(2024, 9, 30), duration_days=273, value=Decimal("350")
+        )
+        w3_standalone = _make_winner_result(
+            fiscal_year=2024, economic_period_kind=SECEconomicPeriodKind.QUARTER_DURATION,
+            fiscal_period="Q3", start_date=date(2024, 7, 1), end_date=date(2024, 9, 30), duration_days=92, value=Decimal("130")
+        )
+
+        series = SECFiscalSeriesAssembler.assemble_series([w2_ytd, w3_ytd, w3_standalone])[0]
+        elig = SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(series, "Q3", target_fiscal_year=2024)
+
+        assert elig.status == SECDerivationEligibilityStatus.ORIGINAL_AVAILABLE
+        assert elig.left_operand.selected_value == Decimal("130")
+
+    def test_51_auto_q3_normal_chain_original_available(self):
+        """Scenario 30 auto: Same Q3 data without target -> single Jan 1 chain -> ORIGINAL_AVAILABLE."""
+        w2_ytd = _make_winner_result(
+            fiscal_year=2024, economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            fiscal_period="Q2", start_date=date(2024, 1, 1), end_date=date(2024, 6, 30), duration_days=182, value=Decimal("220")
+        )
+        w3_ytd = _make_winner_result(
+            fiscal_year=2024, economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            fiscal_period="Q3", start_date=date(2024, 1, 1), end_date=date(2024, 9, 30), duration_days=273, value=Decimal("350")
+        )
+        w3_standalone = _make_winner_result(
+            fiscal_year=2024, economic_period_kind=SECEconomicPeriodKind.QUARTER_DURATION,
+            fiscal_period="Q3", start_date=date(2024, 7, 1), end_date=date(2024, 9, 30), duration_days=92, value=Decimal("130")
+        )
+
+        series = SECFiscalSeriesAssembler.assemble_series([w2_ytd, w3_ytd, w3_standalone])[0]
+        elig = SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(series, "Q3")
+
+        assert elig.status == SECDerivationEligibilityStatus.ORIGINAL_AVAILABLE
+        assert elig.left_operand.selected_value == Decimal("130")
+
+    def test_52_real_multi_chain_ambiguity_under_same_fiscal_year(self):
+        """Scenario 31: True collision with Q1 Jan 1 and another Q1 Feb 1 under same fiscal_year -> AMBIGUOUS_FISCAL_CHAIN."""
+        w1_a = _make_winner_result(fiscal_year=2024, fiscal_period="Q1", start_date=date(2024, 1, 1), end_date=date(2024, 3, 31), duration_days=91, value=Decimal("100"))
+        w1_b = _make_winner_result(fiscal_year=2024, fiscal_period="Q1", start_date=date(2024, 2, 1), end_date=date(2024, 4, 30), duration_days=89, value=Decimal("105"))
+
+        series = SECFiscalSeriesAssembler.assemble_series([w1_a, w1_b])[0]
+        elig = SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(series, "Q1", target_fiscal_year=2024)
+
+        assert elig.status == SECDerivationEligibilityStatus.AMBIGUOUS_FISCAL_CHAIN
+
+    def test_53_corrupted_duration_none_fails_closed(self):
+        """Scenario 32: Missing or invalid duration points cannot prove eligibility merely from fp."""
+        # Point where duration calculation is invalid / out of bounds
+        w2_bad = _make_winner_result(
+            economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            fiscal_period="Q2", start_date=date(2024, 1, 1), end_date=date(2024, 3, 1), duration_days=60, value=Decimal("220")
+        )
+        series = SECFiscalSeriesAssembler.assemble_series([w2_bad])[0]
+        elig = SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(series, "Q2", target_fiscal_start_date=date(2024, 1, 1))
+
+        # 60 days is not 6M YTD (150-210d)
+        assert elig.status == SECDerivationEligibilityStatus.MISSING_OPERAND
+
+    def test_54_central_boundaries_consistency(self):
+        """Scenario 33: Verify exact centralized bounds (150-210 for Q2, 240-300 for Q3)."""
+        # Q2 YTD exact lower bound: 150 days (Jan 1 to May 29 inclusive = 150d)
+        w_150 = _make_winner_result(
+            economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            start_date=date(2024, 1, 1), end_date=date(2024, 5, 29), duration_days=150, value=Decimal("150")
+        )
+        # Q2 YTD exact upper bound: 210 days (Jan 1 to Jul 28 inclusive = 210d)
+        w_210 = _make_winner_result(
+            economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            start_date=date(2024, 1, 1), end_date=date(2024, 7, 28), duration_days=210, value=Decimal("210")
+        )
+        # Q2 YTD out of bounds: 149 days (Jan 1 to May 28 inclusive = 149d)
+        w_149 = _make_winner_result(
+            economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            start_date=date(2024, 1, 1), end_date=date(2024, 5, 28), duration_days=149, value=Decimal("149")
+        )
+        # Q2 YTD out of bounds: 211 days (Jan 1 to Jul 29 inclusive = 211d)
+        w_211 = _make_winner_result(
+            economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            start_date=date(2024, 1, 1), end_date=date(2024, 7, 29), duration_days=211, value=Decimal("211")
+        )
+
+        w1_anchor = _make_winner_result(fiscal_period="Q1", start_date=date(2024, 1, 1), end_date=date(2024, 3, 31), duration_days=91, value=Decimal("100"))
+
+        # 150d is accepted
+        s150 = SECFiscalSeriesAssembler.assemble_series([w1_anchor, w_150])[0]
+        assert SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(s150, "Q2", target_fiscal_start_date=date(2024, 1, 1)).status == SECDerivationEligibilityStatus.ELIGIBLE
+
+        # 210d is accepted
+        s210 = SECFiscalSeriesAssembler.assemble_series([w1_anchor, w_210])[0]
+        assert SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(s210, "Q2", target_fiscal_start_date=date(2024, 1, 1)).status == SECDerivationEligibilityStatus.ELIGIBLE
+
+        # 149d is rejected (missing Q2 YTD)
+        s149 = SECFiscalSeriesAssembler.assemble_series([w1_anchor, w_149])[0]
+        assert SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(s149, "Q2", target_fiscal_start_date=date(2024, 1, 1)).status == SECDerivationEligibilityStatus.MISSING_OPERAND
+
+        # 211d is rejected (missing Q2 YTD)
+        s211 = SECFiscalSeriesAssembler.assemble_series([w1_anchor, w_211])[0]
+        assert SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(s211, "Q2", target_fiscal_start_date=date(2024, 1, 1)).status == SECDerivationEligibilityStatus.MISSING_OPERAND
+
+    def test_55_relational_q2_original_standalone_identity(self):
+        """Scenario 34: Q1 end Mar 31, Q2 YTD end Jun 30, standalone Apr 1 - Jun 30 -> ORIGINAL_AVAILABLE. Standalone May 1 - Jul 30 -> NOT Q2."""
+        w1 = _make_winner_result(fiscal_period="Q1", start_date=date(2024, 1, 1), end_date=date(2024, 3, 31), duration_days=91, value=Decimal("100"))
+        w2_ytd = _make_winner_result(
+            economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            fiscal_period="Q2", start_date=date(2024, 1, 1), end_date=date(2024, 6, 30), duration_days=182, value=Decimal("220")
+        )
+        # Standalone matching Q2 endpoint exactly
+        w2_match = _make_winner_result(
+            economic_period_kind=SECEconomicPeriodKind.QUARTER_DURATION,
+            fiscal_period="Q2", start_date=date(2024, 4, 1), end_date=date(2024, 6, 30), duration_days=91, value=Decimal("120")
+        )
+        # Standalone with shifted non-matching endpoint
+        w2_shifted = _make_winner_result(
+            economic_period_kind=SECEconomicPeriodKind.QUARTER_DURATION,
+            fiscal_period="Q2", start_date=date(2024, 5, 1), end_date=date(2024, 7, 30), duration_days=91, value=Decimal("125")
+        )
+
+        s_match = SECFiscalSeriesAssembler.assemble_series([w1, w2_ytd, w2_match])[0]
+        elig_match = SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(s_match, "Q2", target_fiscal_start_date=date(2024, 1, 1))
+        assert elig_match.status == SECDerivationEligibilityStatus.ORIGINAL_AVAILABLE
+
+        s_shifted = SECFiscalSeriesAssembler.assemble_series([w1, w2_ytd, w2_shifted])[0]
+        elig_shifted = SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(s_shifted, "Q2", target_fiscal_start_date=date(2024, 1, 1))
+        # Shifted standalone does not match Q2 YTD endpoint, falls back to YTD derivation
+        assert elig_shifted.status == SECDerivationEligibilityStatus.ELIGIBLE
+        assert elig_shifted.expected_formula == "Q2_YTD - Q1"
+
+    def test_56_relational_q3_original_standalone_identity(self):
+        """Scenario 35: Q2 YTD end Jun 30, Q3 YTD end Sep 30, standalone Jul 1 - Sep 30 -> ORIGINAL_AVAILABLE. Standalone Apr 1 - Jun 30 -> NOT Q3."""
+        w2_ytd = _make_winner_result(
+            economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            fiscal_period="Q2", start_date=date(2024, 1, 1), end_date=date(2024, 6, 30), duration_days=182, value=Decimal("220")
+        )
+        w3_ytd = _make_winner_result(
+            economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            fiscal_period="Q3", start_date=date(2024, 1, 1), end_date=date(2024, 9, 30), duration_days=273, value=Decimal("350")
+        )
+        w3_match = _make_winner_result(
+            economic_period_kind=SECEconomicPeriodKind.QUARTER_DURATION,
+            fiscal_period="Q3", start_date=date(2024, 7, 1), end_date=date(2024, 9, 30), duration_days=92, value=Decimal("130")
+        )
+
+        s_match = SECFiscalSeriesAssembler.assemble_series([w2_ytd, w3_ytd, w3_match])[0]
+        elig = SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(s_match, "Q3", target_fiscal_start_date=date(2024, 1, 1))
+        assert elig.status == SECDerivationEligibilityStatus.ORIGINAL_AVAILABLE
+
+    def test_57_conflict_identity_isolation_q2_and_q3(self):
+        """Scenario 36: Standalone Q3 conflict (Jul-Sep) blocks Q3, but not Q2 derivation. Standalone Q2 conflict blocks Q2, but not Q3."""
+        w1 = _make_winner_result(fiscal_period="Q1", start_date=date(2024, 1, 1), end_date=date(2024, 3, 31), duration_days=91, value=Decimal("100"))
+        w2_ytd = _make_winner_result(
+            economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            fiscal_period="Q2", start_date=date(2024, 1, 1), end_date=date(2024, 6, 30), duration_days=182, value=Decimal("220")
+        )
+        w3_ytd = _make_winner_result(
+            economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            fiscal_period="Q3", start_date=date(2024, 1, 1), end_date=date(2024, 9, 30), duration_days=273, value=Decimal("350")
+        )
+
+        # Standalone Q3 conflicting facts
+        w3_stand_a = _make_winner_result(
+            economic_period_kind=SECEconomicPeriodKind.QUARTER_DURATION,
+            fiscal_period="Q3", start_date=date(2024, 7, 1), end_date=date(2024, 9, 30), duration_days=92, value=Decimal("130"), accession_number="0001"
+        )
+        w3_stand_b = _make_winner_result(
+            economic_period_kind=SECEconomicPeriodKind.QUARTER_DURATION,
+            fiscal_period="Q3", start_date=date(2024, 7, 1), end_date=date(2024, 9, 30), duration_days=92, value=Decimal("135"), accession_number="0002"
+        )
+
+        series = SECFiscalSeriesAssembler.assemble_series([w1, w2_ytd, w3_ytd, w3_stand_a, w3_stand_b])[0]
+        assert series.status == SECFiscalSeriesStatus.CONFLICTED
+        assert len(series.conflicts) == 1
+
+        # Q3 evaluation is blocked by standalone Q3 conflict
+        elig_q3 = SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(series, "Q3", target_fiscal_start_date=date(2024, 1, 1))
+        assert elig_q3.status == SECDerivationEligibilityStatus.SERIES_CONFLICT
+
+        # Q2 derivation is NOT blocked by standalone Q3 conflict!
+        elig_q2 = SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(series, "Q2", target_fiscal_start_date=date(2024, 1, 1))
+        assert elig_q2.status == SECDerivationEligibilityStatus.ELIGIBLE
+        assert elig_q2.left_operand.selected_value == Decimal("220")
+        assert elig_q2.right_operand.selected_value == Decimal("100")
+
+    def test_58_order_independence_on_chains_and_ambiguity(self):
+        """Scenario 37: Permuting winner result order yields identical eligibility outcome."""
+        w1 = _make_winner_result(fiscal_period="Q1", start_date=date(2024, 1, 1), end_date=date(2024, 3, 31), duration_days=91, value=Decimal("100"))
+        w2_ytd = _make_winner_result(
+            economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            fiscal_period="Q2", start_date=date(2024, 1, 1), end_date=date(2024, 6, 30), duration_days=182, value=Decimal("220")
+        )
+        w2_standalone = _make_winner_result(
+            economic_period_kind=SECEconomicPeriodKind.QUARTER_DURATION,
+            fiscal_period="Q2", start_date=date(2024, 4, 1), end_date=date(2024, 6, 30), duration_days=91, value=Decimal("120")
+        )
+
+        items = [w1, w2_ytd, w2_standalone]
+        for perm in itertools.permutations(items):
+            series = SECFiscalSeriesAssembler.assemble_series(list(perm))[0]
+            elig = SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(series, "Q2")
+            assert elig.status == SECDerivationEligibilityStatus.ORIGINAL_AVAILABLE
+            assert elig.left_operand.selected_value == Decimal("120")
+
+    def test_59_cardinality_missing_one_side_multiple_on_other(self):
+        """Scenario 24/25/26: Missing Q1 with multiple Q2 YTD returns AMBIGUOUS_FISCAL_CHAIN, not arbitrary left_operand."""
+        w2_ytd_a = _make_winner_result(
+            economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            fiscal_period="Q2", start_date=date(2024, 1, 1), end_date=date(2024, 6, 30), duration_days=182, value=Decimal("220"), accession_number="0001"
+        )
+        w2_ytd_b = _make_winner_result(
+            economic_period_kind=SECEconomicPeriodKind.YTD_DURATION,
+            fiscal_period="Q2", start_date=date(2024, 1, 1), end_date=date(2024, 6, 25), duration_days=177, value=Decimal("218"), accession_number="0002"
+        )
+
+        series = SECFiscalSeriesAssembler.assemble_series([w2_ytd_a, w2_ytd_b])[0]
+        elig = SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(series, "Q2", target_fiscal_start_date=date(2024, 1, 1))
+
+        assert elig.status == SECDerivationEligibilityStatus.AMBIGUOUS_FISCAL_CHAIN
+
 
