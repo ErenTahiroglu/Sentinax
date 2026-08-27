@@ -534,3 +534,161 @@ class TestTiingoEODProvider:
         assert TiingoCapability.ADJUSTED_SERIES in provider.capabilities
         assert TiingoCapability.CORPORATE_ACTIONS in provider.capabilities
         assert TiingoCapability.LONG_HISTORY in provider.capabilities
+
+    @pytest.mark.asyncio
+    async def test_18_official_tiingo_date_format(self, identity_resolver):
+        """Test 18: Tiingo format YYYY-M-D normalized to YYYY-MM-DD in outbound request and snapshot."""
+        provider = TiingoEODProvider(api_token="TEST_TOKEN")
+        ctx = FetchContext(
+            observation_type="GLOBAL_EOD_PRICE",
+            provider_symbol="AAPL",
+            request_parameters={"startDate": "2012-1-1", "endDate": "2016-1-1"},
+        )
+
+        mock_http_resp = MagicMock()
+        mock_http_resp.status_code = 200
+        mock_http_resp.text = SAMPLE_TIINGO_AAPL_JSON
+
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_http_resp
+
+        with patch("backend.engine.private.providers.tiingo_eod.get_http_client", return_value=mock_client):
+            resp = await provider.fetch(ctx, resolver=identity_resolver)
+
+            assert resp.status == DataStatus.COMPLETE
+            # Verify outbound normalized params
+            called_params = mock_client.get.call_args[1]["params"]
+            assert called_params["startDate"] == "2012-01-01"
+            assert called_params["endDate"] == "2016-01-01"
+
+            # Verify snapshot boundaries
+            assert resp.raw.start_date == date(2012, 1, 1)
+            assert resp.raw.end_date == date(2016, 1, 1)
+
+    @pytest.mark.asyncio
+    async def test_19_canonical_iso_date_format(self, identity_resolver):
+        """Test 19: Canonical ISO format YYYY-MM-DD parsed and passed correctly."""
+        provider = TiingoEODProvider(api_token="TEST_TOKEN")
+        ctx = FetchContext(
+            observation_type="GLOBAL_EOD_PRICE",
+            provider_symbol="AAPL",
+            request_parameters={"startDate": "2012-01-01", "endDate": "2016-01-01"},
+        )
+
+        mock_http_resp = MagicMock()
+        mock_http_resp.status_code = 200
+        mock_http_resp.text = SAMPLE_TIINGO_AAPL_JSON
+
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_http_resp
+
+        with patch("backend.engine.private.providers.tiingo_eod.get_http_client", return_value=mock_client):
+            resp = await provider.fetch(ctx, resolver=identity_resolver)
+
+            assert resp.status == DataStatus.COMPLETE
+            called_params = mock_client.get.call_args[1]["params"]
+            assert called_params["startDate"] == "2012-01-01"
+            assert called_params["endDate"] == "2016-01-01"
+
+    @pytest.mark.asyncio
+    async def test_20_date_object_inputs(self, identity_resolver):
+        """Test 20: datetime.date instances in request_parameters accepted and normalized."""
+        provider = TiingoEODProvider(api_token="TEST_TOKEN")
+        ctx = FetchContext(
+            observation_type="GLOBAL_EOD_PRICE",
+            provider_symbol="AAPL",
+            request_parameters={"startDate": date(2012, 1, 1), "endDate": date(2016, 1, 1)},
+        )
+
+        mock_http_resp = MagicMock()
+        mock_http_resp.status_code = 200
+        mock_http_resp.text = SAMPLE_TIINGO_AAPL_JSON
+
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_http_resp
+
+        with patch("backend.engine.private.providers.tiingo_eod.get_http_client", return_value=mock_client):
+            resp = await provider.fetch(ctx, resolver=identity_resolver)
+
+            assert resp.status == DataStatus.COMPLETE
+            called_params = mock_client.get.call_args[1]["params"]
+            assert called_params["startDate"] == "2012-01-01"
+            assert called_params["endDate"] == "2016-01-01"
+
+    @pytest.mark.asyncio
+    async def test_21_invalid_start_date_fails_before_http(self):
+        """Test 21: Malformed startDate fails closed with INVALID_DATE_PARAMETER before HTTP call."""
+        provider = TiingoEODProvider(api_token="TEST_TOKEN")
+        ctx = FetchContext(
+            observation_type="GLOBAL_EOD_PRICE",
+            provider_symbol="AAPL",
+            request_parameters={"startDate": "not-a-date"},
+        )
+
+        with patch("backend.engine.private.providers.tiingo_eod.get_http_client") as mock_http:
+            resp = await provider.fetch(ctx)
+
+            assert resp.status == DataStatus.UNAVAILABLE
+            assert any("INVALID_DATE_PARAMETER" in w for w in resp.warnings)
+            mock_http.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_22_invalid_end_date_fails_before_http(self):
+        """Test 22: Non-existent calendar endDate (e.g. 2024-02-30) fails closed before HTTP call."""
+        provider = TiingoEODProvider(api_token="TEST_TOKEN")
+        ctx = FetchContext(
+            observation_type="GLOBAL_EOD_PRICE",
+            provider_symbol="AAPL",
+            request_parameters={"endDate": "2024-02-30"},
+        )
+
+        with patch("backend.engine.private.providers.tiingo_eod.get_http_client") as mock_http:
+            resp = await provider.fetch(ctx)
+
+            assert resp.status == DataStatus.UNAVAILABLE
+            assert any("INVALID_DATE_PARAMETER" in w for w in resp.warnings)
+            mock_http.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_23_reversed_date_range_fails_before_http(self):
+        """Test 23: startDate > endDate fails closed with INVALID_DATE_RANGE before HTTP call."""
+        provider = TiingoEODProvider(api_token="TEST_TOKEN")
+        ctx = FetchContext(
+            observation_type="GLOBAL_EOD_PRICE",
+            provider_symbol="AAPL",
+            request_parameters={"startDate": "2025-01-01", "endDate": "2024-01-01"},
+        )
+
+        with patch("backend.engine.private.providers.tiingo_eod.get_http_client") as mock_http:
+            resp = await provider.fetch(ctx)
+
+            assert resp.status == DataStatus.UNAVAILABLE
+            assert any("INVALID_DATE_RANGE" in w for w in resp.warnings)
+            mock_http.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_24_same_day_date_range_succeeds(self, identity_resolver):
+        """Test 24: startDate == endDate is valid and executes successfully."""
+        provider = TiingoEODProvider(api_token="TEST_TOKEN")
+        ctx = FetchContext(
+            observation_type="GLOBAL_EOD_PRICE",
+            provider_symbol="AAPL",
+            request_parameters={"startDate": "2024-10-01", "endDate": "2024-10-01"},
+        )
+
+        mock_http_resp = MagicMock()
+        mock_http_resp.status_code = 200
+        mock_http_resp.text = SAMPLE_TIINGO_AAPL_JSON
+
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_http_resp
+
+        with patch("backend.engine.private.providers.tiingo_eod.get_http_client", return_value=mock_client):
+            resp = await provider.fetch(ctx, resolver=identity_resolver)
+
+            assert resp.status == DataStatus.COMPLETE
+            called_params = mock_client.get.call_args[1]["params"]
+            assert called_params["startDate"] == "2024-10-01"
+            assert called_params["endDate"] == "2024-10-01"
+            assert resp.raw.start_date == date(2024, 10, 1)
+            assert resp.raw.end_date == date(2024, 10, 1)

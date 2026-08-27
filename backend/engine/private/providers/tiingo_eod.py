@@ -107,6 +107,51 @@ def _check_non_finite_raw(value: Any) -> bool:
     return val_str in ("nan", "snan", "infinity", "+infinity", "-infinity", "inf", "-inf")
 
 
+def _parse_tiingo_request_date(value: Any, field_name: str) -> Tuple[Optional[date], Optional[str]]:
+    """
+    Parses and normalizes a caller-supplied date parameter for Tiingo EOD requests.
+
+    Accepts:
+        - datetime.date / datetime.datetime instances
+        - Canonical ISO format: YYYY-MM-DD
+        - Tiingo numeric format: YYYY-M-D, YYYY-MM-D, YYYY-M-DD
+
+    Returns:
+        (parsed_date, None) if valid.
+        (None, error_diagnostic) if malformed or invalid calendar date.
+    """
+    if value is None:
+        return None, None
+    if isinstance(value, datetime):
+        return value.date(), None
+    if isinstance(value, date):
+        return value, None
+    if not isinstance(value, str):
+        return None, f"INVALID_DATE_PARAMETER: Field '{field_name}' must be a date object or string, got {type(value).__name__}."
+
+    s = value.strip()
+    if not s:
+        return None, f"INVALID_DATE_PARAMETER: Field '{field_name}' cannot be an empty string."
+
+    parts = s.split("-")
+    if len(parts) != 3:
+        return None, f"INVALID_DATE_PARAMETER: Field '{field_name}' value '{s}' is not in YYYY-M-D or YYYY-MM-DD format."
+
+    y_str, m_str, d_str = parts[0].strip(), parts[1].strip(), parts[2].strip()
+    if not (y_str.isdigit() and m_str.isdigit() and d_str.isdigit()):
+        return None, f"INVALID_DATE_PARAMETER: Field '{field_name}' value '{s}' contains non-digit date parts."
+
+    if len(y_str) != 4:
+        return None, f"INVALID_DATE_PARAMETER: Field '{field_name}' year must be 4 digits, got '{y_str}'."
+
+    try:
+        y, m, d = int(y_str), int(m_str), int(d_str)
+        res = date(y, m, d)
+        return res, None
+    except ValueError as err:
+        return None, f"INVALID_DATE_PARAMETER: Field '{field_name}' has invalid calendar date '{s}': {err}."
+
+
 class TiingoEODProvider(DataProviderContract):
     """
     Data provider adapter for Tiingo US equity and ETF daily EOD and long-history price series.
@@ -572,22 +617,64 @@ class TiingoEODProvider(DataProviderContract):
         url = TIINGO_BASE_URL.format(ticker=clean_symbol.lower())
         params: Dict[str, str] = {}
 
-        # Dates from context request_parameters or effective date
+        # Dates from context request_parameters
         start_date_val: Optional[date] = None
         end_date_val: Optional[date] = None
 
         if "startDate" in context.request_parameters:
-            try:
-                start_date_val = date.fromisoformat(str(context.request_parameters["startDate"]))
-                params["startDate"] = start_date_val.isoformat()
-            except ValueError:
-                pass
+            raw_start = context.request_parameters["startDate"]
+            start_date_val, err = _parse_tiingo_request_date(raw_start, "startDate")
+            if err:
+                return ProviderResponse(
+                    provider_name=self.provider_name,
+                    source_quality=self.source_quality,
+                    retrieved_at=retrieved_at,
+                    published_at=None,
+                    effective_date=context.effective_date,
+                    status=DataStatus.UNAVAILABLE,
+                    raw=None,
+                    warnings=[err],
+                    canonical_instrument_id=canonical_id,
+                    provider_symbol=clean_symbol,
+                )
+
         if "endDate" in context.request_parameters:
-            try:
-                end_date_val = date.fromisoformat(str(context.request_parameters["endDate"]))
-                params["endDate"] = end_date_val.isoformat()
-            except ValueError:
-                pass
+            raw_end = context.request_parameters["endDate"]
+            end_date_val, err = _parse_tiingo_request_date(raw_end, "endDate")
+            if err:
+                return ProviderResponse(
+                    provider_name=self.provider_name,
+                    source_quality=self.source_quality,
+                    retrieved_at=retrieved_at,
+                    published_at=None,
+                    effective_date=context.effective_date,
+                    status=DataStatus.UNAVAILABLE,
+                    raw=None,
+                    warnings=[err],
+                    canonical_instrument_id=canonical_id,
+                    provider_symbol=clean_symbol,
+                )
+
+        if start_date_val and end_date_val and start_date_val > end_date_val:
+            return ProviderResponse(
+                provider_name=self.provider_name,
+                source_quality=self.source_quality,
+                retrieved_at=retrieved_at,
+                published_at=None,
+                effective_date=context.effective_date,
+                status=DataStatus.UNAVAILABLE,
+                raw=None,
+                warnings=[
+                    f"INVALID_DATE_RANGE: startDate '{start_date_val.isoformat()}' cannot be after endDate '{end_date_val.isoformat()}'."
+                ],
+                canonical_instrument_id=canonical_id,
+                provider_symbol=clean_symbol,
+            )
+
+        if start_date_val:
+            params["startDate"] = start_date_val.isoformat()
+        if end_date_val:
+            params["endDate"] = end_date_val.isoformat()
 
         headers = {
             "Authorization": f"Token {api_token}",
