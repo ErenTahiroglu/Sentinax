@@ -701,13 +701,14 @@ def build_economic_group_key(
     end_str = candidate.economic_end_date.isoformat()
 
     return (
-        candidate.cik,
+        normalize_cik(candidate.cik),
         candidate.canonical_concept,
         candidate.unit,
         candidate.economic_period_kind.value,
         start_str,
         end_str,
     )
+
 
 
 def group_periodized_candidates(

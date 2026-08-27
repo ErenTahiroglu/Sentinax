@@ -206,13 +206,25 @@ Economic Group Key = (cik, canonical_concept, unit, economic_period_kind, econom
 
 ---
 
-## 11. Boundary to Phase 8B.2B (Filing Precedence & Winner Resolution)
+## 11. Phase 8B.2B — Snapshot-Scoped Winner Resolution & Restatement Reconciliation
 
-Phase 8B.2B will be strictly responsible for:
-- Filing and accession precedence resolution (e.g. `10-K/A` amendment precedence, latest PIT filing view).
-- Annual vs standalone quarter vs YTD derivation / subtraction.
-- Restatement and comparative reconciliation.
-- Current-view and Point-in-Time (PIT) selection for downstream analytical engines.
+Phase 8B.2B implements deterministic, auditable, and fail-closed winner resolution across multiple candidates in an economic group.
+
+### 11.1 Resolution Modes (`SECWinnerResolutionMode`)
+
+- **`CURRENT_REPORTED`**: Represents the current state of financial facts in Sentinax's latest locally observed valid full CompanyFacts snapshot for the target CIK.
+- **`SYSTEM_AS_OF`**: Point-in-Time view answering *"What did Sentinax locally know at or before `as_of`?"* (evaluates the latest valid snapshot with `retrieved_at <= as_of`).
+- **`SOURCE_AS_OF`**: Fails closed with `UNAVAILABLE_SOURCE_AS_OF` because SEC CompanyFacts does not provide exact historical external API state reconstruction and SEC acceptance timestamp is not exact first public availability.
+
+### 11.2 Critical Invariants
+
+1. **Strict Snapshot Membership & Isolation**: Candidates from different CompanyFacts snapshots are NEVER mixed in a single winner pool. Older snapshot facts are never resurrected if removed in the latest snapshot.
+2. **Disclosure Chronology Hierarchy**: Timezone-aware UTC `acceptance_datetime` > SEC local naive `acceptance_local_datetime` > `filing_date` fallback. Accession lexicographical order, UUID, or database `created_at` are NEVER used as economic authority.
+3. **Acceptance Time != First Public Availability**: Acceptance timestamps reflect internal SEC ingestion events, not exact SEC.gov public availability.
+4. **Current View != Original Reported View**: `CURRENT_REPORTED` presents the most authoritative current restated figure (e.g. later comparative disclosure or amendment), not the original historical filing view.
+5. **Fail-Closed Semantic Quality Conflicts**: A later disclosure with lower semantic quality (e.g. `COMPATIBLE` alias) cannot overwrite an earlier `EXACT` fact with a different value (`SEMANTIC_SCOPE_CONFLICT`).
+6. **No Metric Calculation**: Phase 8B.2B strictly selects raw canonical facts. No YTD subtraction, no Q4 derivation, no TTM calculation, and no ratio arithmetic.
+
 
 
 

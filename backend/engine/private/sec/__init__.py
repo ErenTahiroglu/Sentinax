@@ -82,6 +82,17 @@ from backend.engine.private.sec.submissions import (
     parse_sec_date,
     parse_sec_datetime_hardened,
 )
+from backend.engine.private.sec.winner_resolver import (
+    FilingDisclosureComparison,
+    SECWinnerResolutionMode,
+    SECWinnerResolutionResult,
+    SECWinnerResolver,
+    SECWinnerStatus,
+    compare_filing_disclosure_order,
+    get_semantic_quality_rank,
+    validate_company_facts_snapshot,
+)
+
 
 __all__ = [
     "normalize_cik",
@@ -142,7 +153,14 @@ __all__ = [
     "QUARTER_MAX_DAYS",
     "YTD_6M_MIN_DAYS",
     "YTD_6M_MAX_DAYS",
-    "YTD_9M_MIN_DAYS",
-    "YTD_9M_MAX_DAYS",
     "SUPPORTED_PRIMARY_FORM_ROLES",
+    "SECWinnerResolutionMode",
+    "SECWinnerStatus",
+    "FilingDisclosureComparison",
+    "SECWinnerResolutionResult",
+    "SECWinnerResolver",
+    "compare_filing_disclosure_order",
+    "validate_company_facts_snapshot",
+    "get_semantic_quality_rank",
 ]
+
