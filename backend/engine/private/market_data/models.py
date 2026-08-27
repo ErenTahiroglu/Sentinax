@@ -26,6 +26,7 @@ from backend.engine.private.domain import (
     Currency,
     DataConfidenceLevel,
 )
+from backend.engine.private.market_data.global_models import GlobalEODObservation
 from backend.engine.private.precious_metals.constants import (
     PreciousMetalPriceType,
     PreciousMetalType,
@@ -71,6 +72,22 @@ class BISTInstrumentQueryKey:
     def to_string(self) -> str:
         sym = f"({self.symbol})" if self.symbol else ""
         return f"BIST_EOD:{self.instrument_id}{sym}@{self.trade_date.isoformat()}"
+
+
+@dataclass(frozen=True)
+class GlobalEODQueryKey:
+    """
+    Query key for resolving a Point-in-Time Global (US/European) EOD stock or ETF observation.
+    Authority is (instrument_id, provider, trade_date); provider_symbol is diagnostic only.
+    """
+    instrument_id: UUID
+    trade_date: date
+    provider: str
+    provider_symbol: Optional[str] = None
+
+    def to_string(self) -> str:
+        sym = f"({self.provider_symbol})" if self.provider_symbol else ""
+        return f"GLOBAL_EOD:{self.provider}:{self.instrument_id}{sym}@{self.trade_date.isoformat()}"
 
 
 @dataclass(frozen=True)
@@ -142,7 +159,7 @@ class MarketObservationResolutionResult:
     observation_type: str
     effective_date: Optional[date]
 
-    selected_observation: Optional[Union[BISTEODObservation, PreciousMetalMarketObservation]] = None
+    selected_observation: Optional[Union[BISTEODObservation, PreciousMetalMarketObservation, GlobalEODObservation]] = None
     selected_observation_id: Optional[UUID] = None
 
     snapshot_id: Optional[UUID] = None

@@ -495,10 +495,17 @@ class TiingoEODProvider(DataProviderContract):
         min_date = final_observations[0].trade_date if final_observations else None
         max_date = final_observations[-1].trade_date if final_observations else None
 
+        snap_inst_id: Optional[UUID] = None
+        if resolver:
+            snap_inst_id = resolver.resolve_provider_symbol_to_instrument_id(
+                TIINGO_PROVIDER_NAME, clean_symbol
+            )
+
         return GlobalEODSnapshot(
             id=snap_id,
             provider=TIINGO_PROVIDER_NAME,
             provider_symbol=clean_symbol,
+            instrument_id=snap_inst_id,
             retrieved_at=retrieved_at,
             http_status=http_status,
             payload_hash=payload_hash,
@@ -753,6 +760,8 @@ class TiingoEODProvider(DataProviderContract):
                 start_date=start_date_val,
                 end_date=end_date_val,
             )
+            if canonical_id:
+                snapshot.instrument_id = canonical_id
 
             obs_count = len(snapshot.observations)
             valid_count = sum(1 for o in snapshot.observations if o.status == GlobalObservationStatus.VALID)

@@ -203,6 +203,7 @@ class GlobalEODSnapshot:
     http_status: int
     payload_hash: str
     raw_payload: str
+    instrument_id: Optional[UUID] = None
     endpoint: Optional[str] = None
     output_size: Optional[str] = "compact"
     start_date: Optional[date] = None

@@ -14,6 +14,7 @@ from backend.engine.private.market_data.global_models import (
 )
 from backend.engine.private.market_data.models import (
     BISTInstrumentQueryKey,
+    GlobalEODQueryKey,
     MarketDataResolutionMode,
     MarketDataResolutionStatus,
     MarketObservationResolutionResult,
@@ -27,6 +28,7 @@ __all__ = [
     "MarketDataResolutionMode",
     "MarketDataResolutionStatus",
     "BISTInstrumentQueryKey",
+    "GlobalEODQueryKey",
     "PreciousMetalSemanticKey",
     "MarketObservationResolutionResult",
     "PointInTimeMarketDataResolver",

@@ -422,10 +422,17 @@ class AlphaVantageEODProvider(DataProviderContract):
         min_date = final_observations[0].trade_date if final_observations else None
         max_date = final_observations[-1].trade_date if final_observations else None
 
+        snap_inst_id: Optional[UUID] = None
+        if resolver:
+            snap_inst_id = resolver.resolve_provider_symbol_to_instrument_id(
+                ALPHA_VANTAGE_PROVIDER_NAME, clean_symbol
+            )
+
         return GlobalEODSnapshot(
             id=snap_id,
             provider=ALPHA_VANTAGE_PROVIDER_NAME,
             provider_symbol=clean_symbol,
+            instrument_id=snap_inst_id,
             retrieved_at=retrieved_at,
             http_status=http_status,
             payload_hash=payload_hash,
@@ -566,6 +573,8 @@ class AlphaVantageEODProvider(DataProviderContract):
             snapshot = self.parse_daily_series(
                 raw_text, clean_symbol, retrieved_at, http_status=http_status, resolver=resolver
             )
+            if canonical_id:
+                snapshot.instrument_id = canonical_id
 
             # 3. Compute Aggregate Observation Counts and Status
             obs_count = len(snapshot.observations)
