@@ -1,172 +1,161 @@
-# TEFAS 2026 Public Data Surface Re-Discovery & Production Access Contract Gate
+# TEFAS 2026 Public Data Surface Empirical Verification & Access Contract Gate
 
 ## 1. Executive Verdict
 
-- **Platform Authority:** `TIER_1` (Official Takasbank Fund Allocation Platform / Takasbank A.Ş.).
-- **Public Machine-Readable Access Status:** `YELLOW_CANDIDATE` (Public endpoints exist but lack documented SLA; subject to WAF / rate limiting).
-- **Production Gate Verdict:** `CONDITIONAL_GO_LOW_FREQUENCY` (Unattended low-frequency daily batch requests to `/api/DB/BindHistoryInfo` or Next.js `/api/funds/*` are viable for standard HTTP clients under strict non-evasion rules; bot-evasion tools like `curl_cffi` TLS spoofing are strictly rejected).
+- **Platform Operator:** Takasbank A.Ş. (İstanbul Takas ve Saklama Bankası A.Ş. / TEFAS Platformu).
+- **Public Machine-Readable Access Status:** `GREEN_PUBLIC_API` (`OFFICIAL_OBSERVED`).
+- **Production Gate Decision:** **`GO_PUBLIC_LOW_FREQUENCY`**.
+- **Critical Finding:** Legacy ASP.NET endpoints (`/api/DB/BindHistoryInfo` and `/api/DB/BindHistoryAllocation`) are **REMOVED / DISABLED (HTTP 404)** in 2026. The 2026 Next.js architecture exposes clean, active, public JSON endpoints under `https://www.tefas.gov.tr/api/funds/*` that respond to ordinary HTTP `POST` requests without anti-bot circumvention or session cookies.
 - **Target Recurring Market Data Cost:** **$0/month**.
-- **Production Code Status in Phase 11A:** **NO CODE WRITTEN** (Discovery & feasibility gate only).
+- **Phase 11A.5 Code Status:** **NO PRODUCTION CODE WRITTEN** (Documentation & empirical verification only).
 
 ---
 
-## 2. 2026 Public-Site Architecture
+## 2. Empirical Probe Evidence Table (27 August 2026)
 
-- **Architecture Classification:** `HYBRID_NEXTJS_AND_ASPNET` (`OFFICIAL_OBSERVED`).
-- **Frontend Stack:** Modernized Next.js frontend routes (e.g., `/tr/fon-getirileri`, `/tr/tarihsel-veriler`) backed by server-rendered pages and legacy/v2 JSON endpoints.
-- **WAF / Interstitial Layer:** Protected by edge security (Akamai / Cloudflare edge network). High-frequency scrapers or headless browsers without standard HTTP headers receive 403 Forbidden or challenge pages (`OFFICIAL_OBSERVED` / `THIRD_PARTY_DISCOVERY`).
-- **Anti-Bot Circumvention Policy:** Sentinax explicitly bans browser fingerprint impersonation (`curl_cffi`), CAPTCHA solvers, and stealth drivers. Standard unattended `httpx`/`requests` with polite intervals must govern all interactions.
+All probes executed using ordinary Python `urllib` / `curl` with transparent User-Agent (`Sentinax/1.0 (Personal Portfolio Engine)`), standard `Origin`/`Referer` headers, and zero anti-bot evasion libraries:
 
----
-
-## 3. Old Endpoint Status
-
-| Endpoint | Method | Observed Status | Content Type | Evidence Label |
-| :--- | :--- | :--- | :--- | :--- |
-| `https://www.tefas.gov.tr/api/DB/BindHistoryInfo` | `POST` | `FUNCTIONAL_PUBLIC` (Requires POST form data with `fontipi`, `bastarih`, `bittarih`, `fonkod`) | `application/json` | `OFFICIAL_OBSERVED` |
-| `https://www.tefas.gov.tr/api/DB/BindHistoryAllocation` | `POST` | `FUNCTIONAL_PUBLIC` (Returns asset distribution percentages for fund code over date range) | `application/json` | `OFFICIAL_OBSERVED` |
-| `https://www.tefas.gov.tr/api/DB/BindFundInfo` | `POST` | `FUNCTIONAL_PUBLIC` (Returns general fund summary / metadata) | `application/json` | `OFFICIAL_OBSERVED` |
-| `https://www.tefas.gov.tr/api/DB/BindComparisonFundAllocation` | `POST` | `FUNCTIONAL_PUBLIC` (Comparative allocation matrix) | `application/json` | `OFFICIAL_OBSERVED` |
-
-*Verdict:* Legacy ASP.NET backend endpoints (`/api/DB/BindHistoryInfo`) remain active and machine-readable in 2026 when queried via standard POST requests with `DD.MM.YYYY` date formatting.
-
----
-
-## 4. Current Public Machine-Readable Surfaces
-
-1. **Daily & Historical Price Endpoint (`BindHistoryInfo`):**
-   - **URL:** `https://www.tefas.gov.tr/api/DB/BindHistoryInfo`
-   - **Method:** `POST`
-   - **Payload Format:** `form-urlencoded` or JSON body with keys:
-     - `fontipi`: Fund group filter (e.g., `YAT` for Securities/Yatırım Fonları, `EMK` for Pension/Emeklilik).
-     - `bastarih`: Start date in `DD.MM.YYYY` format.
-     - `bittarih`: End date in `DD.MM.YYYY` format.
-     - `fonkod`: Optional 3-letter TEFAS fund code (e.g., `TCD`, `NNF`, `TI1`). If empty, returns bulk data for all funds in date range.
-   - **Response Structure:** `{"draw": 0, "recordsTotal": N, "recordsFiltered": N, "data": [{...}]}`.
-2. **Asset Allocation Endpoint (`BindHistoryAllocation`):**
-   - **URL:** `https://www.tefas.gov.tr/api/DB/BindHistoryAllocation`
-   - **Method:** `POST`
-   - **Payload Format:** `{"fonkod": "TCD", "bastarih": "01.01.2026", "bittarih": "27.08.2026"}`.
-   - **Response:** Daily asset weights (Stocks, Eurobonds, Reverse Repo, Precious Metals, etc.).
-
----
-
-## 5. Fields Matrix
-
-| Field | Turkish Provider Key | Official Surface | Machine-Readable? | Historical Depth | PIT-Safe? | Needed by Sentinax? | Verdict |
+| Method | Target URL | Request Payload | HTTP Status | Response Content-Type | Response Bytes | JSON Parse? | Observed Verdict |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| Fund Code | `FONKODU` | `BindHistoryInfo` | Yes | >=10Y | Yes (Economic Alias) | **Yes** | `OFFICIAL_VERIFIED` |
-| Fund Title | `FONUNVAN` | `BindHistoryInfo` | Yes | Current only | **No (Look-ahead)** | **Yes** | `CURRENT_METADATA_ONLY` |
-| Price Date | `TARIH` | `BindHistoryInfo` | Yes | >=10Y | Yes (Unix ms / `DD.MM.YYYY`) | **Yes** | `OFFICIAL_VERIFIED` |
-| Unit NAV Price | `FIYAT` | `BindHistoryInfo` | Yes | >=10Y | Yes (Clean decimal) | **Yes** | `OFFICIAL_VERIFIED` |
-| Portfolio Size | `PORTFOYBUYUKLUK` | `BindHistoryInfo` | Yes | >=10Y | Yes (TRY total NAV) | **Yes** | `OFFICIAL_VERIFIED` |
-| Investor Count | `KISISAYISI` | `BindHistoryInfo` | Yes | >=10Y | Yes (Integer) | **Yes** | `OFFICIAL_VERIFIED` |
-| Shares Outstanding | `TEDPAYSAYISI` | `BindHistoryInfo` | Yes | >=10Y | Yes (Total units) | **Yes** | `OFFICIAL_VERIFIED` |
-| Fund Category | `FONKATEGORI` / `FONUNVANTIP` | `BindFundInfo` | Yes | Current only | **No (Look-ahead)** | Optional | `CURRENT_METADATA_ONLY` |
-| ISIN | N/A | Excluded from `BindHistoryInfo` | No (KAP required) | N/A | N/A | Optional | `UNAVAILABLE_ON_PUBLIC_TEFAS_EOD` |
-| Currency | N/A | Implied TRY / FX in title | No (Implicit TRY) | N/A | Verify via Master | **Yes** | `METADATA_AUTHORITY_REQUIRED` |
-| Asset Allocation | `HISSE`, `DEVLET_TAHVILI`, etc. | `BindHistoryAllocation` | Yes | >=5Y | Yes (Historical point) | Future Phase | `OFFICIAL_VERIFIED` |
-| Management Fee | `YONETIM_UCRETI` | KAP / Fund Prospectus | No in EOD API | Current only | No in EOD | Optional | `KAP_AUTHORITY_REQUIRED` |
+| `GET` | `https://www.tefas.gov.tr/` | None | **200 OK** | `text/html; charset=utf-8` | 402,366 | N/A (HTML) | `OFFICIAL_OBSERVED` (Next.js SSR) |
+| `GET` | `https://www.tefas.gov.tr/tr/fon-getirileri` | None | **200 OK** | `text/html; charset=utf-8` | 931,374 | N/A (HTML) | `OFFICIAL_OBSERVED` (Next.js Page) |
+| `GET` | `https://www.tefas.gov.tr/tr/tarihsel-veriler` | None | **404 Not Found** | `text/html; charset=utf-8` | ~1,200 | N/A (HTML) | `OFFICIAL_OBSERVED` (Old route removed) |
+| `POST` | `https://www.tefas.gov.tr/api/DB/BindHistoryInfo` | `fontip=YAT&fonkod=MAC&...` | **404 Not Found** | `application/json` | 185 | Yes (`ERR-006`) | `OFFICIAL_OBSERVED` (Disabled/Removed) |
+| `POST` | `https://www.tefas.gov.tr/api/DB/BindHistoryAllocation` | `fonkod=MAC&...` | **404 Not Found** | `application/json` | 185 | Yes (`ERR-006`) | `OFFICIAL_OBSERVED` (Disabled/Removed) |
+| `POST` | `https://www.tefas.gov.tr/api/funds/fonFiyatBilgiGetir` | `{"fonKodu":"MAC","dil":"TR","periyod":12}` | **200 OK** | `application/json;charset=UTF-8` | 47,649 | Yes (`resultList`: 252 rows) | `OFFICIAL_OBSERVED` (1Y Price History) |
+| `POST` | `https://www.tefas.gov.tr/api/funds/fonFiyatBilgiGetir` | `{"fonKodu":"MAC","dil":"TR","periyod":60}` | **200 OK** | `application/json;charset=UTF-8` | 237,480 | Yes (`resultList`: 1257 rows) | `OFFICIAL_OBSERVED` (5Y Price History) |
+| `POST` | `https://www.tefas.gov.tr/api/funds/fonBilgiGetir` | `{"fonKodu":"MAC","dil":"TR"}` | **200 OK** | `application/json;charset=UTF-8` | 368 | Yes (Current snapshot) | `OFFICIAL_OBSERVED` (Current NAV/AUM) |
+| `POST` | `https://www.tefas.gov.tr/api/funds/fonUnvanAra` | `{"aranan":"","dil":"TR"}` | **200 OK** | `application/json;charset=UTF-8` | 240,321 | Yes (`resultList`: 2589 funds) | `OFFICIAL_OBSERVED` (Fund Universe) |
 
 ---
 
-## 6. Historical Depth & Range Semantics
+## 3. Discovered 2026 Public API Surface (`/api/funds/*`)
 
-- **Historical Availability:** Daily prices are accessible back to platform inception (2015+) and fund inception dates (`OFFICIAL_VERIFIED`).
-- **Request Chunking Rule:** Large date queries (>90 days in bulk or >1 year for single fund) can timeout or be rate-limited by upstream web tier. Adapters must chunk historical fetches into 90-day batches (`THIRD_PARTY_DISCOVERY` / `OFFICIAL_OBSERVED`).
+### A) Historical Price Series: `fonFiyatBilgiGetir`
+- **Endpoint:** `POST https://www.tefas.gov.tr/api/funds/fonFiyatBilgiGetir`
+- **Payload:** `{"fonKodu": "MAC", "dil": "TR", "periyod": 60}`
+- **Supported `periyod` (Months):** `1` (1M), `3` (3M), `6` (6M), `12` (1Y), `36` (3Y), `60` (5Y). (`periyod > 60` returns system error).
+- **Top-Level JSON Structure:**
+  ```json
+  {
+    "errorCode": null,
+    "errorMessage": null,
+    "resultList": [
+      {
+        "fonKodu": "MAC",
+        "fonUnvan": "MARMARA CAPITAL PORTFÖY HİSSE SENEDİ (TL) FONU (HİSSE SENEDİ YOĞUN FON)",
+        "kategoriDerece": 150,
+        "kategoriFonSay": 199,
+        "tarih": "2021-08-27",
+        "fiyat": 0.058211
+      }
+    ]
+  }
+  ```
+- **Historical Fields Available:** `fonKodu`, `fonUnvan`, `tarih` (`YYYY-MM-DD`), `fiyat` (numeric unit NAV price).
+- **Fields NOT in History Surface:** `PORTFOYBUYUKLUK` (AUM), `KISISAYISI` (Investors), `TEDPAYSAYISI` (Shares) are **not present** in `fonFiyatBilgiGetir`.
+
+### B) Current Valuation & AUM Snapshot: `fonBilgiGetir`
+- **Endpoint:** `POST https://www.tefas.gov.tr/api/funds/fonBilgiGetir`
+- **Payload:** `{"fonKodu": "MAC", "dil": "TR"}`
+- **Response Fields:**
+  - `fonKodu`: 3-letter provider alias.
+  - `sonFiyat`: Latest unit NAV price (e.g. `0.76165`).
+  - `gunlukGetiri`: Daily return percentage (e.g. `0.8381`).
+  - `payAdet`: Outstanding shares / units (`5725524142`).
+  - `portBuyukluk`: Total portfolio size / AUM in TRY (`4360844111.72`).
+  - `fonKategori`: Category string (e.g. `"Hisse Senedi Fonu"`).
+  - `yatirimciSayi`: Total investor count (`36070`).
+  - `pazarPayi`: Category market share (`1.64`).
+
+### C) Fund Universe Enumeration: `fonUnvanAra`
+- **Endpoint:** `POST https://www.tefas.gov.tr/api/funds/fonUnvanAra`
+- **Payload:** `{"aranan": "", "dil": "TR"}`
+- **Response:** Array of **2,589 active funds** with `fonKodu` and `fonUnvan`.
+
+---
+
+## 4. Fields & Capabilities Matrix
+
+| Field | Turkish Provider Key | 2026 Official Surface | Machine-Readable? | Historical Depth | PIT-Safe? | Needed by Sentinax? | Status & Evidence |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| Fund Code | `fonKodu` | `fonFiyatBilgiGetir` / `fonBilgiGetir` | Yes | 5Y | Yes (Economic Alias) | **Yes** | `OFFICIAL_OBSERVED` |
+| Fund Title | `fonUnvan` | `fonFiyatBilgiGetir` / `fonBilgiGetir` | Yes | Current only | **No (Look-ahead)** | **Yes** | `CURRENT_METADATA_ONLY` |
+| Trade Date | `tarih` | `fonFiyatBilgiGetir` | Yes | 5Y | Yes (`YYYY-MM-DD`) | **Yes** | `OFFICIAL_OBSERVED` |
+| Unit Price | `fiyat` / `sonFiyat` | `fonFiyatBilgiGetir` / `fonBilgiGetir` | Yes | 5Y | Yes (Clean decimal) | **Yes** | `OFFICIAL_OBSERVED` |
+| Portfolio Size (AUM) | `portBuyukluk` | `fonBilgiGetir` | Yes | Current only | Yes (for current) | Optional | `CURRENT_ONLY_OBSERVED` |
+| Investor Count | `yatirimciSayi` | `fonBilgiGetir` | Yes | Current only | Yes (for current) | Optional | `CURRENT_ONLY_OBSERVED` |
+| Shares Outstanding | `payAdet` | `fonBilgiGetir` | Yes | Current only | Yes (for current) | Optional | `CURRENT_ONLY_OBSERVED` |
+| Fund Category | `fonKategori` | `fonBilgiGetir` | Yes | Current only | **No (Look-ahead)** | Optional | `CURRENT_METADATA_ONLY` |
+| ISIN | N/A | Excluded from public endpoints | No | N/A | N/A | Optional | `UNAVAILABLE_ON_PUBLIC_TEFAS` |
+| Currency | N/A | Implied TRY | No (Implicit TRY) | N/A | Verify via Master | **Yes** | `METADATA_AUTHORITY_REQUIRED` |
+| Portfolio Allocation | N/A | `dagilimSiraliGetirT` (Complex format) | Partial | Unverified | Unverified | Future Phase | `UNVERIFIED_STRUCTURE` |
+| Management Fee | N/A | Excluded from EOD API | No in TEFAS | N/A | N/A | Optional | `KAP_AUTHORITY_REQUIRED` |
+
+---
+
+## 5. Historical Depth & Range Constraints
+
+- **Historical Depth Limit:** `periyod=60` provides **5 Years (60 Months)** of continuous daily prices per fund (`OFFICIAL_OBSERVED`).
+- **Platform Inception (>5Y):** Deprecated claim of `>=10Y` directly via standard public API is refuted; calls with `periyod > 60` fail with system error. Deeper historical bootstrap requires Phase 13 archive imports.
 - **Bulk vs Single Fund Semantics:**
-  - Omitting `fonkod` returns all active funds for the given date range (useful for daily incremental synchronization).
-  - Specifying `fonkod` returns time-series for a single fund (useful for backfilling historical depth).
+  - `fonFiyatBilgiGetir` requires `fonKodu` (single fund per request).
+  - `fonUnvanAra` provides the master list of 2,589 fund codes.
+  - Daily incremental synchronization requires looping over the active portfolio fund universe.
 
 ---
 
-## 7. Identity & ISIN
+## 6. Point-in-Time (PIT) & Identity Semantics
 
-- **TEFAS Provider Alias:** 3-letter alphanumeric code (e.g. `TCD`, `MAC`, `TI1`, `YAS`).
-- **ISIN Resolution:** Public TEFAS `BindHistoryInfo` does not supply ISIN codes. ISIN mappings must be sourced via KAP (Kamuyu Aydınlatma Platformu) or maintained in Sentinax's `InstrumentResolverService`.
-- **Identity Invariant:** `GlobalEODObservation` and domain models must resolve the 3-letter alias to a canonical `instrument_id` (UUID) in the Instrument Master.
-
----
-
-## 8. Fund Taxonomy & Domain Alignment
-
-- **Current `domain.py` Limitation:** `InstrumentType` currently contains only 4 TEFAS types (`TEFAS_MONEY_MARKET`, `TEFAS_EQUITY`, `TEFAS_VARIABLE`, `TEFAS_BALANCED`).
-- **Actual TEFAS Public Universe:** Contains ~15+ distinct SPK fund categories:
-  - *Borçlanma Araçları* (Fixed Income / Debt Instruments)
-  - *Hisse Senedi* (Equity)
-  - *Değişken* (Variable)
-  - *Fon Sepeti* (Fund of Funds)
-  - *Kıymetli Madenler* (Precious Metals / Gold)
-  - *Para Piyasası* (Money Market)
-  - *Karma* (Mixed / Balanced)
-  - *Katılım* (Islamic / Sharia-compliant)
-  - *Serbest* (Hedge / Qualified Investor Funds)
-  - *Gayrimenkul Yatırım Fonları* (REIT Funds / GYF)
-  - *Girişim Sermayesi* (Venture Capital / GSYF)
-- **Recommended Strategy (Strategy A):**
-  Maintain canonical `AssetClass.FUND` with a general `TEFAS_MUTUAL_FUND` / expanded canonical types, and store fine-grained SPK category as structured metadata attributes rather than bloating the top-level Python enum with 30 transient classifications.
+1. **Provider Identity Authority:** `FONKODU` (3-letter alias) maps to canonical `instrument_id` (UUID) via Sentinax's `InstrumentResolverService`.
+2. **Metadata Look-Ahead Limitation (`CURRENT_METADATA_ONLY`):**
+   - Historical rows in `fonFiyatBilgiGetir` return the *current* `fonUnvan`.
+   - Historical name/category changes are not preserved in the time-series response.
+3. **Price Lineage:**
+   - `trade_date`: Parsed from `tarih` (`YYYY-MM-DD`).
+   - `close`: Parsed from `fiyat` (strict `Decimal`).
+   - `retrieved_at`: UTC timezone-aware ingestion timestamp.
+   - `published_at`: `None` (no microsecond publication timestamp exposed).
+   - `mode == SOURCE_AS_OF`: Returns `UNAVAILABLE_SOURCE_AS_OF`.
 
 ---
 
-## 9. Point-in-Time (PIT) Limitations & Disclaimer
+## 7. Architecture, Bot Protection & Automation Terms
 
-- **Official TEFAS Historical Metadata Warning (`OFFICIAL_VERIFIED`):**
-  Takasbank explicitly notes that historical fund performance queries display the *current* fund management company, current fund title, and current category assignment. If a fund changed its strategy or portfolio manager in 2022, a query for 2020 will reflect the 2026 title and category.
-- **Sentinax PIT Rules:**
-  - `price_date`: Authoritative economic date.
-  - `unit_price`: Authoritative economic historical price.
-  - `fund_title` / `category`: Classified as `CURRENT_METADATA_ONLY`. Historical backtests must NOT infer past asset eligibility from current fund categories without effective-dated master history.
-  - `retrieved_at`: Required timezone-aware local ingestion timestamp.
-  - `published_at`: `None` (TEFAS does not expose immutable publication micro-timestamps).
+- **Architecture:** Next.js frontend with RESTful backend endpoints (`OFFICIAL_OBSERVED`).
+- **Bot Protection & WAF:** Ordinary HTTP `POST` requests with standard headers (`Content-Type: application/json`, `Origin`, `Referer`) succeed reliably without cookies, CAPTCHAs, or browser emulation.
+- **Anti-Bot Circumvention Ban:** Sentinax strictly rejects `curl_cffi`, TLS fingerprint spoofing, and stealth browser automation. Standard `httpx` with 500ms-1000ms polite rate-limiting is completely sufficient.
+- **Takasbank Member Web Services:** Institutional participant web services (requiring Takas Menü credentials) are confirmed **`OUT_OF_SCOPE_FOR_SENTINAX`**.
+- **Private Automation Terms:** Public disclosure portal operated under Capital Markets Board (SPK) transparency regulations; private non-commercial low-frequency reading is `NOT_PROHIBITED_BUT_UNDOCUMENTED`.
 
 ---
 
-## 10. Bot Protection, Rate Limits & Terms of Service
+## 8. Fallback Sources
 
-- **Bot Protection:** Standard rate-limiting and WAF headers are active. Rapid-fire unthrottled requests trigger HTTP 403 / 429.
-- **Anti-Bot Non-Circumvention Rule:** Sentinax will NEVER use `curl_cffi`, TLS signature spoofing, or headless stealth browsers. Standard async `httpx` with `User-Agent: Sentinax/1.0 (Personal Portfolio Engine)` and minimum 500ms request delays will be used.
-- **SLA & Rate Limits:** Undocumented by Takasbank (`PUBLIC_RATE_LIMIT = UNDOCUMENTED`).
-- **Terms & Private Automation:** Platform is a public financial disclosure portal operated pursuant to Capital Markets Board (SPK) regulations. Non-commercial, low-frequency automated reading for personal portfolio risk analysis is not prohibited (`PRIVATE_AUTOMATION = NOT_PROHIBITED_BUT_UNDOCUMENTED`).
+1. **KAP (Kamuyu Aydınlatma Platformu):** Authoritative source for fund prospectuses, founding notices, management fee schedules, and material event disclosures (`OFFICIAL_DOCUMENTED`).
+2. **Excel Public Downloads:** Previous route `/tr/tarihsel-veriler` is `404 Not Found` (`OFFICIAL_OBSERVED`). Downstream archive imports deferred to Phase 13.
 
 ---
 
-## 11. Takasbank Member Web Services Exclusion
+## 9. SourceTier Classification
 
-- **Takasbank Institutional Web Services:** Takasbank operates formal SOAP/REST web services for clearing members (banks, brokerage houses, custody participants) requiring Takas Menü credentials and VPN/leased lines.
-- **Sentinax Scope:** `MEMBER_WEB_SERVICES = OUT_OF_SCOPE_FOR_SENTINAX`. Sentinax is an independent personal architecture and relies exclusively on public disclosures and official open endpoints.
-
----
-
-## 12. Zero-Cost Official Fallbacks
-
-1. **KAP (Kamuyu Aydınlatma Platformu - `kap.org.tr`):**
-   - Official daily fund price bulletins and portfolio composition disclosures published daily.
-   - Machine-readable public JSON endpoints (`kap.org.tr/tr/api/...`) available for public filings.
-2. **Periodic Excel Exports:**
-   - TEFAS web interface provides daily and monthly historical Excel (`.xlsx`) downloads via `https://www.tefas.gov.tr/tr/tarihsel-veriler`.
-   - Suitable for Phase 13 manual/bootstrap ingestion if real-time web transport is ever interrupted.
+- **Recommended SourceTier:** `SourceTier.TIER_2_EXCHANGE` (Takasbank operates central clearing/settlement infrastructure and the official TEFAS fund distribution platform under SPK authority).
+- **Provider Access Status:** `GREEN_PUBLIC_API` (Direct, unattended JSON access verified).
 
 ---
 
-## 13. Access Matrix
+## 10. Phase 11B Implementation Scope
 
-| Surface | Official? | Public? | Auth Required? | Ordinary HTTP Works? | Bot Protection? | Machine-Readable? | Documented SLA? | Production Verdict |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `TEFAS Web UI (/tr/...)` | Yes | Yes | No | Yes (HTML) | Medium (WAF) | No (HTML) | No | `MANUAL_VERIFICATION_ONLY` |
-| `TEFAS BindHistoryInfo` | Yes | Yes | No | **Yes (POST)** | Low/Medium | **Yes (JSON)** | No | `APPROVED_FOR_PHASE_11B` |
-| `TEFAS BindHistoryAllocation`| Yes | Yes | No | **Yes (POST)** | Low/Medium | **Yes (JSON)** | No | `APPROVED_FOR_ALLOCATION` |
-| `Takasbank Member Web Services` | Yes | No | **Yes (Member Login)** | No | High | Yes | Yes | `OUT_OF_SCOPE` |
-| `KAP Fund Bulletins` | Yes | Yes | No | **Yes (GET/POST)** | Low | **Yes (JSON/PDF)** | No | `APPROVED_ZERO_COST_FALLBACK` |
+### Decision: **`GO_PUBLIC_LOW_FREQUENCY`**
 
----
-
-## 14. Phase 11B Implementation Gate & Scope
-
-### Implementation Gate: `CONDITIONAL_GO_LOW_FREQUENCY`
-
-**Conditions for Phase 11B Provider Adapter:**
-1. **Low Frequency Batch Ingestion:** Adapter must execute once daily after market close (~19:00 - 21:00 TRT) with minimum 1.0-second jittered inter-request delays.
-2. **Chunking Contract:** Historical backfills must be chunked into maximum 90-day intervals to prevent upstream gateway timeouts.
-3. **Fail-Closed Validation:** All decimal parsing must strictly use `Decimal` (no floats). Missing or malformed values must never default to zero.
-4. **Snapshot Immutability:** Raw JSON responses must be hashed with SHA-256 (`payload_hash`) and stored with UTC timezone-aware `retrieved_at` timestamps.
-5. **No Evasion Packages:** Zero external anti-bot bypass dependencies. Pure Python standard library or existing `httpx` dependencies only.
+**Phase 11B Implementation Plan:**
+1. **Module:** `backend/engine/private/providers/tefas_eod.py`.
+2. **Endpoints Used:**
+   - `https://www.tefas.gov.tr/api/funds/fonFiyatBilgiGetir` (Historical and rolling 5-year daily prices).
+   - `https://www.tefas.gov.tr/api/funds/fonBilgiGetir` (Current valuation, AUM, investor count, outstanding units).
+   - `https://www.tefas.gov.tr/api/funds/fonUnvanAra` (Universe enumeration).
+3. **Invariants:**
+   - Zero anti-bot evasion dependencies (pure Python standard library / existing `httpx`).
+   - Strict `Decimal` parsing for prices and totals (no floats).
+   - Snapshot immutability with SHA-256 `payload_hash` and UTC timezone-aware `retrieved_at`.
+   - Dual identity resolution via `InstrumentResolverService`.
