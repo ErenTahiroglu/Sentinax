@@ -832,3 +832,125 @@ class TestSECQuarterDerivationEngine:
 
         res = SECQuarterDeriver.derive_quarter(elig)
         assert res.confidence == "MEDIUM"
+
+    def test_33_extreme_exponent_gap_exactness(self):
+        """Scenario 33: 1E+100 - 1E-100 produces exact 200-digit coefficient without silent rounding."""
+        left = Decimal("1E+100")
+        right = Decimal("1E-100")
+
+        diff = _subtract_decimal_exact(left, right)
+        t = diff.as_tuple()
+        assert t.sign == 0
+        assert len(t.digits) == 200
+        assert t.exponent == -100
+        assert all(d == 9 for d in t.digits)
+
+    def test_34_reverse_extreme_exponent_gap_exactness(self):
+        """Scenario 34: 1E-100 - 1E+100 produces exact negative 200-digit coefficient."""
+        left = Decimal("1E-100")
+        right = Decimal("1E+100")
+
+        diff = _subtract_decimal_exact(left, right)
+        t = diff.as_tuple()
+        assert t.sign == 1
+        assert len(t.digits) == 200
+        assert t.exponent == -100
+        assert all(d == 9 for d in t.digits)
+
+    def test_35_mixed_sign_extreme_exponent_gap(self):
+        """Scenario 35: 1E+100 - (-1E-100) produces exact 201-digit addition equivalent."""
+        left = Decimal("1E+100")
+        right = Decimal("-1E-100")
+
+        diff = _subtract_decimal_exact(left, right)
+        t = diff.as_tuple()
+        assert t.sign == 0
+        assert len(t.digits) == 201
+        assert t.exponent == -100
+        assert t.digits[0] == 1
+        assert t.digits[-1] == 1
+        assert all(d == 0 for d in t.digits[1:-1])
+
+    def test_36_large_fractional_range(self):
+        """Scenario 36: Large integer part with ultra-small fractional part subtracts with exact scale."""
+        left = Decimal("1234567890123456789012345678901234567890.0000000000000000000000001")
+        right = Decimal("0.0000000000000000000000009")
+
+        diff = _subtract_decimal_exact(left, right)
+        expected = Decimal("1234567890123456789012345678901234567889.9999999999999999999999992")
+        assert diff == expected
+        assert diff.as_tuple() == expected.as_tuple()
+
+    def test_37_cancellation_large_almost_equal_operands(self):
+        """Scenario 37: Subtraction of almost-equal large numbers produces exact small residual."""
+        left = Decimal("123456789012345678901234567890.000001")
+        right = Decimal("123456789012345678901234567889.999999")
+
+        diff = _subtract_decimal_exact(left, right)
+        expected = Decimal("0.000002")
+        assert diff == expected
+        assert diff.as_tuple() == expected.as_tuple()
+
+    def test_38_hostile_global_precision_context_immunity(self):
+        """Scenario 38: Low global precision (prec=2) does not affect exact subtraction."""
+        orig_prec = decimal.getcontext().prec
+        try:
+            decimal.getcontext().prec = 2
+
+            diff = _subtract_decimal_exact(Decimal("123.456"), Decimal("0.056"))
+            assert diff == Decimal("123.400")
+            assert diff.as_tuple() == Decimal("123.400").as_tuple()
+        finally:
+            decimal.getcontext().prec = orig_prec
+
+    def test_39_hostile_global_rounding_mode_immunity(self):
+        """Scenario 39: Hostile global rounding modes do not affect exact subtraction."""
+        orig_rounding = decimal.getcontext().rounding
+        try:
+            for mode in (decimal.ROUND_DOWN, decimal.ROUND_UP, decimal.ROUND_CEILING, decimal.ROUND_FLOOR):
+                decimal.getcontext().rounding = mode
+                diff = _subtract_decimal_exact(Decimal("1E+100"), Decimal("1E-100"))
+                t = diff.as_tuple()
+                assert len(t.digits) == 200
+                assert t.exponent == -100
+                assert all(d == 9 for d in t.digits)
+        finally:
+            decimal.getcontext().rounding = orig_rounding
+
+    def test_40_global_context_restoration_guarantee(self):
+        """Scenario 40: Calling derive_quarter preserves caller global Decimal context completely."""
+        ctx = decimal.getcontext()
+        before_state = (ctx.prec, ctx.rounding, ctx.Emax, ctx.Emin, dict(ctx.traps))
+
+        w1 = _make_winner_result(fiscal_period="Q1", start_date=date(2024, 1, 1), end_date=date(2024, 3, 31), value=Decimal("100"))
+        w2 = _make_winner_result(economic_period_kind=SECEconomicPeriodKind.YTD_DURATION, fiscal_period="Q2", start_date=date(2024, 1, 1), end_date=date(2024, 6, 30), value=Decimal("220"))
+
+        series = SECFiscalSeriesAssembler.assemble_series([w1, w2])[0]
+        elig = SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(series, "Q2", target_fiscal_start_date=date(2024, 1, 1))
+        res = SECQuarterDeriver.derive_quarter(elig)
+
+        assert res.status == SECQuarterDerivationStatus.DERIVED
+        after_state = (ctx.prec, ctx.rounding, ctx.Emax, ctx.Emin, dict(ctx.traps))
+        assert before_state == after_state
+
+    def test_41_arithmetic_error_handling_in_deriver(self, monkeypatch):
+        """Scenario 41: Unexpected arithmetic exception in helper safely returns ARITHMETIC_ERROR."""
+        def _failing_sub(l, r):
+            raise ArithmeticError("Simulated hardware arithmetic fault")
+
+        monkeypatch.setattr(
+            "backend.engine.private.sec.quarter_derivation._subtract_decimal_exact",
+            _failing_sub,
+        )
+
+        w1 = _make_winner_result(fiscal_period="Q1", start_date=date(2024, 1, 1), end_date=date(2024, 3, 31), value=Decimal("100"))
+        w2 = _make_winner_result(economic_period_kind=SECEconomicPeriodKind.YTD_DURATION, fiscal_period="Q2", start_date=date(2024, 1, 1), end_date=date(2024, 6, 30), value=Decimal("220"))
+
+        series = SECFiscalSeriesAssembler.assemble_series([w1, w2])[0]
+        elig = SECFiscalSeriesEvaluator.evaluate_quarter_derivation_eligibility(series, "Q2", target_fiscal_start_date=date(2024, 1, 1))
+
+        res = SECQuarterDeriver.derive_quarter(elig)
+        assert res.status == SECQuarterDerivationStatus.ARITHMETIC_ERROR
+        assert res.derived_value is None
+        assert any("Arithmetic error" in d for d in res.diagnostics)
+

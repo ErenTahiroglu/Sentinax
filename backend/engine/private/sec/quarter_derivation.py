@@ -168,8 +168,8 @@ class SECQuarterDerivationResult:
 
 def _subtract_decimal_exact(left: Decimal, right: Decimal) -> Decimal:
     """
-    Performs lossless, exact Decimal subtraction under an isolated local Decimal context.
-    Does NOT mutate the caller's global Decimal context.
+    Performs lossless, context-independent exact Decimal subtraction using aligned integer coefficients.
+    Does NOT depend on or mutate the caller's global Decimal context (prec, rounding, traps).
     Rejects non-finite values (NaN, Infinity).
     """
     if not isinstance(left, Decimal) or not isinstance(right, Decimal):
@@ -177,19 +177,32 @@ def _subtract_decimal_exact(left: Decimal, right: Decimal) -> Decimal:
     if not left.is_finite() or not right.is_finite():
         raise ValueError("Operands must be finite Decimal instances.")
 
-    # Calculate required precision to avoid any precision loss or rounding
-    left_t = left.as_tuple()
-    right_t = right.as_tuple()
-    left_digits = len(left_t.digits) + abs(left_t.exponent)
-    right_digits = len(right_t.digits) + abs(right_t.exponent)
-    req_prec = max(left_digits, right_digits) + 50
-    prec = max(100, req_prec)
+    left_tuple = left.as_tuple()
+    right_tuple = right.as_tuple()
 
-    with localcontext() as ctx:
-        ctx.prec = prec
-        ctx.traps[Inexact] = False
-        ctx.traps[Rounded] = False
-        result = left - right
+    int_l = int("".join(str(d) for d in left_tuple.digits)) if left_tuple.digits else 0
+    if left_tuple.sign == 1:
+        int_l = -int_l
+
+    int_r = int("".join(str(d) for d in right_tuple.digits)) if right_tuple.digits else 0
+    if right_tuple.sign == 1:
+        int_r = -int_r
+
+    e_left = left_tuple.exponent
+    e_right = right_tuple.exponent
+    common_exp = min(e_left, e_right)
+
+    int_l_aligned = int_l * (10 ** (e_left - common_exp))
+    int_r_aligned = int_r * (10 ** (e_right - common_exp))
+
+    diff_int = int_l_aligned - int_r_aligned
+    sign = 1 if diff_int < 0 else 0
+    abs_diff = abs(diff_int)
+    digits = tuple(int(c) for c in str(abs_diff))
+
+    result = Decimal((sign, digits, common_exp))
+    if not result.is_finite():
+        raise ValueError("Subtraction produced a non-finite Decimal.")
 
     return result
 

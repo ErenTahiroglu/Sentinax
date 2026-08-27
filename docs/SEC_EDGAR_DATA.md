@@ -378,9 +378,10 @@ Arithmetic is executed ONLY when `eligibility.status == SECDerivationEligibility
 
 ### 13.3 Exact Decimal Arithmetic Contract
 1. **Zero Float Usage**: Absolutely no `float()` conversion. Operands and results are pure `Decimal`.
-2. **Local Context Precision**: Uses `decimal.localcontext()` with dynamically computed precision ($\ge 100$ digits) to prevent precision loss across $>28$-digit operands.
-3. **No Rounding or Cents Normalization**: Exact mathematical difference preserved without scale truncation.
-4. **Non-Finite Defense**: `NaN`, `+Infinity`, `-Infinity` fail closed as `NON_FINITE_OPERAND`.
+2. **Context-Independent Integer Coefficient Subtraction**: Operands are converted to signed integer coefficients aligned to `common_exp = min(e_left, e_right)`. Subtraction is computed exactly as integer arithmetic and reconstructed via `Decimal((sign, digits, common_exp))`.
+3. **Global Context Isolation**: The arithmetic does not rely on or mutate `getcontext().prec`, `rounding`, or traps; global context precision cannot cause silent rounding or truncation.
+4. **No Rounding or Cents Normalization**: Exact mathematical difference preserved without scale truncation or quantization.
+5. **Non-Finite Defense**: `NaN`, `+Infinity`, `-Infinity` fail closed as `NON_FINITE_OPERAND`.
 
 ### 13.4 Derived Fact Semantics vs SEC-Reported
 1. **Derived Facts**: `is_derived = True`, `is_sec_reported = False`. Basis clearly labels fact as Sentinax-derived from SEC-reported cumulative facts.
