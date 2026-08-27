@@ -63,3 +63,5 @@ Thumbs.db
 # Antigravity Dynamic Memory
 .antigravity/memory.json
 .graphify/cache/
+
+.superpowers/

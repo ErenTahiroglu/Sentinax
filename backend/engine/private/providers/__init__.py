@@ -2,6 +2,7 @@
 backend/engine/private/providers — Production Data Provider Adapters
 """
 
+from backend.engine.private.providers.alpha_vantage_eod import AlphaVantageEODProvider
 from backend.engine.private.providers.bist_eod import BISTEODProvider
 from backend.engine.private.providers.ecb_sdmx import ECBDataPortalProvider
 from backend.engine.private.providers.eurostat_sdmx import EurostatSDMXProvider
@@ -12,6 +13,7 @@ from backend.engine.private.providers.tuik_sdmx import TUIKSDMXProvider
 from backend.engine.private.providers.us_treasury import USTreasuryYieldCurveProvider
 
 __all__ = [
+    "AlphaVantageEODProvider",
     "BISTEODProvider",
     "ECBDataPortalProvider",
     "EurostatSDMXProvider",
