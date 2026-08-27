@@ -7,7 +7,10 @@ Core Invariants:
     - Pure economic concept definitions (Statement Family, Expected PeriodType, Expected UnitClass).
     - Authoritative taxonomy variant mappings (US-GAAP 2026, SEC-supported IFRS 2025, DEI).
     - Exact vs Compatible vs Legacy distinction preserved.
-    - IFRS 18 Operating Profit (OPERATING_PROFIT_IFRS18) is strictly separated from IAS 1 legacy subtotal (OPERATING_INCOME_LEGACY_IAS1).
+    - Net Income is split into NET_INCOME_ATTRIBUTABLE_TO_PARENT (NetIncomeLoss / ProfitLossAttributableToOwnersOfParent)
+      and NET_INCOME_INCLUDING_NCI (ProfitLoss) to prevent ambiguous semantic collapse.
+    - IFRS 18 Operating Profit (OPERATING_PROFIT_IFRS18 -> ifrs-full:OperatingProfitLossOperating) is strictly
+      separated from legacy IAS 1 entity-specific subtotal (OPERATING_INCOME_LEGACY_IAS1 -> ifrs-full:ProfitLossFromOperatingActivities).
     - Physical PP&E CapEx (CAPEX_PP&E) is strictly separated from broader productive assets CapEx (CAPEX_PRODUCTIVE_ASSETS).
     - SEC-supported IFRS release is explicitly 2025; no fabricated SEC IFRS 2026 support.
     - No financial metric calculations (TTM, FCF, ROIC, Margins, Winner Selection).
@@ -86,7 +89,7 @@ class ConceptVariant:
     priority: int                           # 1 = primary recommended, 2 = legacy/fallback
     semantic_scope: str                     # Exact economic definition notes
     verified_taxonomy_family: str           # "US-GAAP", "IFRS", "SEC-DEI"
-    verified_taxonomy_release: str          # "2026", "2025", "2020-2026", etc.
+    verified_taxonomy_release: str          # "2026", "SEC-supported IFRS 2025", "2020-2026", etc.
     verification_source: str                # Authoritative FASB / SEC / IASB citation
     verification_status: VerificationStatus = VerificationStatus.VERIFIED_OFFICIAL
     legacy_status: bool = False
@@ -122,7 +125,7 @@ class CanonicalSECConceptDefinition:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Authoritative Initial Canonical Concepts Registry (Phase 8B.1.5 Hardened)
+# Authoritative Initial Canonical Concepts Registry (Phase 8B.1.6 Hardened)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_initial_canonical_concept_definitions() -> List[CanonicalSECConceptDefinition]:
@@ -241,7 +244,7 @@ def get_initial_canonical_concept_definitions() -> List[CanonicalSECConceptDefin
                     verification_source="IASB IFRS Taxonomy (IAS 1.BC56)",
                     legacy_status=True,
                     deprecated_in_release="IFRS 18",
-                    replacement_tag="OperatingProfitLoss",
+                    replacement_tag="OperatingProfitLossOperating",
                     notes="Deprecated by IFRS 18; composition is entity-specific and distinct from IFRS 18 standardized operating profit.",
                 ),
             ],
@@ -257,23 +260,23 @@ def get_initial_canonical_concept_definitions() -> List[CanonicalSECConceptDefin
             variants=[
                 ConceptVariant(
                     taxonomy="ifrs-full",
-                    tag="OperatingProfitLoss",
+                    tag="OperatingProfitLossOperating",
                     match_strength=MatchStrength.EXACT,
                     priority=1,
                     semantic_scope="Standardized operating profit or loss defined by IFRS 18.",
                     verified_taxonomy_family="IFRS",
-                    verified_taxonomy_release="IFRS 18 Taxonomy (IASB 2024+)",
-                    verification_source="IASB IFRS 18 Presentation and Disclosure in Financial Statements",
+                    verified_taxonomy_release="SEC-supported IFRS 2025",
+                    verification_source="IASB IFRS 18 / SEC-supported IFRS 2025 Taxonomy",
                     legacy_status=False,
                     notes="Standardized IFRS 18 category; not interchangeable with legacy IAS 1 ProfitLossFromOperatingActivities.",
                 ),
             ],
         ),
 
-        # 5. NET_INCOME
+        # 5. NET_INCOME_ATTRIBUTABLE_TO_PARENT (Net Income Attributable to Parent Common Stockholders)
         CanonicalSECConceptDefinition(
-            canonical_concept="NET_INCOME",
-            description="Consolidated net income or loss for the period.",
+            canonical_concept="NET_INCOME_ATTRIBUTABLE_TO_PARENT",
+            description="Net income or loss attributable exclusively to parent entity stockholders / owners of the parent.",
             statement_family=StatementFamily.INCOME_STATEMENT,
             expected_period_type=PeriodType.DURATION,
             expected_unit_class=UnitClass.MONETARY,
@@ -283,18 +286,40 @@ def get_initial_canonical_concept_definitions() -> List[CanonicalSECConceptDefin
                     tag="NetIncomeLoss",
                     match_strength=MatchStrength.EXACT,
                     priority=1,
-                    semantic_scope="Consolidated net profit or loss after taxes and expenses.",
+                    semantic_scope="FASB ASC 220 net income or loss attributable to parent entity stockholders.",
                     verified_taxonomy_family="US-GAAP",
                     verified_taxonomy_release="2020-2026",
                     verification_source="FASB US-GAAP Taxonomy (ASC 220-10-S99-5)",
                     legacy_status=False,
                 ),
                 ConceptVariant(
+                    taxonomy="ifrs-full",
+                    tag="ProfitLossAttributableToOwnersOfParent",
+                    match_strength=MatchStrength.EXACT,
+                    priority=1,
+                    semantic_scope="IFRS profit or loss attributable to owners of the parent.",
+                    verified_taxonomy_family="IFRS",
+                    verified_taxonomy_release="SEC-supported IFRS 2020-2025",
+                    verification_source="IASB IFRS Taxonomy (IAS 1.81B(a)(ii))",
+                    legacy_status=False,
+                ),
+            ],
+        ),
+
+        # 6. NET_INCOME_INCLUDING_NCI (Consolidated Total Net Income / ProfitLoss before NCI Allocation)
+        CanonicalSECConceptDefinition(
+            canonical_concept="NET_INCOME_INCLUDING_NCI",
+            description="Consolidated total profit or loss for the period before allocation to non-controlling interests.",
+            statement_family=StatementFamily.INCOME_STATEMENT,
+            expected_period_type=PeriodType.DURATION,
+            expected_unit_class=UnitClass.MONETARY,
+            variants=[
+                ConceptVariant(
                     taxonomy="us-gaap",
                     tag="ProfitLoss",
-                    match_strength=MatchStrength.COMPATIBLE,
-                    priority=2,
-                    semantic_scope="Total comprehensive consolidated profit or loss for the period.",
+                    match_strength=MatchStrength.EXACT,
+                    priority=1,
+                    semantic_scope="Consolidated profit or loss for the period before noncontrolling interest attribution.",
                     verified_taxonomy_family="US-GAAP",
                     verified_taxonomy_release="2020-2026",
                     verification_source="FASB US-GAAP Taxonomy (ASC 220-10-55)",
@@ -305,7 +330,7 @@ def get_initial_canonical_concept_definitions() -> List[CanonicalSECConceptDefin
                     tag="ProfitLoss",
                     match_strength=MatchStrength.EXACT,
                     priority=1,
-                    semantic_scope="IFRS consolidated profit or loss for the period.",
+                    semantic_scope="IFRS total consolidated profit or loss for the period before attribution.",
                     verified_taxonomy_family="IFRS",
                     verified_taxonomy_release="SEC-supported IFRS 2020-2025",
                     verification_source="IASB IFRS Taxonomy (IAS 1.81A(a))",
@@ -314,7 +339,7 @@ def get_initial_canonical_concept_definitions() -> List[CanonicalSECConceptDefin
             ],
         ),
 
-        # 6. TOTAL_ASSETS
+        # 7. TOTAL_ASSETS
         CanonicalSECConceptDefinition(
             canonical_concept="TOTAL_ASSETS",
             description="Total carrying amount of all recognized economic assets.",
@@ -347,7 +372,7 @@ def get_initial_canonical_concept_definitions() -> List[CanonicalSECConceptDefin
             ],
         ),
 
-        # 7. TOTAL_LIABILITIES
+        # 8. TOTAL_LIABILITIES
         CanonicalSECConceptDefinition(
             canonical_concept="TOTAL_LIABILITIES",
             description="Total obligations and carrying amount of all balance sheet liabilities.",
@@ -380,7 +405,7 @@ def get_initial_canonical_concept_definitions() -> List[CanonicalSECConceptDefin
             ],
         ),
 
-        # 8. EQUITY_ATTRIBUTABLE_TO_PARENT
+        # 9. EQUITY_ATTRIBUTABLE_TO_PARENT
         CanonicalSECConceptDefinition(
             canonical_concept="EQUITY_ATTRIBUTABLE_TO_PARENT",
             description="Stockholders' equity attributable exclusively to the parent entity stockholders.",
@@ -413,7 +438,7 @@ def get_initial_canonical_concept_definitions() -> List[CanonicalSECConceptDefin
             ],
         ),
 
-        # 9. EQUITY_INCLUDING_NCI
+        # 10. EQUITY_INCLUDING_NCI
         CanonicalSECConceptDefinition(
             canonical_concept="EQUITY_INCLUDING_NCI",
             description="Total equity including portion attributable to non-controlling interests.",
@@ -446,7 +471,7 @@ def get_initial_canonical_concept_definitions() -> List[CanonicalSECConceptDefin
             ],
         ),
 
-        # 10. CURRENT_ASSETS
+        # 11. CURRENT_ASSETS
         CanonicalSECConceptDefinition(
             canonical_concept="CURRENT_ASSETS",
             description="Total assets expected to be converted to cash or consumed within one year or operating cycle.",
@@ -479,7 +504,7 @@ def get_initial_canonical_concept_definitions() -> List[CanonicalSECConceptDefin
             ],
         ),
 
-        # 11. CURRENT_LIABILITIES
+        # 12. CURRENT_LIABILITIES
         CanonicalSECConceptDefinition(
             canonical_concept="CURRENT_LIABILITIES",
             description="Total obligations expected to be settled within one year or operating cycle.",
@@ -512,7 +537,7 @@ def get_initial_canonical_concept_definitions() -> List[CanonicalSECConceptDefin
             ],
         ),
 
-        # 12. CASH_AND_CASH_EQUIVALENTS
+        # 13. CASH_AND_CASH_EQUIVALENTS
         CanonicalSECConceptDefinition(
             canonical_concept="CASH_AND_CASH_EQUIVALENTS",
             description="Cash, bank deposits, and highly liquid short-term investments.",
@@ -556,7 +581,7 @@ def get_initial_canonical_concept_definitions() -> List[CanonicalSECConceptDefin
             ],
         ),
 
-        # 13. OPERATING_CASH_FLOW
+        # 14. OPERATING_CASH_FLOW
         CanonicalSECConceptDefinition(
             canonical_concept="OPERATING_CASH_FLOW",
             description="Net cash flow provided by or used in operating activities (CFO).",
@@ -589,7 +614,7 @@ def get_initial_canonical_concept_definitions() -> List[CanonicalSECConceptDefin
             ],
         ),
 
-        # 14. CAPEX_PP&E (Physical Property, Plant, and Equipment Additions Only)
+        # 15. CAPEX_PP&E (Physical Property, Plant, and Equipment Additions Only)
         CanonicalSECConceptDefinition(
             canonical_concept="CAPEX_PP&E",
             description="Cash payments made strictly to acquire physical property, plant, and equipment.",
@@ -622,7 +647,7 @@ def get_initial_canonical_concept_definitions() -> List[CanonicalSECConceptDefin
             ],
         ),
 
-        # 15. CAPEX_PRODUCTIVE_ASSETS (Broader Capital Expenditures including Intangibles)
+        # 16. CAPEX_PRODUCTIVE_ASSETS (Broader Capital Expenditures including Intangibles)
         CanonicalSECConceptDefinition(
             canonical_concept="CAPEX_PRODUCTIVE_ASSETS",
             description="Broader capital expenditures for productive assets including PP&E, software, and intangibles.",
@@ -645,7 +670,7 @@ def get_initial_canonical_concept_definitions() -> List[CanonicalSECConceptDefin
             ],
         ),
 
-        # 16. DILUTED_EPS
+        # 17. DILUTED_EPS
         CanonicalSECConceptDefinition(
             canonical_concept="DILUTED_EPS",
             description="Diluted earnings per share available to common stockholders.",
@@ -678,7 +703,7 @@ def get_initial_canonical_concept_definitions() -> List[CanonicalSECConceptDefin
             ],
         ),
 
-        # 17. DILUTED_WEIGHTED_AVERAGE_SHARES
+        # 18. DILUTED_WEIGHTED_AVERAGE_SHARES
         CanonicalSECConceptDefinition(
             canonical_concept="DILUTED_WEIGHTED_AVERAGE_SHARES",
             description="Weighted-average number of common shares outstanding including dilutive potential shares.",
@@ -711,7 +736,7 @@ def get_initial_canonical_concept_definitions() -> List[CanonicalSECConceptDefin
             ],
         ),
 
-        # 18. SHARES_OUTSTANDING
+        # 19. SHARES_OUTSTANDING
         CanonicalSECConceptDefinition(
             canonical_concept="SHARES_OUTSTANDING",
             description="Total number of common shares outstanding at a specific point in time.",

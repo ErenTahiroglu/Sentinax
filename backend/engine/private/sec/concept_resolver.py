@@ -9,6 +9,7 @@ Core Invariants:
     - Output: SECCanonicalFactCandidate instances.
     - Numerical values (Decimal) are NEVER modified, scaled, sign-flipped, or converted.
     - Expected PeriodType and UnitClass are strictly enforced.
+    - Unit validation fails closed: only explicit standard currencies and exact currency/shares combinations accepted.
     - Preserves all candidates across multiple accessions, forms, and amendments without winner selection (Phase 8B.2 scope).
 """
 
@@ -37,13 +38,14 @@ from backend.engine.private.sec.models import (
 
 logger = logging.getLogger(__name__)
 
-# Known standard currency codes and representations
+# Known official ISO 4217 standard currency codes accepted in SEC filings
 STANDARD_CURRENCIES = {
     "USD", "EUR", "TRY", "GBP", "CAD", "JPY", "CHF", "AUD", "CNY", "SEK",
     "NOK", "DKK", "BRL", "INR", "KRW", "MXN", "SGD", "HKD", "NZD", "ZAR",
     "RUB", "PLN", "ILS", "THB", "IDR", "MYR", "PHP", "TWD", "CLP", "COP",
     "PEN", "ARS", "CZK", "HUF", "RON", "BGN", "HRK", "RSD", "KZT", "AED",
     "SAR", "QAR", "KWD", "BHD", "OMR", "EGP", "NGN", "KES", "GHS", "VND",
+    "ISK",
 }
 
 
@@ -73,7 +75,7 @@ def classify_form_role(form: Optional[str]) -> Tuple[FormRole, bool]:
 
 def validate_unit_compatibility(expected_unit_class: UnitClass, unit: Optional[str]) -> bool:
     """
-    Validates whether raw unit string matches expected economic unit class.
+    Validates whether raw unit string matches expected economic unit class with strict fail-closed guards.
     """
     if not unit or not isinstance(unit, str):
         return False
@@ -82,34 +84,29 @@ def validate_unit_compatibility(expected_unit_class: UnitClass, unit: Optional[s
     u_lower = u_clean.lower()
 
     if expected_unit_class == UnitClass.MONETARY:
-        # Must be a currency code; reject shares, pure, ratios, per-share
-        if u_clean.upper() in STANDARD_CURRENCIES:
-            return True
-        if u_lower in ("shares", "share", "pure", "ratio") or "/" in u_clean or "-per-" in u_lower:
-            return False
-        # If unknown 3-letter uppercase code, accept as candidate ISO currency
-        if len(u_clean) == 3 and u_clean.isupper():
-            return True
-        return False
+        # Must strictly be an explicitly verified currency code; reject unknown codes like ABC, shares, pure, etc.
+        return u_clean.upper() in STANDARD_CURRENCIES
 
     if expected_unit_class == UnitClass.SHARES:
-        # Must be shares
-        if u_lower in ("shares", "share", "number"):
-            return True
-        return False
+        # Must strictly be share units; reject generic 'number' or currencies
+        return u_lower in ("shares", "share")
 
     if expected_unit_class == UnitClass.MONETARY_PER_SHARE:
-        # Must have monetary numerator and shares denominator or pure/ratio
-        if "/" in u_clean or "-per-" in u_lower or "pershare" in u_lower:
-            return True
-        if u_lower in ("pure", "ratio"):
-            return True
+        # Strictly require currency numerator and shares denominator; reject plain pure, ratio, plain USD, plain shares
+        if "/" in u_clean:
+            parts = u_clean.split("/", 1)
+            num = parts[0].strip().upper()
+            denom = parts[1].strip().lower()
+            return num in STANDARD_CURRENCIES and denom in ("shares", "share")
+        if "-per-" in u_lower:
+            parts = u_lower.split("-per-", 1)
+            num = parts[0].strip().upper()
+            denom = parts[1].strip().lower()
+            return num in STANDARD_CURRENCIES and denom in ("shares", "share")
         return False
 
     if expected_unit_class == UnitClass.PURE:
-        if u_lower in ("pure", "ratio", "percentage", "rate", "decimal"):
-            return True
-        return False
+        return u_lower in ("pure", "ratio", "percentage", "rate", "decimal")
 
     return False
 

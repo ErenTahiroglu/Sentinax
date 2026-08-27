@@ -100,9 +100,9 @@ Base URL: `https://data.sec.gov`
 
 ---
 
-## 9. Phase 8B.1 / 8B.1.5 — Canonical Concept Families & Semantic Hardening
+## 9. Phase 8B.1 / 8B.1.6 — Canonical Concept Families & Semantic Hardening
 
-Phase 8B.1 / 8B.1.5 defines the deterministic registry that maps raw taxonomy tags to canonical economic concept families without metric calculations or winner selection.
+Phase 8B.1 / 8B.1.6 defines the deterministic registry that maps raw taxonomy tags to canonical economic concept families without metric calculations or winner selection.
 
 ### 9.1 Authoritative Taxonomy Support Reality
 
@@ -114,17 +114,23 @@ Phase 8B.1 / 8B.1.5 defines the deterministic registry that maps raw taxonomy ta
 
 1. **IFRS 18 Operating Profit vs IAS 1 Operating Subtotal**:
    - `ifrs-full:ProfitLossFromOperatingActivities` was an optional, entity-specific subtotal under IAS 1 and maps to `OPERATING_INCOME_LEGACY_IAS1`.
-   - `ifrs-full:OperatingProfitLoss` is a standardized operating category under IFRS 18 and maps to `OPERATING_PROFIT_IFRS18`.
+   - `ifrs-full:OperatingProfitLossOperating` is the final verified standardized operating category under IFRS 18 and maps to `OPERATING_PROFIT_IFRS18`. Proposal-stage `OperatingProfitLoss` is rejected.
    - These two concepts are semantically distinct and are **never treated as blind interchangeable aliases**.
 
-2. **CapEx PP&E vs Productive Assets**:
+2. **Net Income Scope Split: Parent vs Including NCI**:
+   - `NET_INCOME_ATTRIBUTABLE_TO_PARENT`: Measures bottom-line earnings attributable exclusively to parent entity stockholders (`us-gaap:NetIncomeLoss`, `ifrs-full:ProfitLossAttributableToOwnersOfParent`).
+   - `NET_INCOME_INCLUDING_NCI`: Measures total consolidated profit or loss before noncontrolling interest allocation (`us-gaap:ProfitLoss`, `ifrs-full:ProfitLoss`). *Note*: `ProfitLoss` is distinct from Other Comprehensive Income (OCI) and does not represent Comprehensive Income.
+   - Common-stockholder-available income (`NetIncomeLossAvailableToCommonStockholdersBasic`) is kept strictly distinct and is not collapsed into parent or consolidated income.
+
+3. **CapEx PP&E vs Productive Assets**:
    - `CAPEX_PP&E`: Measures strictly cash paid for physical property, plant, and equipment (`us-gaap:PaymentsToAcquirePropertyPlantAndEquipment`, `ifrs-full:PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities`).
    - `CAPEX_PRODUCTIVE_ASSETS`: Measures broader capital additions including software, licenses, and intangible assets (`us-gaap:PaymentsToAcquireProductiveAssets`).
    - *Double-Count Guard*: Downstream analytical engines and future FCF calculators must treat these as distinct items and **never sum them together**.
 
-3. **Income and Equity Scope Separation**:
-   - Parent stockholders equity (`StockholdersEquity`, `EquityAttributableToOwnersOfParent`) and total equity including non-controlling interest (`StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest`, `Equity`) are preserved as separate canonical concepts.
-   - Consolidated `NET_INCOME` does not silently collapse parent-only or common-stockholder-only income.
+4. **Strict Fail-Closed Unit Validation**:
+   - `MONETARY`: Restricted to explicit ISO 4217 standard currency codes; unknown codes (e.g. `ABC`) fail closed as `INVALID_UNIT`.
+   - `MONETARY_PER_SHARE`: Requires explicit currency numerator and shares denominator (e.g. `USD/shares`, `EUR/shares`); plain `USD`, `pure`, or `ratio` are rejected.
+   - `SHARES`: Strictly limited to `shares` / `share`.
 
 ### 9.3 Canonical Concept Families Table
 
@@ -133,8 +139,9 @@ Phase 8B.1 / 8B.1.5 defines the deterministic registry that maps raw taxonomy ta
 | `REVENUE` | `INCOME_STATEMENT` | `DURATION` | `MONETARY` | `us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax`, `us-gaap:Revenues`, `ifrs-full:Revenue` |
 | `OPERATING_INCOME` | `INCOME_STATEMENT` | `DURATION` | `MONETARY` | `us-gaap:OperatingIncomeLoss` |
 | `OPERATING_INCOME_LEGACY_IAS1` | `INCOME_STATEMENT` | `DURATION` | `MONETARY` | `ifrs-full:ProfitLossFromOperatingActivities` (Legacy IAS 1) |
-| `OPERATING_PROFIT_IFRS18` | `INCOME_STATEMENT` | `DURATION` | `MONETARY` | `ifrs-full:OperatingProfitLoss` (Standardized IFRS 18) |
-| `NET_INCOME` | `INCOME_STATEMENT` | `DURATION` | `MONETARY` | `us-gaap:NetIncomeLoss`, `us-gaap:ProfitLoss`, `ifrs-full:ProfitLoss` |
+| `OPERATING_PROFIT_IFRS18` | `INCOME_STATEMENT` | `DURATION` | `MONETARY` | `ifrs-full:OperatingProfitLossOperating` (Standardized IFRS 18) |
+| `NET_INCOME_ATTRIBUTABLE_TO_PARENT` | `INCOME_STATEMENT` | `DURATION` | `MONETARY` | `us-gaap:NetIncomeLoss`, `ifrs-full:ProfitLossAttributableToOwnersOfParent` |
+| `NET_INCOME_INCLUDING_NCI` | `INCOME_STATEMENT` | `DURATION` | `MONETARY` | `us-gaap:ProfitLoss`, `ifrs-full:ProfitLoss` |
 | `TOTAL_ASSETS` | `BALANCE_SHEET` | `INSTANT` | `MONETARY` | `us-gaap:Assets`, `ifrs-full:Assets` |
 | `TOTAL_LIABILITIES` | `BALANCE_SHEET` | `INSTANT` | `MONETARY` | `us-gaap:Liabilities`, `ifrs-full:Liabilities` |
 | `EQUITY_ATTRIBUTABLE_TO_PARENT` | `BALANCE_SHEET` | `INSTANT` | `MONETARY` | `us-gaap:StockholdersEquity`, `ifrs-full:EquityAttributableToOwnersOfParent` |
@@ -153,7 +160,7 @@ Phase 8B.1 / 8B.1.5 defines the deterministic registry that maps raw taxonomy ta
 
 - `SECCanonicalFactCandidate` represents a validly mapped economic disclosure entry.
 - All candidate entries from original filings, amendments (`10-K/A`), and comparative restatement columns are preserved simultaneously.
-- No candidate is discarded or chosen as a single "winner" in Phase 8B.1 / 8B.1.5.
+- No candidate is discarded or chosen as a single "winner" in Phase 8B.1 / 8B.1.6.
 
 ---
 
@@ -165,5 +172,6 @@ Phase 8B.2 is strictly responsible for:
 - Amendment and restatement reconciliation.
 - Point-in-Time (PIT) as-of knowledge view construction.
 - Current-view selection for downstream analytical engines.
+
 
 
