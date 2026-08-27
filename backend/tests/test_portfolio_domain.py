@@ -1,7 +1,7 @@
 """
 backend/tests/test_portfolio_domain.py
 ======================================
-Comprehensive Domain Model Unit Tests for Private Portfolio Ledger (Phase 12A & 12A.5).
+Comprehensive Domain Model Unit Tests for Private Portfolio Ledger (Phase 12A, 12A.5 & 12A.6).
 
 Zero external network calls (pytest-socket enforced).
 """
@@ -261,7 +261,7 @@ def test_buy_transaction_invalids():
             from_currency=Currency.USD, from_amount=Decimal("100"),
         )
 
-    # Contradictory cash fields in BUY (Phase 12A.5)
+    # Contradictory cash fields in BUY
     with pytest.raises(ValueError, match="must not contain cash_amount or cash_currency"):
         PortfolioTransaction(
             portfolio_id=p_id, account_id=a_id, transaction_type=TransactionType.BUY,
@@ -299,7 +299,7 @@ def test_sell_transaction_valid_positive_quantity():
             quantity=Decimal("-50"), unit_price=Decimal("120.00"), trade_currency=Currency.TRY,
         )
 
-    # Contradictory cash fields in SELL (Phase 12A.5)
+    # Contradictory cash fields in SELL
     with pytest.raises(ValueError, match="must not contain cash_amount or cash_currency"):
         PortfolioTransaction(
             portfolio_id=p_id, account_id=a_id, transaction_type=TransactionType.SELL,
@@ -355,7 +355,7 @@ def test_cash_deposit_and_withdrawal():
             quantity=Decimal("50"),
         )
 
-    # Reject deposit with instrument_id (Phase 12A.5)
+    # Reject deposit with instrument_id
     with pytest.raises(ValueError, match="must not contain instrument_id"):
         PortfolioTransaction(
             portfolio_id=p_id, account_id=a_id, transaction_type=TransactionType.CASH_DEPOSIT,
@@ -364,7 +364,7 @@ def test_cash_deposit_and_withdrawal():
             instrument_id=uuid4(),
         )
 
-    # Reject withdrawal with instrument_id (Phase 12A.5)
+    # Reject withdrawal with instrument_id
     with pytest.raises(ValueError, match="must not contain instrument_id"):
         PortfolioTransaction(
             portfolio_id=p_id, account_id=a_id, transaction_type=TransactionType.CASH_WITHDRAWAL,
@@ -447,7 +447,7 @@ def test_fx_conversion_contract():
             to_currency=Currency.TRY,
         )
 
-    # Reject cash_bucket_id on FX_CONVERSION (Phase 12A.5)
+    # Reject cash_bucket_id on FX_CONVERSION
     with pytest.raises(ValueError, match="must not contain cash_bucket_id"):
         PortfolioTransaction(
             portfolio_id=p_id, account_id=a_id, transaction_type=TransactionType.FX_CONVERSION,
@@ -553,7 +553,7 @@ def test_reversal_constructor_validation():
     ("to_amount", Decimal("3400")),
 ])
 def test_reversal_rejects_all_economic_fields(bad_field, bad_val):
-    """Phase 12A.5: REVERSAL must be strictly reference-only with zero independent economics."""
+    """REVERSAL must be strictly reference-only with zero independent economics."""
     p_id = uuid4()
     a_id = uuid4()
     orig_id = uuid4()
@@ -570,6 +570,86 @@ def test_reversal_rejects_all_economic_fields(bad_field, bad_val):
     }
     with pytest.raises(ValueError, match="REVERSAL must not contain"):
         PortfolioTransaction(**kwargs)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3b. External Idempotency Identity Tests (Phase 12A.6)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_external_identity_valid_manual_and_pair():
+    p_id = uuid4()
+    a_id = uuid4()
+    inst_id = uuid4()
+    now = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+    # 1. Valid manual (None/None)
+    tx_manual = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.BUY,
+        instrument_id=inst_id,
+        effective_date=date(2026, 8, 27),
+        recorded_at=now,
+        quantity=Decimal("10"),
+        unit_price=Decimal("100"),
+        trade_currency=Currency.TRY,
+        external_source=None,
+        external_reference=None,
+    )
+    assert tx_manual.external_source is None
+    assert tx_manual.external_reference is None
+
+    # 2. Valid external pair
+    tx_ext = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.BUY,
+        instrument_id=inst_id,
+        effective_date=date(2026, 8, 27),
+        recorded_at=now,
+        quantity=Decimal("10"),
+        unit_price=Decimal("100"),
+        trade_currency=Currency.TRY,
+        external_source="MIDAS",
+        external_reference="ORD-1001",
+    )
+    assert tx_ext.external_source == "MIDAS"
+    assert tx_ext.external_reference == "ORD-1001"
+
+
+@pytest.mark.parametrize("src,ref,err_type,match_msg", [
+    ("MIDAS", None, ValueError, "external_reference is missing"),
+    (None, "ORD-1", ValueError, "external_source is missing"),
+    ("", "ORD-1", ValueError, "external_source cannot be empty"),
+    ("MIDAS", "", ValueError, "external_reference cannot be empty"),
+    ("   ", "ORD-1", ValueError, "external_source cannot be empty"),
+    ("MIDAS", "   ", ValueError, "external_reference cannot be empty"),
+    (123, "ORD-1", TypeError, "external_source must be a str"),
+    ("MIDAS", 123, TypeError, "external_reference must be a str"),
+    (True, "ORD-1", TypeError, "external_source must be a str"),
+    ("MIDAS", True, TypeError, "external_reference must be a str"),
+])
+def test_external_identity_fail_closed_rejections(src, ref, err_type, match_msg):
+    """Phase 12A.6: Malformed external identity fails closed and is never downgraded to manual."""
+    p_id = uuid4()
+    a_id = uuid4()
+    inst_id = uuid4()
+    now = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+    with pytest.raises(err_type, match=match_msg):
+        PortfolioTransaction(
+            portfolio_id=p_id,
+            account_id=a_id,
+            transaction_type=TransactionType.BUY,
+            instrument_id=inst_id,
+            effective_date=date(2026, 8, 27),
+            recorded_at=now,
+            quantity=Decimal("10"),
+            unit_price=Decimal("100"),
+            trade_currency=Currency.TRY,
+            external_source=src,  # type: ignore
+            external_reference=ref,  # type: ignore
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -634,7 +714,7 @@ def test_cash_bucket_purpose_defaults():
 
 @pytest.mark.parametrize("invalid_bool", [1, 0, "true", "yes", Decimal("1")])
 def test_cash_bucket_bool_type_safety(invalid_bool):
-    """Phase 12A.5: included_in_investable_assets must be strict bool (or None)."""
+    """included_in_investable_assets must be strict bool (or None)."""
     p_id = uuid4()
     now = datetime(2026, 8, 27, 10, 0, 0, tzinfo=timezone.utc)
 
@@ -744,7 +824,7 @@ def test_position_lot_projection_model():
     True,
 ])
 def test_position_lot_finite_decimal_rejection(invalid_val):
-    """Phase 12A.5: PositionLot fields reject non-finite Decimals, floats, ints, strings, and bools."""
+    """PositionLot fields reject non-finite Decimals, floats, ints, strings, and bools."""
     p_id = uuid4()
     a_id = uuid4()
     inst_id = uuid4()

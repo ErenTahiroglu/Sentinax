@@ -12,7 +12,10 @@ Core Invariants:
     - External source idempotency:
         * Same external ref + same economics -> IDEMPOTENT_DUPLICATE (safe replay)
         * Same external ref + different economics -> CONFLICT (rejected)
-        * Missing external ref -> UUID is unique event identity
+        * Missing external ref -> UUID is unique event identity (no auto-deduping manual events)
+    - CashBucket reference consistency:
+        * If cash_bucket_id is set, exact CashBucket must be supplied and match ID, portfolio, account, and currency.
+        * If cash_bucket_id is None, supplying an unrelated CashBucket fails closed.
     - Deterministic sort order: (effective_date, executed_at, recorded_at, id)
 """
 
@@ -67,7 +70,10 @@ class PortfolioLedgerValidator:
         account: PortfolioAccount,
         cash_bucket: Optional[CashBucket] = None,
     ) -> None:
-        """Enforces that a transaction, its account, and optional cash bucket belong to the same portfolio."""
+        """
+        Enforces cross-entity identity, ownership, and currency consistency.
+        Fails closed on missing, mismatched, or extraneous CashBucket references.
+        """
         if transaction.portfolio_id != portfolio.id:
             raise ValueError(
                 f"Transaction portfolio_id {transaction.portfolio_id} does not match "
@@ -83,7 +89,19 @@ class PortfolioLedgerValidator:
                 f"Transaction account_id {transaction.account_id} does not match "
                 f"account.id {account.id}."
             )
-        if cash_bucket is not None:
+
+        # CashBucket Reference & Currency Validation (Phase 12A.6)
+        if transaction.cash_bucket_id is not None:
+            if cash_bucket is None:
+                raise ValueError(
+                    f"Transaction specifies cash_bucket_id {transaction.cash_bucket_id} "
+                    f"but no cash_bucket object was supplied to validator."
+                )
+            if cash_bucket.id != transaction.cash_bucket_id:
+                raise ValueError(
+                    f"Supplied CashBucket.id {cash_bucket.id} does not match "
+                    f"transaction.cash_bucket_id {transaction.cash_bucket_id}."
+                )
             if cash_bucket.portfolio_id != portfolio.id:
                 raise ValueError(
                     f"CashBucket portfolio_id {cash_bucket.portfolio_id} does not match "
@@ -92,7 +110,35 @@ class PortfolioLedgerValidator:
             if cash_bucket.account_id is not None and cash_bucket.account_id != account.id:
                 raise ValueError(
                     f"CashBucket account_id {cash_bucket.account_id} does not match "
-                    f"transaction account_id {account.id}."
+                    f"transaction/account account_id {account.id}."
+                )
+
+            # Currency consistency check on referenced CashBucket
+            t_type = transaction.transaction_type
+            if t_type in (
+                TransactionType.CASH_DEPOSIT,
+                TransactionType.CASH_WITHDRAWAL,
+                TransactionType.DIVIDEND,
+                TransactionType.INTEREST,
+                TransactionType.FEE,
+                TransactionType.TAX_WITHHOLDING,
+            ):
+                if cash_bucket.currency != transaction.cash_currency:
+                    raise ValueError(
+                        f"Referenced CashBucket currency {cash_bucket.currency.value} does not match "
+                        f"transaction cash_currency {transaction.cash_currency.value if transaction.cash_currency else 'None'}."
+                    )
+            elif t_type in (TransactionType.BUY, TransactionType.SELL):
+                if cash_bucket.currency != transaction.trade_currency:
+                    raise ValueError(
+                        f"Referenced funding CashBucket currency {cash_bucket.currency.value} does not match "
+                        f"transaction trade_currency {transaction.trade_currency.value if transaction.trade_currency else 'None'}."
+                    )
+        else:
+            # transaction.cash_bucket_id is None: supplying an unrelated cash_bucket fails closed
+            if cash_bucket is not None:
+                raise ValueError(
+                    "Transaction has no cash_bucket_id, but an unrelated cash_bucket was supplied to validator."
                 )
 
     @staticmethod

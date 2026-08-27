@@ -14,6 +14,7 @@ Key Architectural Invariants:
     - Zero user secrets, credentials, or unnecessary PII.
     - Mutually exclusive event field families (fail-closed on contradictory fields).
     - REVERSAL is strictly reference-only (zero independent economic fields).
+    - External source/reference pair is all-or-none with non-empty string validation.
 """
 
 from __future__ import annotations
@@ -183,6 +184,7 @@ class PortfolioTransaction:
         - Exact multi-currency preservation (no implicit conversions).
         - Mutually exclusive field families per transaction type.
         - REVERSAL is strictly reference-only (zero independent economic fields).
+        - External source/reference pair is all-or-none with non-empty string validation.
     """
     portfolio_id: UUID
     account_id: UUID
@@ -210,7 +212,7 @@ class PortfolioTransaction:
     to_currency: Optional[Currency] = None
     to_amount: Optional[Decimal] = None
 
-    # External source & idempotency
+    # External source & idempotency (all-or-none pair)
     external_source: Optional[str] = None
     external_reference: Optional[str] = None
 
@@ -227,7 +229,29 @@ class PortfolioTransaction:
         if self.executed_at is not None and self.executed_at.tzinfo is None:
             raise ValueError(f"executed_at must be timezone-aware, got naive: {self.executed_at}")
 
-        # 2. Per-TransactionType Contract Validation
+        # 2. External source & reference pairing validation (Phase 12A.6)
+        if self.external_source is None and self.external_reference is None:
+            pass  # Valid manual / internal event
+        elif self.external_source is not None and self.external_reference is not None:
+            if not isinstance(self.external_source, str) or isinstance(self.external_source, bool):
+                raise TypeError(
+                    f"external_source must be a str, got {type(self.external_source).__name__}: {self.external_source!r}"
+                )
+            if not isinstance(self.external_reference, str) or isinstance(self.external_reference, bool):
+                raise TypeError(
+                    f"external_reference must be a str, got {type(self.external_reference).__name__}: {self.external_reference!r}"
+                )
+            if not self.external_source.strip():
+                raise ValueError("external_source cannot be empty or whitespace-only.")
+            if not self.external_reference.strip():
+                raise ValueError("external_reference cannot be empty or whitespace-only.")
+        else:
+            if self.external_source is not None and self.external_reference is None:
+                raise ValueError("external_source is provided but external_reference is missing.")
+            else:
+                raise ValueError("external_reference is provided but external_source is missing.")
+
+        # 3. Per-TransactionType Contract Validation
         t = self.transaction_type
 
         if t in (TransactionType.BUY, TransactionType.SELL):
@@ -333,6 +357,9 @@ class PortfolioTransaction:
         Computes deterministic SHA-256 economic fingerprint.
         Excludes physical internal `id`, `recorded_at`, and mutable `notes`.
         """
+        ext_source_str = self.external_source.strip().upper() if self.external_source else "None"
+        ext_ref_str = self.external_reference.strip() if self.external_reference else "None"
+
         parts = [
             str(self.portfolio_id),
             str(self.account_id),
@@ -350,8 +377,8 @@ class PortfolioTransaction:
             str(self.from_amount) if self.from_amount is not None else "None",
             self.to_currency.value if self.to_currency else "None",
             str(self.to_amount) if self.to_amount is not None else "None",
-            (self.external_source or "").strip().upper(),
-            (self.external_reference or "").strip(),
+            ext_source_str,
+            ext_ref_str,
             str(self.reverses_transaction_id) if self.reverses_transaction_id else "None",
         ]
         raw = ":".join(parts)

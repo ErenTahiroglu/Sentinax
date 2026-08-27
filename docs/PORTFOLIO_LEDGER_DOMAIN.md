@@ -1,4 +1,4 @@
-# Portfolio Ledger Domain Contract (Phase 12A & Phase 12A.5)
+# Portfolio Ledger Domain Contract (Phase 12A, Phase 12A.5 & Phase 12A.6)
 
 ## 1. Authoritative Ledger & Derived Projections
 The Private Personal Investment Decision Engine defines an **event-sourced, append-only immutable ledger** as the sole source of truth for portfolio holdings, cost basis, and cash balances.
@@ -43,6 +43,16 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 
 ---
 
+## 5b. External Idempotency Identity & Deduplication Contract (Phase 12A.6)
+- **All-or-None Pair:** `external_source` and `external_reference` must either BOTH be `None` (manual/internal transaction) or BOTH be non-empty strings (`isinstance(x, str)` and `x.strip() != ""`).
+- **Fail-Closed on Malformed Input:** Partial presence, empty strings, whitespace-only strings, and non-string types are strictly rejected with `ValueError` or `TypeError`. They are NEVER silently downgraded to manual transactions.
+- **Manual Event Invariant:** Manual transactions (where `external_source` and `external_reference` are `None`) are **NOT economically auto-deduplicated**. Two identical manual economic events with different UUIDs are both appended.
+- **Idempotency Key:** For external events, `(portfolio_id, account_id, external_source.strip().upper(), external_reference.strip())` uniquely identifies the ingestion event:
+  - Replay of identical economics returns `IDEMPOTENT_DUPLICATE` (pointing to the original transaction ID).
+  - Same key with conflicting economics returns `CONFLICT`.
+
+---
+
 ## 6. Reversal and Correction Contract
 - **No In-Place Edits:** Historical records are never updated or deleted.
 - **Reference-Only Semantics:** A `REVERSAL` has no separate economic amount; its economics derive entirely from the referenced original event.
@@ -51,6 +61,7 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Cross-portfolio and cross-account reversals are rejected.
   - Reversal of a reversal is rejected.
   - Double reversal is rejected (a transaction may be reversed at most once).
+- **Idempotency & Reversal Interaction:** Replay of the same external reversal event resolves as `IDEMPOTENT_DUPLICATE`, whereas a distinct second reversal of an already-reversed transaction is rejected as `INVALID`.
 
 ---
 
@@ -61,6 +72,13 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - `INVESTABLE`: Default `included_in_investable_assets = True`.
   - `EMERGENCY_RESERVE`, `NEAR_TERM`, `RESTRICTED_OTHER`: Default `included_in_investable_assets = False`.
 - **Asset Protection:** Protects emergency funds and near-term expenditure from being allocated into long-term risk investments.
+- **Explicit Reference Consistency (Phase 12A.6):**
+  - `cash_bucket_id` is an explicit reference. If specified, the exact `CashBucket` object must be supplied to the validator, matching ID, `portfolio_id`, and `account_id` (or portfolio-wide with `account_id=None`).
+  - No implicit or default bucket is selected by transaction validation.
+  - Supplying an unrelated `CashBucket` when `cash_bucket_id` is `None` fails closed.
+- **Currency Consistency:**
+  - For cash-flow events (`CASH_DEPOSIT`, `CASH_WITHDRAWAL`, `DIVIDEND`, `INTEREST`, `FEE`, `TAX_WITHHOLDING`), `cash_bucket.currency` must match `transaction.cash_currency`.
+  - For `BUY` and `SELL` funding buckets, `cash_bucket.currency` must match `transaction.trade_currency`.
 
 ---
 

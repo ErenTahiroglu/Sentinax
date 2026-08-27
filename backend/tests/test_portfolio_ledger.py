@@ -1,7 +1,7 @@
 """
 backend/tests/test_portfolio_ledger.py
 ======================================
-Comprehensive In-Memory Portfolio Ledger & Reversal Unit Tests (Phase 12A & 12A.5).
+Comprehensive In-Memory Portfolio Ledger, Reversal & Validator Tests (Phase 12A, 12A.5 & 12A.6).
 
 Zero external network calls (pytest-socket enforced).
 """
@@ -59,6 +59,7 @@ def _make_buy(
     ext_ref: str | None = None,
     exec_at: datetime | None = None,
     tx_id: UUID | None = None,
+    cash_bucket_id: UUID | None = None,
 ) -> PortfolioTransaction:
     now = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
     return PortfolioTransaction(
@@ -75,6 +76,7 @@ def _make_buy(
         trade_currency=curr,
         external_source=ext_source,
         external_reference=ext_ref,
+        cash_bucket_id=cash_bucket_id,
     )
 
 
@@ -174,6 +176,25 @@ def test_external_idempotency_conflict_detection():
     assert len(ledger) == 1
 
 
+def test_manual_events_no_economic_auto_dedupe():
+    """Phase 12A.6: Two manual transactions with identical economics are BOTH appended."""
+    port = _make_portfolio()
+    p_id = port.id
+    a_id = uuid4()
+    inst_id = uuid4()
+    ledger = PortfolioLedger(port)
+
+    tx1 = _make_buy(p_id, a_id, inst_id, date(2026, 8, 1), qty="10", price="100.00")
+    tx2 = _make_buy(p_id, a_id, inst_id, date(2026, 8, 1), qty="10", price="100.00")
+
+    r1 = ledger.append(tx1)
+    assert r1.status == AppendStatus.APPENDED
+
+    r2 = ledger.append(tx2)
+    assert r2.status == AppendStatus.APPENDED
+    assert len(ledger) == 2
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Reversal & Correction Tests
 # ─────────────────────────────────────────────────────────────────────────────
@@ -205,6 +226,84 @@ def test_valid_reversal_workflow():
     assert r_rev.status == AppendStatus.APPENDED
     assert ledger.is_reversed(buy.id) is True
     assert ledger.get_reversal_transaction_id(buy.id) == rev.id
+
+
+def test_reversal_external_idempotency_and_double_reversal():
+    """Phase 12A.6: Replay of external reversal is IDEMPOTENT_DUPLICATE; distinct 2nd reversal is INVALID."""
+    port = _make_portfolio()
+    p_id = port.id
+    a_id = uuid4()
+    inst_id = uuid4()
+    ledger = PortfolioLedger(port)
+    now = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+    # 1. Original BUY
+    buy = _make_buy(p_id, a_id, inst_id, date(2026, 8, 1), ext_source="MIDAS", ext_ref="ORD-1")
+    ledger.append(buy)
+
+    # 2. Reversal with external reference
+    rev1 = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.REVERSAL,
+        effective_date=date(2026, 8, 2),
+        recorded_at=now,
+        reverses_transaction_id=buy.id,
+        external_source="MIDAS",
+        external_reference="REV-1",
+    )
+    r1 = ledger.append(rev1)
+    assert r1.status == AppendStatus.APPENDED
+    assert r1.transaction_id == rev1.id
+
+    # 3. Replay exact same external reversal event -> IDEMPOTENT_DUPLICATE
+    rev1_replay = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.REVERSAL,
+        effective_date=date(2026, 8, 2),
+        recorded_at=datetime(2026, 8, 27, 15, 0, 0, tzinfo=timezone.utc),
+        reverses_transaction_id=buy.id,
+        external_source="MIDAS",
+        external_reference="REV-1",
+    )
+    r1_replay = ledger.append(rev1_replay)
+    assert r1_replay.status == AppendStatus.IDEMPOTENT_DUPLICATE
+    assert r1_replay.transaction_id == rev1.id
+    assert len(ledger) == 2
+
+    # 4. A genuinely different second reversal (e.g. REV-2) targeting same BUY -> INVALID (Double reversal)
+    rev2 = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.REVERSAL,
+        effective_date=date(2026, 8, 3),
+        recorded_at=now,
+        reverses_transaction_id=buy.id,
+        external_source="MIDAS",
+        external_reference="REV-2",
+    )
+    r2 = ledger.append(rev2)
+    assert r2.status == AppendStatus.INVALID
+    assert "Double reversal rejected" in r2.diagnostics[0]
+    assert len(ledger) == 2
+
+    # 5. Same external key with changed economics (e.g. targeting different transaction) -> CONFLICT
+    other_buy = _make_buy(p_id, a_id, inst_id, date(2026, 8, 1), ext_source="MIDAS", ext_ref="ORD-2")
+    ledger.append(other_buy)
+
+    rev_conflict = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.REVERSAL,
+        effective_date=date(2026, 8, 2),
+        recorded_at=now,
+        reverses_transaction_id=other_buy.id,  # Different target
+        external_source="MIDAS",
+        external_reference="REV-1",  # Same external ref as rev1
+    )
+    r_conflict = ledger.append(rev_conflict)
+    assert r_conflict.status == AppendStatus.CONFLICT
 
 
 def test_reversal_target_not_found():
@@ -362,10 +461,10 @@ def test_double_reversal_rejected():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. Cross-Entity Validator Consistency Tests
+# 4. Cross-Entity Validator Consistency Tests (Phase 12A.6)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_cross_entity_consistency_validator():
+def test_cross_entity_consistency_validator_success_and_failures():
     p_id = uuid4()
     other_p_id = uuid4()
     a_id = uuid4()
@@ -376,20 +475,95 @@ def test_cross_entity_consistency_validator():
     acc = PortfolioAccount(id=a_id, portfolio_id=p_id, name="Acc", base_currency=Currency.TRY, created_at=now)
     bucket = CashBucket(id=uuid4(), portfolio_id=p_id, account_id=a_id, name="TL", currency=Currency.TRY, purpose=CashPurpose.INVESTABLE, created_at=now)
 
-    tx = _make_buy(p_id, a_id, uuid4(), date(2026, 8, 1))
+    # 1. Valid BUY referencing bucket with exact match and matching currency
+    tx_with_bucket = _make_buy(p_id, a_id, uuid4(), date(2026, 8, 1), curr=Currency.TRY, cash_bucket_id=bucket.id)
+    PortfolioLedgerValidator.validate_transaction_portfolio_consistency(tx_with_bucket, port, acc, bucket)
 
-    # All match -> passes
-    PortfolioLedgerValidator.validate_transaction_portfolio_consistency(tx, port, acc, bucket)
+    # 2. Valid BUY with cash_bucket_id=None and cash_bucket=None
+    tx_no_bucket = _make_buy(p_id, a_id, uuid4(), date(2026, 8, 1), curr=Currency.TRY, cash_bucket_id=None)
+    PortfolioLedgerValidator.validate_transaction_portfolio_consistency(tx_no_bucket, port, acc, None)
 
-    # Mismatched account
+    # 3. Transaction has cash_bucket_id but bucket object is omitted (None) -> rejected
+    with pytest.raises(ValueError, match="no cash_bucket object was supplied"):
+        PortfolioLedgerValidator.validate_transaction_portfolio_consistency(tx_with_bucket, port, acc, None)
+
+    # 4. Transaction references bucket A, but bucket B is supplied -> rejected
+    other_bucket = CashBucket(id=uuid4(), portfolio_id=p_id, account_id=a_id, name="TL 2", currency=Currency.TRY, purpose=CashPurpose.INVESTABLE, created_at=now)
+    with pytest.raises(ValueError, match="Supplied CashBucket.id"):
+        PortfolioLedgerValidator.validate_transaction_portfolio_consistency(tx_with_bucket, port, acc, other_bucket)
+
+    # 5. Transaction has cash_bucket_id=None but unrelated bucket is supplied -> rejected
+    with pytest.raises(ValueError, match="has no cash_bucket_id, but an unrelated cash_bucket was supplied"):
+        PortfolioLedgerValidator.validate_transaction_portfolio_consistency(tx_no_bucket, port, acc, bucket)
+
+    # 6. Cross-portfolio bucket -> rejected
+    bad_p_bucket = CashBucket(id=bucket.id, portfolio_id=other_p_id, account_id=a_id, name="Bad", currency=Currency.TRY, purpose=CashPurpose.INVESTABLE, created_at=now)
+    with pytest.raises(ValueError, match="CashBucket portfolio_id"):
+        PortfolioLedgerValidator.validate_transaction_portfolio_consistency(tx_with_bucket, port, acc, bad_p_bucket)
+
+    # 7. Wrong account-scoped bucket -> rejected
+    bad_a_bucket = CashBucket(id=bucket.id, portfolio_id=p_id, account_id=other_a_id, name="Bad", currency=Currency.TRY, purpose=CashPurpose.INVESTABLE, created_at=now)
+    with pytest.raises(ValueError, match="CashBucket account_id"):
+        PortfolioLedgerValidator.validate_transaction_portfolio_consistency(tx_with_bucket, port, acc, bad_a_bucket)
+
+    # 8. Portfolio-wide bucket (account_id=None) -> accepted
+    global_bucket = CashBucket(id=uuid4(), portfolio_id=p_id, account_id=None, name="Global TL", currency=Currency.TRY, purpose=CashPurpose.INVESTABLE, created_at=now)
+    tx_global_bucket = _make_buy(p_id, a_id, uuid4(), date(2026, 8, 1), curr=Currency.TRY, cash_bucket_id=global_bucket.id)
+    PortfolioLedgerValidator.validate_transaction_portfolio_consistency(tx_global_bucket, port, acc, global_bucket)
+
+    # 9. Mismatched account
     bad_acc = PortfolioAccount(id=other_a_id, portfolio_id=other_p_id, name="Bad", base_currency=Currency.TRY, created_at=now)
     with pytest.raises(ValueError, match="Account portfolio_id"):
-        PortfolioLedgerValidator.validate_transaction_portfolio_consistency(tx, port, bad_acc)
+        PortfolioLedgerValidator.validate_transaction_portfolio_consistency(tx_no_bucket, port, bad_acc)
 
-    # Mismatched cash bucket
-    bad_bucket = CashBucket(id=uuid4(), portfolio_id=other_p_id, name="Bad", currency=Currency.TRY, purpose=CashPurpose.INVESTABLE, created_at=now)
-    with pytest.raises(ValueError, match="CashBucket portfolio_id"):
-        PortfolioLedgerValidator.validate_transaction_portfolio_consistency(tx, port, acc, bad_bucket)
+
+def test_validator_cash_bucket_currency_consistency():
+    """Phase 12A.6: CashBucket currency must match relevant trade_currency or cash_currency."""
+    p_id = uuid4()
+    a_id = uuid4()
+    now = datetime(2026, 8, 27, 10, 0, 0, tzinfo=timezone.utc)
+
+    port = Portfolio(id=p_id, mode=PortfolioMode.MY_PORTFOLIO, name="Real", base_currency=Currency.TRY, created_at=now)
+    acc = PortfolioAccount(id=a_id, portfolio_id=p_id, name="Acc", base_currency=Currency.TRY, created_at=now)
+
+    try_bucket = CashBucket(id=uuid4(), portfolio_id=p_id, account_id=a_id, name="TL", currency=Currency.TRY, purpose=CashPurpose.INVESTABLE, created_at=now)
+    usd_bucket = CashBucket(id=uuid4(), portfolio_id=p_id, account_id=a_id, name="USD", currency=Currency.USD, purpose=CashPurpose.INVESTABLE, created_at=now)
+
+    # 1. CASH_DEPOSIT in USD referencing TRY bucket -> rejected
+    deposit_usd = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.CASH_DEPOSIT,
+        effective_date=date(2026, 8, 27),
+        recorded_at=now,
+        cash_amount=Decimal("1000.00"),
+        cash_currency=Currency.USD,
+        cash_bucket_id=try_bucket.id,
+    )
+    with pytest.raises(ValueError, match="Referenced CashBucket currency"):
+        PortfolioLedgerValidator.validate_transaction_portfolio_consistency(deposit_usd, port, acc, try_bucket)
+
+    # Valid USD deposit referencing USD bucket -> passes
+    deposit_usd_valid = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.CASH_DEPOSIT,
+        effective_date=date(2026, 8, 27),
+        recorded_at=now,
+        cash_amount=Decimal("1000.00"),
+        cash_currency=Currency.USD,
+        cash_bucket_id=usd_bucket.id,
+    )
+    PortfolioLedgerValidator.validate_transaction_portfolio_consistency(deposit_usd_valid, port, acc, usd_bucket)
+
+    # 2. BUY in USD referencing TRY funding bucket -> rejected
+    buy_usd_bad_bucket = _make_buy(p_id, a_id, uuid4(), date(2026, 8, 27), curr=Currency.USD, cash_bucket_id=try_bucket.id)
+    with pytest.raises(ValueError, match="Referenced funding CashBucket currency"):
+        PortfolioLedgerValidator.validate_transaction_portfolio_consistency(buy_usd_bad_bucket, port, acc, try_bucket)
+
+    # Valid BUY in USD referencing USD funding bucket -> passes
+    buy_usd_valid = _make_buy(p_id, a_id, uuid4(), date(2026, 8, 27), curr=Currency.USD, cash_bucket_id=usd_bucket.id)
+    PortfolioLedgerValidator.validate_transaction_portfolio_consistency(buy_usd_valid, port, acc, usd_bucket)
 
 
 def test_goal_and_contribution_consistency():
@@ -442,7 +616,7 @@ def test_deterministic_audit_sorting():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. Phase 12A.5 Root Mode Binding & Sandbox Cross-Contamination Tests
+# 6. Root Mode Binding & Sandbox Cross-Contamination Tests
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_ledger_root_mode_binding():
@@ -462,7 +636,6 @@ def test_ledger_root_mode_binding():
 
     with pytest.raises(TypeError, match="must be an instance of Portfolio"):
         PortfolioLedger(real_port.id)  # type: ignore
-
 
 
 def test_sandbox_cross_contamination_isolation():
