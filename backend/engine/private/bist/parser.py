@@ -1,17 +1,25 @@
 """
 backend/engine/private/bist/parser.py
 =====================================
-Robust, locale-safe parser for Borsa İstanbul (BIST) Equity EOD bulletins.
+Robust, exact parser for official Borsa İstanbul (BIST) PAY_BULTEN files.
 
-Invariants:
-    - Locale-safe Decimal parsing (supports Turkish dot-thousands/comma-decimals and standard formats).
-    - Zero float conversion.
+Documented Source:
+    - Borsa İstanbul Pay Piyasası Gün Sonu Kapanış Verileri (PAY_BULTEN_YYYYAAGG.csv)
+    - Delimiter: ';' (semicolon)
+    - Decimal Symbol: '.' (dot)
+    - Header: 2 header rows (Row 1: Turkish, Row 2: English, Row 3+: Observations)
+
+Hardening Invariants:
+    - Two-row header support: English second header is never parsed as a market observation.
+    - Zero float conversion: float input is strictly rejected (TypeError).
     - Missing fields remain None (missing != zero).
+    - Malformed or missing close price NEVER becomes Decimal("0").
+    - Raw symbol (e.g. KOZAA.E) preserved alongside normalized symbol (KOZAA).
+    - ALTIN.S1 suffix (.S1) strictly preserved; .E stripped for equities.
+    - Trade date comes from verified bulletin context / filename, not row columns.
+    - If requested trade date and filename date disagree: fail closed.
+    - Conflicting duplicate rows are deterministically quarantined with order-independence.
     - OHLC integrity validation (high >= max(open, close), low <= min(open, close), high >= low).
-    - Negative prices and volumes are strictly rejected.
-    - Symbol normalization removes .E equity suffix, but NEVER strips .S1 commodity certificate suffix.
-    - Schema drift fails closed if required columns (trade_date, symbol, close) are missing.
-    - Unresolved symbols in Instrument Master are cleanly quarantined without fabrication.
 """
 
 from __future__ import annotations
@@ -33,6 +41,7 @@ from backend.engine.private.bist.constants import (
     BIST_HEADER_MAPPINGS,
     REQUIRED_BULLETIN_COLUMNS,
 )
+from backend.engine.private.bist.locator import BISTBulletinLocator
 from backend.engine.private.bist.models import (
     BISTEODObservation,
     BISTObservationStatus,
@@ -57,45 +66,44 @@ class BISTSchemaDriftError(ValueError):
 def parse_bist_decimal(val: Any) -> Optional[Decimal]:
     """
     Parses a string or numeric value into a pure Decimal.
-    Supports both Turkish formatting ('1.234,56') and standard decimal formatting ('1234.56').
+    Rejects float inputs to prevent precision loss.
+    Official PAY_BULTEN uses '.' as the decimal point (e.g. '4683455.01').
     Returns None for empty, dash ('-'), 'N/A', or null values.
     """
     if val is None:
         return None
+    
+    if isinstance(val, float):
+        raise TypeError("Float input prohibited in exact Decimal parser.")
     
     if isinstance(val, Decimal):
         if not val.is_finite():
             raise ValueError(f"Non-finite Decimal: {val}")
         return val
     
-    if isinstance(val, (int, float)):
-        val_str = str(val)
-    else:
-        val_str = str(val).strip()
+    if isinstance(val, int):
+        return Decimal(val)
 
+    val_str = str(val).strip()
     if not val_str or val_str in ("-", "--", "N/A", "n/a", "null", "NULL", "None", ""):
         return None
 
-    # Strip currency symbol or whitespace
+    # Strip currency symbol or extraneous whitespace
     val_str = val_str.replace("TL", "").replace("TRY", "").strip()
 
-    # Detect Turkish format vs Standard format
+    # Locale-safe support if thousands separators or comma decimals are present
     if "." in val_str and "," in val_str:
-        # Check last occurrence to determine decimal separator
         last_dot = val_str.rfind(".")
         last_comma = val_str.rfind(",")
         if last_comma > last_dot:
-            # Turkish format: 1.234.567,89 -> remove dots, replace comma with dot
+            # Turkish thousands dot, decimal comma: 1.234.567,89 -> 1234567.89
             val_str = val_str.replace(".", "").replace(",", ".")
         else:
-            # US/UK format with commas: 1,234,567.89 -> remove commas
+            # US/UK thousands comma, decimal dot: 1,234,567.89 -> 1234567.89
             val_str = val_str.replace(",", "")
     elif "," in val_str:
-        # Sole comma is the decimal separator: 123,45 -> 123.45
+        # Sole comma used as decimal separator
         val_str = val_str.replace(",", ".")
-    elif "." in val_str:
-        # Standard decimal or thousands dot. In monetary/price contexts, assume standard decimal.
-        pass
 
     try:
         dec = Decimal(val_str)
@@ -110,6 +118,10 @@ def parse_bist_int(val: Any) -> Optional[int]:
     """Parses an integer field such as trade count."""
     if val is None:
         return None
+    if isinstance(val, float):
+        raise TypeError("Float input prohibited in exact integer parser.")
+    if isinstance(val, int):
+        return val
     val_str = str(val).strip().replace(".", "").replace(",", "")
     if not val_str or val_str in ("-", "--", "N/A", "n/a"):
         return None
@@ -121,7 +133,7 @@ def parse_bist_int(val: Any) -> Optional[int]:
 
 def parse_bist_date(val: Any) -> Optional[date]:
     """
-    Parses date strings formatted as DD/MM/YYYY, DD.MM.YYYY, YYYY-MM-DD, or YYYYMMDD.
+    Parses date strings formatted as YYYY-MM-DD, DD/MM/YYYY, DD.MM.YYYY, or YYYYMMDD.
     """
     if val is None:
         return None
@@ -132,34 +144,30 @@ def parse_bist_date(val: Any) -> Optional[date]:
     if not val_str or val_str in ("-", "N/A"):
         return None
 
-    # Try ISO format YYYY-MM-DD
     if "-" in val_str:
         parts = val_str.split("-")
         if len(parts) == 3:
-            if len(parts[0]) == 4:  # YYYY-MM-DD
+            if len(parts[0]) == 4:
                 return date(int(parts[0]), int(parts[1]), int(parts[2]))
-            elif len(parts[2]) == 4:  # DD-MM-YYYY
+            elif len(parts[2]) == 4:
                 return date(int(parts[2]), int(parts[1]), int(parts[0]))
 
-    # Try dot format DD.MM.YYYY
     if "." in val_str:
         parts = val_str.split(".")
         if len(parts) == 3:
-            if len(parts[2]) == 4:  # DD.MM.YYYY
+            if len(parts[2]) == 4:
                 return date(int(parts[2]), int(parts[1]), int(parts[0]))
-            elif len(parts[0]) == 4:  # YYYY.MM.DD
+            elif len(parts[0]) == 4:
                 return date(int(parts[0]), int(parts[1]), int(parts[2]))
 
-    # Try slash format DD/MM/YYYY
     if "/" in val_str:
         parts = val_str.split("/")
         if len(parts) == 3:
-            if len(parts[2]) == 4:  # DD/MM/YYYY
+            if len(parts[2]) == 4:
                 return date(int(parts[2]), int(parts[1]), int(parts[0]))
-            elif len(parts[0]) == 4:  # YYYY/MM/DD
+            elif len(parts[0]) == 4:
                 return date(int(parts[0]), int(parts[1]), int(parts[2]))
 
-    # Try 8-digit compact YYYYMMDD
     if len(val_str) == 8 and val_str.isdigit():
         return date(int(val_str[:4]), int(val_str[4:6]), int(val_str[6:8]))
 
@@ -168,60 +176,68 @@ def parse_bist_date(val: Any) -> Optional[date]:
 
 def clean_bist_symbol(raw_symbol: str) -> str:
     """
-    Normalizes a BIST symbol.
+    Normalizes a BIST symbol to canonical ticker.
     - Strips whitespace.
-    - If symbol ends with '.E' (BISTECH equity share suffix), removes '.E' (e.g. 'THYAO.E' -> 'THYAO').
+    - If symbol ends with '.E' (BISTECH equity suffix), removes '.E' (e.g. 'KOZAA.E' -> 'KOZAA', 'THYAO.E' -> 'THYAO').
     - NEVER strips '.S1' (e.g. 'ALTIN.S1' remains 'ALTIN.S1').
     - If 'ALTIN.S1.E' -> 'ALTIN.S1'.
     """
     sym = (raw_symbol or "").strip().upper()
-    if sym.endswith(".E"):
+    if sym.endswith(".E") and not sym.endswith(".S1.E"):
+        sym = sym[:-2]
+    elif sym.endswith(".S1.E"):
         sym = sym[:-2]
     return sym
 
 
 class BISTBulletinParser:
     """
-    Parser for official Borsa İstanbul (BIST) daily bulletin files (CSV, TXT, ZIP).
+    Parser for official Borsa İstanbul PAY_BULTEN daily bulletin files.
     """
-    version: str = "1.0.0"
+    version: str = "1.1.0"
 
     @classmethod
     def parse_bulletin_bytes(
         cls,
         raw_bytes: bytes,
         filename: Optional[str] = None,
-        filename_date: Optional[date] = None,
+        trade_date: Optional[date] = None,
         snapshot_id: Optional[UUID] = None,
         snapshot_hash: Optional[str] = None,
         retrieved_at: Optional[datetime] = None,
         resolver: Optional[InstrumentResolverService] = None,
     ) -> List[BISTEODObservation]:
         """
-        Parses raw bytes from a BIST bulletin download (handles ZIP archives or plain text).
+        Parses raw bytes from a BIST bulletin download (handles CSV or ZIP archives).
         """
         if not raw_bytes:
             return []
 
+        filename_date = BISTBulletinLocator.parse_filename_trade_date(filename or "")
+
         # Check for ZIP archive magic bytes 'PK\x03\x04'
         if raw_bytes[:4] == b"PK\x03\x04":
             with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
-                # Find CSV or TXT file inside archive
                 names = zf.namelist()
                 bulletin_names = [n for n in names if n.lower().endswith((".csv", ".txt", ".prn", ".dat"))]
                 if not bulletin_names:
-                    bulletin_names = names  # fallback to first file
+                    bulletin_names = names
                 
                 if not bulletin_names:
                     return []
                 
-                inner_bytes = zf.read(bulletin_names[0])
+                inner_filename = bulletin_names[0]
+                if not filename_date:
+                    filename_date = BISTBulletinLocator.parse_filename_trade_date(inner_filename)
+
+                inner_bytes = zf.read(inner_filename)
                 text = inner_bytes.decode("utf-8-sig", errors="replace")
         else:
             text = raw_bytes.decode("utf-8-sig", errors="replace")
 
         return cls.parse_bulletin_text(
             raw_text=text,
+            trade_date=trade_date,
             filename_date=filename_date,
             snapshot_id=snapshot_id,
             snapshot_hash=snapshot_hash,
@@ -233,6 +249,7 @@ class BISTBulletinParser:
     def parse_bulletin_text(
         cls,
         raw_text: str,
+        trade_date: Optional[date] = None,
         filename_date: Optional[date] = None,
         snapshot_id: Optional[UUID] = None,
         snapshot_hash: Optional[str] = None,
@@ -240,10 +257,18 @@ class BISTBulletinParser:
         resolver: Optional[InstrumentResolverService] = None,
     ) -> List[BISTEODObservation]:
         """
-        Parses raw text of a BIST CSV/TXT bulletin.
+        Parses raw text of an official BIST PAY_BULTEN CSV.
+        Supports 2 header rows (Turkish Row 1, English Row 2, Observations Row 3+).
         """
         if not raw_text or not raw_text.strip():
             return []
+
+        # Validate trade_date vs filename_date consistency
+        effective_trade_date: Optional[date] = trade_date or filename_date
+        if trade_date is not None and filename_date is not None and trade_date != filename_date:
+            raise BISTSchemaDriftError(
+                f"Requested trade_date ({trade_date}) does not match verified filename date ({filename_date})."
+            )
 
         lines = [line.strip() for line in raw_text.strip().splitlines() if line.strip()]
         if not lines:
@@ -254,30 +279,42 @@ class BISTBulletinParser:
         delimiters = [";", ",", "\t", "|"]
         delimiter = max(delimiters, key=lambda d: header_line.count(d))
 
-        reader = csv.reader(lines, delimiter=delimiter)
-        raw_headers = next(reader, None)
-        if not raw_headers:
+        reader = list(csv.reader(lines, delimiter=delimiter))
+        if not reader:
             return []
 
-        # Normalize headers using BIST_HEADER_MAPPINGS
-        canonical_headers: List[Optional[str]] = []
-        for h in raw_headers:
-            clean_h = h.strip().upper()
-            mapped = BIST_HEADER_MAPPINGS.get(clean_h)
-            canonical_headers.append(mapped)
+        # 1. Row 1 = Turkish Header
+        raw_headers_row1 = [h.strip().upper() for h in reader[0]]
+        canonical_headers: List[Optional[str]] = [
+            BIST_HEADER_MAPPINGS.get(h) for h in raw_headers_row1
+        ]
 
-        # Check required columns for schema drift
+        # 2. Check if Row 2 is English Header
+        start_row_idx = 1
+        if len(reader) > 1:
+            row2 = [c.strip().upper() for c in reader[1]]
+            # If row 2 matches English header keywords or mapped headers, skip it
+            mapped_row2 = [BIST_HEADER_MAPPINGS.get(c) for c in row2]
+            non_none_matches = sum(1 for m in mapped_row2 if m is not None)
+            if non_none_matches >= 2 or any(
+                keyword in " ".join(row2) for keyword in ("MARKET SEGMENT", "INSTRUMENT CODE", "CLOSING PRICE", "TOTAL TRADE VALUE")
+            ):
+                start_row_idx = 2  # Skip English second header
+
+        # 3. Check required columns
         present_canonical = {h for h in canonical_headers if h is not None}
         missing_required = [req for req in REQUIRED_BULLETIN_COLUMNS if req not in present_canonical]
         if missing_required:
             raise BISTSchemaDriftError(
-                f"BIST bulletin missing required columns: {missing_required}. Present columns: {raw_headers}"
+                f"PAY_BULTEN missing required columns: {missing_required}. Present columns: {raw_headers_row1}"
             )
 
-        observations: List[BISTEODObservation] = []
-        seen_symbols: Dict[Tuple[str, date], BISTEODObservation] = {}
+        # 4. Parse observation rows
+        raw_observations: List[BISTEODObservation] = []
+        symbol_observations_map: Dict[str, List[BISTEODObservation]] = {}
 
-        for row_idx, row in enumerate(reader, start=2):
+        for row_idx in range(start_row_idx, len(reader)):
+            row = reader[row_idx]
             if not row or all(not cell.strip() for cell in row):
                 continue
 
@@ -290,8 +327,8 @@ class BISTBulletinParser:
 
             obs = cls._parse_single_row(
                 row_dict=row_dict,
-                row_idx=row_idx,
-                filename_date=filename_date,
+                row_idx=row_idx + 1,
+                effective_trade_date=effective_trade_date,
                 snapshot_id=snapshot_id,
                 snapshot_hash=snapshot_hash,
                 retrieved_at=retrieved_at,
@@ -300,82 +337,92 @@ class BISTBulletinParser:
             if obs is None:
                 continue
 
-            # Duplicate resolution within same bulletin
-            dedup_key = (obs.symbol, obs.trade_date)
-            if dedup_key in seen_symbols:
-                existing = seen_symbols[dedup_key]
-                if (
-                    existing.close == obs.close
-                    and existing.open == obs.open
-                    and existing.high == obs.high
-                    and existing.low == obs.low
-                    and existing.volume == obs.volume
-                ):
-                    # Identical duplicate -> idempotent, skip
-                    continue
-                else:
-                    # Conflicting duplicate row for same symbol and date -> mark invalid
-                    obs.status = BISTObservationStatus.INVALID_OBSERVATION
-                    obs.diagnostics.append(f"Conflicting duplicate row in bulletin for {obs.symbol} on {obs.trade_date}")
-            
-            seen_symbols[dedup_key] = obs
-            observations.append(obs)
+            raw_observations.append(obs)
+            symbol_observations_map.setdefault(obs.symbol, []).append(obs)
 
-        return observations
+        # 5. Deterministic Duplicate Conflict Resolution (Order Independent)
+        final_observations: List[BISTEODObservation] = []
+        for symbol, obs_group in symbol_observations_map.items():
+            if len(obs_group) == 1:
+                final_observations.append(obs_group[0])
+            else:
+                # Check if all rows in the group have identical values
+                first = obs_group[0]
+                is_identical = all(
+                    o.close == first.close
+                    and o.open == first.open
+                    and o.high == first.high
+                    and o.low == first.low
+                    and o.volume == first.volume
+                    and o.turnover == first.turnover
+                    for o in obs_group
+                )
+                if is_identical:
+                    # Idempotent duplicate: keep exactly one valid instance
+                    final_observations.append(first)
+                else:
+                    # Conflicting duplicate: quarantine ALL rows for this symbol deterministically
+                    for conflicting_obs in obs_group:
+                        conflicting_obs.status = BISTObservationStatus.CONFLICT_QUARANTINED
+                        conflicting_obs.diagnostics.append(
+                            f"Conflicting duplicate rows detected in bulletin for {symbol} on {conflicting_obs.trade_date}"
+                        )
+                        final_observations.append(conflicting_obs)
+
+        return final_observations
 
     @classmethod
     def _parse_single_row(
         cls,
         row_dict: Dict[str, str],
         row_idx: int,
-        filename_date: Optional[date],
+        effective_trade_date: Optional[date],
         snapshot_id: Optional[UUID],
         snapshot_hash: Optional[str],
         retrieved_at: Optional[datetime],
         resolver: Optional[InstrumentResolverService],
     ) -> Optional[BISTEODObservation]:
-        raw_symbol = row_dict.get("symbol", "")
-        raw_date = row_dict.get("trade_date", "")
-        raw_close = row_dict.get("close", "")
+        raw_symbol_val = row_dict.get("symbol", "")
+        raw_close_val = row_dict.get("close", "")
 
-        if not raw_symbol or not raw_close:
+        if not raw_symbol_val:
             return None
 
-        symbol = clean_bist_symbol(raw_symbol)
+        raw_provider_symbol = raw_symbol_val.strip()
+        normalized_symbol = clean_bist_symbol(raw_provider_symbol)
         diagnostics: List[str] = []
         obs_status = BISTObservationStatus.VALID
 
-        # 1. Parse Trade Date
-        try:
-            trade_date = parse_bist_date(raw_date)
-            if trade_date is None:
-                if filename_date is not None:
-                    trade_date = filename_date
-                else:
-                    return None
-        except Exception as exc:
-            if filename_date is not None:
-                trade_date = filename_date
-                diagnostics.append(f"Row {row_idx}: Could not parse trade_date '{raw_date}', fell back to filename_date ({exc})")
-            else:
-                return None
+        # 1. Resolve Trade Date (from row dict or verified bulletin context)
+        row_date_str = row_dict.get("trade_date")
+        if row_date_str:
+            try:
+                trade_date = parse_bist_date(row_date_str)
+            except Exception as exc:
+                trade_date = effective_trade_date
+                diagnostics.append(f"Row {row_idx}: Could not parse trade_date '{row_date_str}': {exc}")
+        else:
+            trade_date = effective_trade_date
 
-        if filename_date is not None and trade_date != filename_date:
+        if trade_date is None:
+            raise ValueError(f"Row {row_idx}: Trade date must be supplied via bulletin context or filename.")
+
+        # 2. Parse Close Price (CRITICAL: Never default to Decimal('0') on error)
+        close_val: Optional[Decimal] = None
+        if not raw_close_val:
             obs_status = BISTObservationStatus.INVALID_OBSERVATION
-            diagnostics.append(f"Row {row_idx}: Trade date {trade_date} does not match bulletin filename date {filename_date}")
-
-        # 2. Parse Numeric Prices and Volumes
-        try:
-            close_val = parse_bist_decimal(raw_close)
-            if close_val is None or close_val < 0:
+            diagnostics.append(f"Row {row_idx}: Missing required closing price.")
+        else:
+            try:
+                close_val = parse_bist_decimal(raw_close_val)
+                if close_val is None or close_val < 0:
+                    obs_status = BISTObservationStatus.INVALID_OBSERVATION
+                    diagnostics.append(f"Row {row_idx}: Invalid or negative close price '{raw_close_val}'.")
+            except Exception as exc:
                 obs_status = BISTObservationStatus.INVALID_OBSERVATION
-                diagnostics.append(f"Row {row_idx}: Invalid close price '{raw_close}'")
-                close_val = Decimal("0")
-        except Exception as exc:
-            obs_status = BISTObservationStatus.INVALID_OBSERVATION
-            diagnostics.append(f"Row {row_idx}: Error parsing close price '{raw_close}': {exc}")
-            close_val = Decimal("0")
+                diagnostics.append(f"Row {row_idx}: Error parsing close price '{raw_close_val}': {exc}")
 
+        # 3. Parse Other Numeric Fields (open, high, low, previous_close, WAP, volume, turnover, trade_count)
         open_val: Optional[Decimal] = None
         high_val: Optional[Decimal] = None
         low_val: Optional[Decimal] = None
@@ -429,7 +476,7 @@ class BISTBulletinParser:
                 wap_val = parse_bist_decimal(row_dict["weighted_average"])
                 if wap_val is not None and wap_val < 0:
                     obs_status = BISTObservationStatus.INVALID_OBSERVATION
-                    diagnostics.append(f"Row {row_idx}: Negative weighted average price {wap_val}")
+                    diagnostics.append(f"Row {row_idx}: Negative weighted average {wap_val}")
             except Exception as exc:
                 diagnostics.append(f"Row {row_idx}: Error parsing weighted average: {exc}")
 
@@ -440,6 +487,7 @@ class BISTBulletinParser:
                     obs_status = BISTObservationStatus.INVALID_OBSERVATION
                     diagnostics.append(f"Row {row_idx}: Negative volume {vol_val}")
             except Exception as exc:
+                obs_status = BISTObservationStatus.INVALID_OBSERVATION
                 diagnostics.append(f"Row {row_idx}: Error parsing volume: {exc}")
 
         if "turnover" in row_dict:
@@ -449,6 +497,7 @@ class BISTBulletinParser:
                     obs_status = BISTObservationStatus.INVALID_OBSERVATION
                     diagnostics.append(f"Row {row_idx}: Negative turnover {turnover_val}")
             except Exception as exc:
+                obs_status = BISTObservationStatus.INVALID_OBSERVATION
                 diagnostics.append(f"Row {row_idx}: Error parsing turnover: {exc}")
 
         if "trade_count" in row_dict:
@@ -460,7 +509,7 @@ class BISTBulletinParser:
             except Exception as exc:
                 diagnostics.append(f"Row {row_idx}: Error parsing trade count: {exc}")
 
-        # 3. OHLC Integrity Checks
+        # 4. OHLC Integrity Checks
         if high_val is not None and low_val is not None:
             if high_val < low_val:
                 obs_status = BISTObservationStatus.INVALID_OBSERVATION
@@ -482,12 +531,12 @@ class BISTBulletinParser:
                 obs_status = BISTObservationStatus.INVALID_OBSERVATION
                 diagnostics.append(f"Row {row_idx}: Low ({low_val}) > Close ({close_val})")
 
-        # 4. Market Segment
+        # 5. Metadata and Identity Resolution
         market_segment = row_dict.get("market_segment")
+        instrument_name = row_dict.get("instrument_name")
 
-        # 5. Identity Resolution & Classification
         inst_id: Optional[UUID] = None
-        if symbol == ALTIN_S1_SYMBOL:
+        if normalized_symbol == ALTIN_S1_SYMBOL:
             asset_class = ALTIN_S1_ASSET_CLASS
             inst_type = ALTIN_S1_INSTRUMENT_TYPE
             currency = ALTIN_S1_CURRENCY
@@ -499,13 +548,13 @@ class BISTBulletinParser:
         if resolver:
             inst_id = resolver.resolve_provider_symbol_to_instrument_id(
                 provider="BIST",
-                provider_symbol=symbol,
+                provider_symbol=normalized_symbol,
                 as_of_date=trade_date,
             )
             if inst_id is None:
                 if obs_status == BISTObservationStatus.VALID:
                     obs_status = BISTObservationStatus.UNRESOLVED_IDENTITY
-                diagnostics.append(f"Symbol '{symbol}' not found in Instrument Master")
+                diagnostics.append(f"Symbol '{normalized_symbol}' not found in Instrument Master")
         else:
             if obs_status == BISTObservationStatus.VALID:
                 obs_status = BISTObservationStatus.UNRESOLVED_IDENTITY
@@ -515,7 +564,8 @@ class BISTBulletinParser:
         )
 
         return BISTEODObservation(
-            symbol=symbol,
+            symbol=normalized_symbol,
+            raw_provider_symbol=raw_provider_symbol,
             trade_date=trade_date,
             open=open_val,
             high=high_val,
@@ -528,6 +578,7 @@ class BISTBulletinParser:
             trade_count=trade_count_val,
             currency=currency,
             market_segment=market_segment,
+            instrument_name=instrument_name,
             instrument_id=inst_id,
             asset_class=asset_class,
             instrument_type=inst_type,

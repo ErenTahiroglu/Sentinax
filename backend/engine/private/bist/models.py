@@ -6,6 +6,8 @@ Data models for Borsa İstanbul (BIST) Equity EOD & ALTIN.S1 market backbone.
 Principles:
     - Strict Decimal arithmetic for all monetary values and volumes. Zero floats.
     - Missing fields remain None (missing != zero).
+    - Malformed/missing close prices NEVER become Decimal("0").
+    - Raw source symbol (raw_provider_symbol) preserved alongside normalized symbol.
     - Clear point-in-time separation: trade_date (effective date) vs retrieved_at (network UTC).
     - Preserves raw snapshot before normalization.
     - Seamless serialization to generic PIT storage models (RawProviderSnapshotRecord, NormalizedObservationRecord).
@@ -59,6 +61,7 @@ class BISTObservationStatus(Enum):
     INVALID_OBSERVATION = "invalid_observation"
     UNRESOLVED_IDENTITY = "unresolved_identity"
     SCHEMA_DRIFT = "schema_drift"
+    CONFLICT_QUARANTINED = "conflict_quarantined"
 
 
 @dataclass
@@ -68,7 +71,7 @@ class BISTEODObservation:
     """
     symbol: str
     trade_date: date
-    close: Decimal
+    close: Optional[Decimal] = None
     open: Optional[Decimal] = None
     high: Optional[Decimal] = None
     low: Optional[Decimal] = None
@@ -79,6 +82,8 @@ class BISTEODObservation:
     trade_count: Optional[int] = None
     currency: Currency = Currency.TRY
     market_segment: Optional[str] = None
+    instrument_name: Optional[str] = None
+    raw_provider_symbol: Optional[str] = None
     instrument_id: Optional[UUID] = None
     asset_class: Optional[AssetClass] = None
     instrument_type: Optional[InstrumentType] = None
@@ -97,6 +102,7 @@ class BISTEODObservation:
         return {
             "id": str(self.id),
             "symbol": self.symbol,
+            "raw_provider_symbol": self.raw_provider_symbol or self.symbol,
             "trade_date": self.trade_date.isoformat(),
             "open": str(self.open) if self.open is not None else None,
             "high": str(self.high) if self.high is not None else None,
@@ -109,6 +115,7 @@ class BISTEODObservation:
             "trade_count": self.trade_count,
             "currency": self.currency.value,
             "market_segment": self.market_segment,
+            "instrument_name": self.instrument_name,
             "instrument_id": str(self.instrument_id) if self.instrument_id else None,
             "asset_class": self.asset_class.value if self.asset_class else None,
             "instrument_type": self.instrument_type.value if self.instrument_type else None,
@@ -129,7 +136,8 @@ class BISTEODObservation:
         """
         obs_data = {
             "symbol": self.symbol,
-            "close": str(self.close),
+            "raw_provider_symbol": self.raw_provider_symbol or self.symbol,
+            "close": str(self.close) if self.close is not None else None,
             "open": str(self.open) if self.open is not None else None,
             "high": str(self.high) if self.high is not None else None,
             "low": str(self.low) if self.low is not None else None,
@@ -139,6 +147,7 @@ class BISTEODObservation:
             "turnover": str(self.turnover) if self.turnover is not None else None,
             "trade_count": self.trade_count,
             "market_segment": self.market_segment,
+            "instrument_name": self.instrument_name,
         }
 
         # Map internal status to generic DataStatus
@@ -149,7 +158,7 @@ class BISTEODObservation:
         else:
             data_status = DataStatus.DEGRADED
 
-        source_ref = f"{self.source_provider}:{self.symbol}@{self.trade_date.isoformat()}"
+        source_ref = f"{self.source_provider}:{self.raw_provider_symbol or self.symbol}@{self.trade_date.isoformat()}"
 
         return NormalizedObservationRecord(
             id=self.id,
@@ -184,9 +193,13 @@ class BISTBulletinSnapshot:
     content_type: str
     file_name: Optional[str] = None
     source_url: str = ""
+    landing_page_url: Optional[str] = None
+    resolved_download_url: Optional[str] = None
+    requested_trade_date: Optional[date] = None
+    filename_trade_date: Optional[date] = None
     observations: List[BISTEODObservation] = field(default_factory=list)
     raw_bytes: Optional[bytes] = None
-    parser_version: str = "1.0.0"
+    parser_version: str = "1.1.0"
     diagnostics: List[str] = field(default_factory=list)
     id: UUID = field(default_factory=uuid4)
 
@@ -200,6 +213,10 @@ class BISTBulletinSnapshot:
             "content_type": self.content_type,
             "file_name": self.file_name,
             "source_url": self.source_url,
+            "landing_page_url": self.landing_page_url,
+            "resolved_download_url": self.resolved_download_url,
+            "requested_trade_date": self.requested_trade_date.isoformat() if self.requested_trade_date else None,
+            "filename_trade_date": self.filename_trade_date.isoformat() if self.filename_trade_date else None,
             "observation_count": len(self.observations),
             "parser_version": self.parser_version,
             "diagnostics": self.diagnostics,
@@ -221,11 +238,22 @@ class BISTBulletinSnapshot:
         return RawProviderSnapshotRecord(
             id=self.id,
             provider="BIST_EOD",
-            endpoint=self.source_url or "https://www.borsaistanbul.com/data/bulten/",
-            request_params={"trade_date": self.trade_date.isoformat(), "market": "EQUITY"},
+            endpoint=self.resolved_download_url or self.source_url or "https://www.borsaistanbul.com/data/bulten/",
+            request_params={
+                "trade_date": self.trade_date.isoformat(),
+                "market": "EQUITY",
+                "landing_page_url": self.landing_page_url,
+                "resolved_download_url": self.resolved_download_url,
+                "file_name": self.file_name,
+            },
             retrieved_at=self.retrieved_at,
             http_status=self.http_status,
-            response_metadata={"file_name": self.file_name, "observation_count": len(self.observations)},
+            response_metadata={
+                "file_name": self.file_name,
+                "observation_count": len(self.observations),
+                "landing_page_url": self.landing_page_url,
+                "resolved_download_url": self.resolved_download_url,
+            },
             content_type=self.content_type,
             raw_payload=payload_content,
             payload_hash=self.payload_hash,

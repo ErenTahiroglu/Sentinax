@@ -12,6 +12,7 @@ Hardening Invariants:
     - Zero float usage: all prices, volumes, and values are pure Decimal.
     - Raw snapshot first: raw payload and SHA-256 hash are recorded before normalization.
     - PIT integrity: trade_date (effective date) is cleanly separated from retrieved_at (network UTC).
+    - Separates verified resource discovery (BISTBulletinLocator) from content parsing (BISTBulletinParser).
     - ALTIN.S1 modeled as COMMODITY_CERTIFICATE (Darphane, 0.01g gold, 0.995 purity, TRY).
     - Market price comes strictly from BIST bulletin (no synthetic fair-value or premium/discount calculation).
     - Non-trading day distinguished from network error or 404.
@@ -37,6 +38,10 @@ from backend.engine.private.bist.constants import (
     BIST_OFFICIAL_PORTAL_URL,
     BIST_PROVIDER_NAME,
     BIST_PROVIDER_VERSION,
+)
+from backend.engine.private.bist.locator import (
+    BISTBulletinLocator,
+    BISTResolvedResource,
 )
 from backend.engine.private.bist.models import (
     BISTBulletinSnapshot,
@@ -97,24 +102,21 @@ class BISTEODProvider(DataProviderContract):
         http_client: Optional[httpx.AsyncClient] = None,
         resolver: Optional[InstrumentResolverService] = None,
         base_url: Optional[str] = None,
+        landing_page_url: Optional[str] = None,
         timeout_seconds: float = 10.0,
         max_retries: int = 2,
     ) -> None:
         self._http_client = http_client
         self._resolver = resolver
-        self.base_url = base_url or BIST_BULLETIN_DIRECT_BASE_URL
+        self.locator = BISTBulletinLocator(
+            base_download_url=base_url or BIST_BULLETIN_DIRECT_BASE_URL,
+            landing_page_url=landing_page_url or BIST_OFFICIAL_PORTAL_URL,
+        )
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
 
     def _get_client(self) -> httpx.AsyncClient:
         return self._http_client or get_http_client()
-
-    def get_bulletin_url(self, trade_date: date) -> str:
-        """
-        Constructs the official downloadable bulletin file URL for a given trade date.
-        """
-        date_str = trade_date.strftime("%Y%m%d")
-        return f"{self.base_url.rstrip('/')}/bulten_{date_str}.zip"
 
     async def fetch_daily_bulletin(
         self,
@@ -124,22 +126,29 @@ class BISTEODProvider(DataProviderContract):
         Fetches and parses the official BIST daily bulletin for a specific trade date.
         
         Distinguishes:
-            - Non-trading days (weekends, official holidays)
-            - Historical dates restricted to DataStore
+            - Non-trading days (weekends)
+            - Empty weekday response (possible holiday / unreleased session)
+            - 404 resource not found / historical DataStore restrictions
             - Transport / network failures
             - Schema drift failures
         """
-        # 1. Non-trading day check: weekends
-        if trade_date.weekday() >= 5:  # Saturday = 5, Sunday = 6
-            now_utc = datetime.now(timezone.utc)
+        resource = self.locator.resolve_bulletin_resource(trade_date)
+        now_utc = datetime.now(timezone.utc)
+
+        # 1. Known Non-trading days: Weekends (Saturday=5, Sunday=6)
+        if trade_date.weekday() >= 5:
             snap = BISTBulletinSnapshot(
                 trade_date=trade_date,
                 retrieved_at=now_utc,
                 http_status=200,
                 payload_hash=hashlib.sha256(b"").hexdigest(),
                 content_type="text/plain",
-                file_name=None,
-                source_url=self.get_bulletin_url(trade_date),
+                file_name=resource.official_filename,
+                source_url=resource.resolved_download_url,
+                landing_page_url=resource.landing_page_url,
+                resolved_download_url=resource.resolved_download_url,
+                requested_trade_date=trade_date,
+                filename_trade_date=resource.filename_trade_date,
                 observations=[],
                 raw_bytes=b"",
                 parser_version=self.provider_version,
@@ -147,7 +156,7 @@ class BISTEODProvider(DataProviderContract):
             )
             return snap, []
 
-        url = self.get_bulletin_url(trade_date)
+        url = resource.resolved_download_url
         client = self._get_client()
         attempt = 0
         last_exc: Optional[Exception] = None
@@ -156,24 +165,31 @@ class BISTEODProvider(DataProviderContract):
             attempt += 1
             try:
                 response = await client.get(url, timeout=self.timeout_seconds)
-                now_utc = datetime.now(timezone.utc)
+                fetch_time = datetime.now(timezone.utc)
 
                 if response.status_code == 200:
                     raw_bytes = response.content
+                    headers = getattr(response, "headers", {})
+                    content_type = headers.get("content-type", "text/plain") if hasattr(headers, "get") else "text/plain"
+
                     if not raw_bytes:
-                        # Empty payload on a weekday -> possible holiday / no-session day
+                        # Empty weekday response -> possible holiday or session unreleased
                         snap = BISTBulletinSnapshot(
                             trade_date=trade_date,
-                            retrieved_at=now_utc,
+                            retrieved_at=fetch_time,
                             http_status=200,
                             payload_hash=hashlib.sha256(b"").hexdigest(),
-                            content_type=response.headers.get("content-type", "text/plain"),
-                            file_name=f"bulten_{trade_date.strftime('%Y%m%d')}.zip",
+                            content_type=content_type,
+                            file_name=resource.official_filename,
                             source_url=url,
+                            landing_page_url=resource.landing_page_url,
+                            resolved_download_url=url,
+                            requested_trade_date=trade_date,
+                            filename_trade_date=resource.filename_trade_date,
                             observations=[],
                             raw_bytes=raw_bytes,
                             parser_version=self.provider_version,
-                            diagnostics=["NON_TRADING_DAY: Empty bulletin payload from exchange (possible official holiday)."],
+                            diagnostics=["EMPTY_SOURCE_PAYLOAD: Empty bulletin payload from exchange (possible official holiday or unreleased session)."],
                         )
                         return snap, []
 
@@ -184,11 +200,11 @@ class BISTEODProvider(DataProviderContract):
                     try:
                         observations = BISTBulletinParser.parse_bulletin_bytes(
                             raw_bytes=raw_bytes,
-                            filename=f"bulten_{trade_date.strftime('%Y%m%d')}.zip",
-                            filename_date=trade_date,
+                            filename=resource.official_filename,
+                            trade_date=trade_date,
                             snapshot_id=snap_id,
                             snapshot_hash=payload_hash,
-                            retrieved_at=now_utc,
+                            retrieved_at=fetch_time,
                             resolver=self._resolver,
                         )
                     except BISTSchemaDriftError as drift_err:
@@ -196,12 +212,16 @@ class BISTEODProvider(DataProviderContract):
                         snap = BISTBulletinSnapshot(
                             id=snap_id,
                             trade_date=trade_date,
-                            retrieved_at=now_utc,
+                            retrieved_at=fetch_time,
                             http_status=200,
                             payload_hash=payload_hash,
-                            content_type=response.headers.get("content-type", "application/zip"),
-                            file_name=f"bulten_{trade_date.strftime('%Y%m%d')}.zip",
+                            content_type=content_type,
+                            file_name=resource.official_filename,
                             source_url=url,
+                            landing_page_url=resource.landing_page_url,
+                            resolved_download_url=url,
+                            requested_trade_date=trade_date,
+                            filename_trade_date=resource.filename_trade_date,
                             observations=[],
                             raw_bytes=raw_bytes,
                             parser_version=self.provider_version,
@@ -212,12 +232,16 @@ class BISTEODProvider(DataProviderContract):
                     snap = BISTBulletinSnapshot(
                         id=snap_id,
                         trade_date=trade_date,
-                        retrieved_at=now_utc,
+                        retrieved_at=fetch_time,
                         http_status=200,
                         payload_hash=payload_hash,
-                        content_type=response.headers.get("content-type", "application/zip"),
-                        file_name=f"bulten_{trade_date.strftime('%Y%m%d')}.zip",
+                        content_type=content_type,
+                        file_name=resource.official_filename,
                         source_url=url,
+                        landing_page_url=resource.landing_page_url,
+                        resolved_download_url=url,
+                        requested_trade_date=trade_date,
+                        filename_trade_date=resource.filename_trade_date,
                         observations=observations,
                         raw_bytes=raw_bytes,
                         parser_version=self.provider_version,
@@ -226,21 +250,24 @@ class BISTEODProvider(DataProviderContract):
                     return snap, observations
 
                 elif response.status_code == 404:
-                    # 404 Not Found -> Historical data restricted to DataStore or holiday
                     snap = BISTBulletinSnapshot(
                         trade_date=trade_date,
-                        retrieved_at=now_utc,
+                        retrieved_at=fetch_time,
                         http_status=404,
                         payload_hash=hashlib.sha256(b"").hexdigest(),
                         content_type="text/plain",
-                        file_name=None,
+                        file_name=resource.official_filename,
                         source_url=url,
+                        landing_page_url=resource.landing_page_url,
+                        resolved_download_url=url,
+                        requested_trade_date=trade_date,
+                        filename_trade_date=resource.filename_trade_date,
                         observations=[],
                         raw_bytes=None,
                         parser_version=self.provider_version,
                         diagnostics=[
-                            f"HISTORICAL_DATASTORE_RESTRICTED: Bulletin for {trade_date} not found at public URL (HTTP 404). "
-                            f"Historical archives are restricted to {BIST_DATASTORE_PORTAL_URL}."
+                            f"RESOURCE_NOT_FOUND: Bulletin file '{resource.official_filename}' not found at public URL (HTTP 404). "
+                            f"If this is an older historical date, archives are restricted to {BIST_DATASTORE_PORTAL_URL}."
                         ],
                     )
                     return snap, []
@@ -260,12 +287,16 @@ class BISTEODProvider(DataProviderContract):
                 else:
                     snap = BISTBulletinSnapshot(
                         trade_date=trade_date,
-                        retrieved_at=now_utc,
+                        retrieved_at=fetch_time,
                         http_status=response.status_code,
                         payload_hash=hashlib.sha256(b"").hexdigest(),
                         content_type="text/plain",
-                        file_name=None,
+                        file_name=resource.official_filename,
                         source_url=url,
+                        landing_page_url=resource.landing_page_url,
+                        resolved_download_url=url,
+                        requested_trade_date=trade_date,
+                        filename_trade_date=resource.filename_trade_date,
                         observations=[],
                         raw_bytes=None,
                         parser_version=self.provider_version,
@@ -315,7 +346,6 @@ class BISTEODProvider(DataProviderContract):
                 provider_symbol=context.provider_symbol,
             )
 
-        # Check if non-trading day or restricted
         if not observations:
             return ProviderResponse(
                 provider_name=self.provider_name,
@@ -347,9 +377,12 @@ class BISTEODProvider(DataProviderContract):
                 )
             
             selected_obs = matched[0]
-            status = DataStatus.COMPLETE if selected_obs.status == BISTObservationStatus.VALID else (
-                DataStatus.PARTIAL if selected_obs.status == BISTObservationStatus.UNRESOLVED_IDENTITY else DataStatus.DEGRADED
-            )
+            if selected_obs.status == BISTObservationStatus.VALID:
+                status = DataStatus.COMPLETE
+            elif selected_obs.status == BISTObservationStatus.UNRESOLVED_IDENTITY:
+                status = DataStatus.PARTIAL
+            else:
+                status = DataStatus.DEGRADED
 
             return ProviderResponse(
                 provider_name=self.provider_name,
@@ -361,17 +394,30 @@ class BISTEODProvider(DataProviderContract):
                 raw=selected_obs.to_dict(),
                 warnings=selected_obs.diagnostics,
                 canonical_instrument_id=selected_obs.instrument_id or context.canonical_instrument_id,
-                provider_symbol=selected_obs.symbol,
+                provider_symbol=selected_obs.raw_provider_symbol or selected_obs.symbol,
             )
 
-        # Multi-instrument / full bulletin fetch
+        # Multi-instrument bulletin aggregate status
+        has_invalid = any(
+            obs.status in (BISTObservationStatus.INVALID_OBSERVATION, BISTObservationStatus.CONFLICT_QUARANTINED)
+            for obs in observations
+        )
+        has_unresolved = any(obs.status == BISTObservationStatus.UNRESOLVED_IDENTITY for obs in observations)
+
+        if has_invalid:
+            agg_status = DataStatus.DEGRADED
+        elif has_unresolved:
+            agg_status = DataStatus.PARTIAL
+        else:
+            agg_status = DataStatus.COMPLETE
+
         return ProviderResponse(
             provider_name=self.provider_name,
             source_quality=self.source_quality,
             retrieved_at=snapshot.retrieved_at,
             published_at=None,
             effective_date=trade_date,
-            status=DataStatus.COMPLETE,
+            status=agg_status,
             raw=[obs.to_dict() for obs in observations],
             warnings=snapshot.diagnostics,
             canonical_instrument_id=context.canonical_instrument_id,
@@ -401,36 +447,36 @@ class BISTEODProvider(DataProviderContract):
         if not symbol:
             warnings.append("Missing required field 'symbol'.")
 
-        close_str = normalized.get("close")
-        if close_str is None:
+        close_val = normalized.get("close")
+        if close_val is None:
             warnings.append("Missing required field 'close'.")
         else:
             try:
-                c = Decimal(str(close_str))
+                c = Decimal(str(close_val))
                 if c < 0:
                     warnings.append(f"Negative close price: {c}")
             except Exception:
-                warnings.append(f"Malformed close price: {close_str}")
+                warnings.append(f"Malformed close price: {close_val}")
 
-        # Check OHLC integrity if available
-        open_str = normalized.get("open")
-        high_str = normalized.get("high")
-        low_str = normalized.get("low")
+        # Check OHLC integrity if present
+        open_val = normalized.get("open")
+        high_val = normalized.get("high")
+        low_val = normalized.get("low")
 
-        if high_str is not None and low_str is not None:
+        if high_val is not None and low_val is not None:
             try:
-                h = Decimal(str(high_str))
-                l = Decimal(str(low_str))
+                h = Decimal(str(high_val))
+                l = Decimal(str(low_val))
                 if h < l:
                     warnings.append(f"OHLC integrity violation: High ({h}) < Low ({l})")
-                if close_str is not None:
-                    c = Decimal(str(close_str))
+                if close_val is not None:
+                    c = Decimal(str(close_val))
                     if h < c:
                         warnings.append(f"OHLC integrity violation: High ({h}) < Close ({c})")
                     if l > c:
                         warnings.append(f"OHLC integrity violation: Low ({l}) > Close ({c})")
-                if open_str is not None:
-                    o = Decimal(str(open_str))
+                if open_val is not None:
+                    o = Decimal(str(open_val))
                     if h < o:
                         warnings.append(f"OHLC integrity violation: High ({h}) < Open ({o})")
                     if l > o:
@@ -444,13 +490,13 @@ class BISTEODProvider(DataProviderContract):
         """
         Returns the audit trail for this provider response.
         """
-        eff_date = response.effective_date
-        url = self.get_bulletin_url(eff_date) if eff_date else self.base_url
+        eff_date = response.effective_date or date.today()
+        resource = self.locator.resolve_bulletin_resource(eff_date)
 
         return ProviderProvenance(
             provider_name=self.provider_name,
             provider_version=self.provider_version,
-            endpoint=url,
+            endpoint=resource.resolved_download_url,
             retrieved_at=response.retrieved_at,
             source_quality=self.source_quality,
             canonical_instrument_id=response.canonical_instrument_id,
@@ -461,5 +507,7 @@ class BISTEODProvider(DataProviderContract):
                 "official_source": self.official_source,
                 "developer_api": self.developer_api,
                 "sla_guaranteed": self.sla_guaranteed,
+                "landing_page_url": resource.landing_page_url,
+                "official_filename": resource.official_filename,
             },
         )

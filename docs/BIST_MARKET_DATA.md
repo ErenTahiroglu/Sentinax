@@ -6,20 +6,23 @@ Sentinax implements an official, point-in-time (PIT) compliant End-of-Day (EOD) 
 
 The pipeline follows Sentinax core data principles:
 1. **Raw Snapshot First**: Every downloaded bulletin is hashed (SHA-256) and stored immutably before normalization.
-2. **Exact Decimal Arithmetic**: All prices, volumes, and monetary turnover values are stored and manipulated using pure Python `Decimal`. Zero floating-point conversions.
-3. **Point-In-Time (PIT) Integrity**: `trade_date` (economic effective date) is strictly decoupled from `retrieved_at` (network fetch timestamp in UTC).
-4. **Instrument Master Authority**: Symbol strings are external provider aliases. Master identity is a canonical UUID `id`.
-5. **ALTIN.S1 Economic Realism**: Modeled as an exchange-traded commodity certificate with verified reference facts (0.01g gold, 0.995 purity), priced strictly via exchange market discovery.
+2. **Exact Decimal Arithmetic**: All prices, volumes, and monetary turnover values are stored and manipulated using pure Python `Decimal`. Zero float conversions. Float inputs to Decimal parsers are strictly rejected (`TypeError`).
+3. **No Fake Financial Zero**: Missing or corrupted numeric fields (including `close`) NEVER default to `Decimal("0")`. Missing remains `None` and triggers quarantine / `INVALID_OBSERVATION`.
+4. **Point-In-Time (PIT) Integrity**: `trade_date` (economic effective date) is strictly decoupled from `retrieved_at` (network fetch timestamp in UTC).
+5. **Two-Header PAY_BULTEN Architecture**: Documented official 2-header-row structure (Row 1: Turkish, Row 2: English, Row 3+: Observations) parsed seamlessly without treating English headers as data.
+6. **Instrument Master Authority**: Symbol strings are external provider aliases. Master identity is a canonical UUID `id`. Raw provider symbols (`raw_provider_symbol`, e.g. `KOZAA.E`) are preserved alongside normalized symbols (`KOZAA`).
+7. **ALTIN.S1 Economic Realism**: Modeled as an exchange-traded commodity certificate with verified reference facts (0.01g gold, 0.995 purity), priced strictly via exchange market discovery.
+8. **Deterministic Conflict Quarantine**: Conflicting duplicate rows for the same symbol/date are deterministically quarantined with order-independence (no first-row authority).
 
 ---
 
 ## 2. Official Data Source & Access Classification
 
-### 2.1 Official Source Pages & Endpoints
+### 2.1 Official Source Pages & Discovery
 - **Official Portal**: [Borsa İstanbul Bülten Verileri](https://www.borsaistanbul.com/tr/sayfa/141/bulten-verileri)
 - **Equity Market Portal**: [Pay Piyasası Verileri](https://www.borsaistanbul.com/tr/sayfa/25/pay-piyasasi-verileri)
-- **Direct Daily Bulletin Download URL**: `https://www.borsaistanbul.com/data/bulten/` (e.g. `bulten_YYYYMMDD.zip` or `gunluk_bulten_YYYYMMDD.csv`)
 - **Historical DataStore Portal**: [BIST DataStore](https://datastore.borsaistanbul.com)
+- **Verified Resource Locator**: Handled by `BISTBulletinLocator`, which determines verified official file paths and preserves discovery landing metadata.
 
 ### 2.2 Access Classification: YELLOW Provider
 - `source_quality`: `SourceTier.TIER_2_EXCHANGE` (Official exchange data).
@@ -31,63 +34,75 @@ The pipeline follows Sentinax core data principles:
 ### 2.3 Provider Capabilities
 - `CURRENT_DAILY_PUBLIC`: Latest daily bulletin publicly accessible.
 - `HISTORICAL_PUBLIC_IF_AVAILABLE`: Historical dates within the public bulletin window.
-- `HISTORICAL_DATASTORE_RESTRICTED`: Older historical dates moved to DataStore return explicit restricted status (HTTP 404 / `HISTORICAL_DATASTORE_RESTRICTED`), never fabricated or assumed empty.
+- `HISTORICAL_DATASTORE_RESTRICTED`: Older historical dates moved to DataStore return explicit restricted status (`RESOURCE_NOT_FOUND` / DataStore note), never fabricated or assumed empty.
 
 ---
 
-## 3. Bulletin File Format & Schema Drift
+## 3. Official PAY_BULTEN Schema & Schema Drift
 
-### 3.1 Format & Delimiters
-- Format: CSV, TXT, or ZIP archive containing daily BISTECH bulletin data.
-- Delimiters: Semicolon (`;`), comma (`,`), or tab (`\t`).
-- Encoding: UTF-8 with BOM (`utf-8-sig`) or UTF-8.
+### 3.1 Documented File Specification
+- **Filename**: `PAY_BULTEN_YYYYAAGG.csv` (e.g. `PAY_BULTEN_20241001.csv`).
+- **Format**: CSV (or ZIP containing the canonical CSV).
+- **Delimiter**: Semicolon (`;`).
+- **Decimal Symbol**: Dot (`.`) in official technical specifications.
+- **Frequency**: End-of-Day (EOD).
+- **Header Rows**: Exactly 2 rows:
+  - Row 1: Turkish Column Names
+  - Row 2: English Column Names
+  - Row 3+: Market Observation Records
 
 ### 3.2 Header Mapping Table
-The parser normalizes Turkish and English header variants to canonical column names:
+The parser normalizes Turkish (Row 1) and English (Row 2) columns to canonical field names:
 
-| Canonical Field | Recognized Header Variants |
-| :--- | :--- |
-| `trade_date` | `BULTEN_TARIHI`, `BÜLTEN TARİHİ`, `TARIH`, `TARİH`, `DATE`, `TRADE_DATE` |
-| `symbol` | `HISSE_KODU`, `HİSSE KODU`, `MENKUL_KIYMET_KODU`, `INSTRUMENT_CODE`, `SYMBOL`, `KOD` |
-| `market_segment` | `PAZAR`, `PAZAR_KODU`, `SEKTOR`, `MARKET`, `MARKET_SEGMENT`, `GRUP_KODU` |
-| `close` | `KAPANIS_FIYATI`, `KAPANIŞ FİYATI`, `KAPANIS`, `CLOSE_PRICE`, `CLOSE`, `SON_FIYAT` |
-| `open` | `ACILIS_FIYATI`, `AÇILIŞ FİYATI`, `ACILIS`, `OPEN_PRICE`, `OPEN`, `ILK_FIYAT` |
-| `high` | `EN_YUKSEK_FIYAT`, `EN YÜKSEK FİYAT`, `EN_YUKSEK`, `HIGH_PRICE`, `HIGH`, `MAX_PRICE` |
-| `low` | `EN_DUSUK_FIYAT`, `EN DÜŞÜK FİYAT`, `EN_DUSUK`, `LOW_PRICE`, `LOW`, `MIN_PRICE` |
-| `previous_close` | `ONCEKI_KAPANIS_FIYATI`, `ÖNCEKİ KAPANIŞ FİYATI`, `ONCEKI_KAPANIS`, `PREVIOUS_CLOSE` |
-| `weighted_average`| `AGIRLIKLI_ORTALAMA_FIYAT`, `AOF`, `WEIGHTED_AVERAGE_PRICE`, `WAP` |
-| `volume` | `ISLEM_MIKTARI`, `İŞLEM MİKTARI`, `TOPLAM_ISLEM_MIKTARI`, `VOLUME`, `LOT` |
-| `turnover` | `ISLEM_HACMI`, `İŞLEM HACMİ`, `ISLEM_HACMI_TL`, `TURNOVER`, `TOTAL_TURNOVER` |
-| `trade_count` | `SOZLESME_SAYISI`, `SÖZLEŞME SAYISI`, `ISLEM_ADEDI`, `TRADE_COUNT`, `NUM_TRADES` |
+| Column # | Official Turkish Header (Row 1) | Official English Header (Row 2) | Canonical Field |
+| :---: | :--- | :--- | :--- |
+| 1 | `PAZAR KODU` | `MARKET SEGMENT` | `market_segment` |
+| 2 | `PAY KODU` | `INSTRUMENT CODE` | `symbol` / `raw_provider_symbol` |
+| 3 | `PAY ADI` | `INSTRUMENT NAME` | `instrument_name` |
+| 4 | `ONCEKI KAPANIS FIYATI` | `PREVIOUS CLOSING PRICE` | `previous_close` |
+| 5 | `ACILIS FIYATI` | `OPENING PRICE` | `open` |
+| 6 | `EN DUSUK FIYAT` | `LOWEST PRICE` | `low` |
+| 7 | `EN YUKSEK FIYAT` | `HIGHEST PRICE` | `high` |
+| 8 | `KAPANIS FIYATI` | `CLOSING PRICE` | `close` |
+| 9 | `DEGISIM(%)` | `CHANGE(%)` | `change_pct` |
+| 10 | `GUNLUK AGIRLIKLI ORTALAMA FIYAT` | `WAP` / `DAILY WEIGHTED AVERAGE PRICE` | `weighted_average` |
+| 11 | `TOPLAM ISLEM HACMI` | `TOTAL TRADE VALUE` | `turnover` (monetary TRY) |
+| 12 | `TOPLAM ISLEM ADEDI` | `TOTAL TRADE QUANTITY` | `volume` (traded shares) |
+| 13 | `TOPLAM SOZLESME SAYISI` | `TOTAL NUMBER OF TRADES` | `trade_count` (trade count) |
 
-### 3.3 Schema Drift Policy
-- **Required Columns**: `trade_date`, `symbol`, `close`.
-- If any required column is missing $\to$ `BISTSchemaDriftError` / `SCHEMA_DRIFT` fail closed.
-- Unknown optional columns are safely ignored for normalization while preserved in the raw snapshot payload.
+### 3.3 Trade Date Semantics & Filename Date
+- PAY_BULTEN data rows do NOT contain a trade date column.
+- `trade_date` is determined by the verified bulletin context or official filename (`PAY_BULTEN_YYYYMMDD.csv`).
+- If the requested trade date and filename date disagree $\to$ fails closed (`BISTSchemaDriftError`).
+- **Required Columns**: `symbol`, `close` (no row-level trade date column requirement).
 
 ---
 
-## 4. Numeric & Locale Parsing
+## 4. Numeric Integrity & No-Fabrication Policy
 
-### 4.1 Locale-Safe Number Parsing
-- Supports Turkish formatting (`1.234,56` $\to$ `1234.56`) and standard decimal formatting (`1234.56`).
-- Converts directly into `Decimal` without intermediate `float` conversion.
-- Rejects non-finite values (`NaN`, `Infinity`).
+### 4.1 Strict Decimal & Zero-Float Policy
+- Zero float conversion: `parse_bist_decimal` explicitly rejects `float` instances (`TypeError`).
+- Parses strings directly into `Decimal` using `.` decimal point.
 
-### 4.2 OHLC Integrity Invariants
-- If `open`, `high`, `low`, `close` are all present:
+### 4.2 Missing / Malformed Numeric Handling
+- Malformed or missing close prices remain `None` and flag the observation as `INVALID_OBSERVATION`.
+- NEVER converts missing / bad values to `Decimal("0")`.
+
+### 4.3 OHLC Integrity Invariants
+- If `open`, `high`, `low`, `close` are present:
   - $High \ge \max(Open, Close)$
   - $Low \le \min(Open, Close)$
   - $High \ge Low$
-- Violations are marked as `INVALID_OBSERVATION` with diagnostic audit notes. No artificial "fixing" of bad source data.
+- Violations are marked as `INVALID_OBSERVATION` with audit diagnostics.
 - Negative prices or volumes are strictly invalid.
 
 ---
 
 ## 5. Instrument Identity & `ALTIN.S1` Modeling
 
-### 5.1 Symbol Normalization
-- BISTECH equity share suffix `.E` (e.g. `THYAO.E`, `GARAN.E`) is stripped to canonical ticker `THYAO`, `GARAN`.
+### 5.1 Symbol Normalization & Raw Symbol Preservation
+- BISTECH equity share suffix `.E` (e.g. `KOZAA.E`, `THYAO.E`) is stripped to canonical ticker `KOZAA`, `THYAO` for normalized resolution.
+- `raw_provider_symbol` preserves the exact source string (`KOZAA.E`).
 - **CRITICAL**: The `.S1` suffix on `ALTIN.S1` is NEVER stripped. `ALTIN.S1` and `ALTIN` are distinct financial identities.
 
 ### 5.2 `ALTIN.S1` Official Definition
@@ -103,12 +118,11 @@ The parser normalizes Turkish and English header variants to canonical column na
 
 ### 5.3 Valuation & Price Invariant
 - `ALTIN.S1` price comes strictly from BIST market transactions.
-- Zero synthetic fair-value calculation (e.g. $gram\_gold \times 0.01$ is prohibited in this phase).
+- Zero synthetic fair-value calculation (e.g. $gram\_gold \times 0.01$ prohibited).
 - Zero premium/discount calculation in Phase 9A.
 
 ### 5.4 Unresolved Symbols
-- Unknown symbols in the bulletin are not silently created as fake master instruments.
-- Quarantined with `instrument_id = None`, `status = BISTObservationStatus.UNRESOLVED_IDENTITY`, `confidence_level = DataConfidenceLevel.MEDIUM`.
+- Unknown symbols in the bulletin are quarantined with `instrument_id = None`, `status = BISTObservationStatus.UNRESOLVED_IDENTITY`, `confidence_level = DataConfidenceLevel.MEDIUM`.
 
 ---
 
@@ -124,5 +138,5 @@ The parser normalizes Turkish and English header variants to canonical column na
 ## 7. Operational & Licensing Constraints
 
 - **Internal Use Only**: Bulletin data is consumed internally by Sentinax for personal investment decision support. No public data redistribution API.
-- **Non-Trading Days**: Weekends and official exchange holidays return `status = DataStatus.UNAVAILABLE` with diagnostic `"NON_TRADING_DAY"`, clearly distinguished from network errors.
+- **Non-Trading Days**: Weekends return `status = DataStatus.UNAVAILABLE` with diagnostic `"NON_TRADING_DAY"`. Empty weekday responses return `"EMPTY_SOURCE_PAYLOAD"` (not automatically assumed to be a holiday without calendar proof).
 - **Exclusions**: Phase 9A does NOT compute returns, volatility, technical indicators, or adjusted prices.
