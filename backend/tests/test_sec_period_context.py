@@ -1,10 +1,11 @@
 """
 backend/tests/test_sec_period_context.py
 ==========================================
-Comprehensive Unit Test Suite for SEC EDGAR Phase 8B.2A / 8B.2A.5:
+Comprehensive Unit Test Suite for SEC EDGAR Phase 8B.2A / 8B.2A.6:
 Economic Period Context Classification & Candidate Grouping.
 
 Coverage:
+    - Filing Association Proof Hardening (Phase 8B.2A.6)
     - No Fabricated Dates (Scenarios 1-6)
     - Malformed Periods Fail-Closed (Scenarios 7-10)
     - Strict DEI Cover Date Shares (Scenarios 11-16)
@@ -95,6 +96,119 @@ def _make_candidate(
         frame=frame,
         snapshot_id=snapshot_id or uuid4(),
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0. Filing Association Proof Hardening (Phase 8B.2A.6)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSECFilingAssociationProof:
+
+    def test_01_accession_exact_and_filing_id_none_is_trusted(self):
+        """Scenario 1: Candidate with exact accession and filing_id=None trusts supplied filing."""
+        filing = SECFilingRecord(cik="320193", accession_number="0000320193-24-000106", form="10-K", is_amendment=False, report_date=date(2024, 9, 28))
+        cand = _make_candidate(cik="320193", accession_number="0000320193-24-000106", filing_id=None, start_date=date(2023, 10, 1), end_date=date(2024, 9, 28))
+
+        p = SECPeriodClassifier.classify_candidate(cand, filing=filing)
+        assert p.period_alignment_status == SECPeriodAlignmentStatus.PRIMARY_REPORT_PERIOD
+        assert p.filing_report_date == date(2024, 9, 28)
+        assert p.classification_confidence == "HIGH"
+
+    def test_02_filing_id_exact_and_accession_none_is_trusted(self):
+        """Scenario 2: Candidate with exact filing_id and accession_number=None trusts supplied filing."""
+        f_id = uuid4()
+        filing = SECFilingRecord(cik="320193", accession_number="0000320193-24-000106", form="10-K", is_amendment=False, report_date=date(2024, 9, 28), id=f_id)
+        cand = _make_candidate(cik="320193", accession_number=None, filing_id=f_id, start_date=date(2023, 10, 1), end_date=date(2024, 9, 28))
+
+        p = SECPeriodClassifier.classify_candidate(cand, filing=filing)
+        assert p.period_alignment_status == SECPeriodAlignmentStatus.PRIMARY_REPORT_PERIOD
+        assert p.filing_report_date == date(2024, 9, 28)
+
+    def test_03_both_exact_matches_is_trusted(self):
+        """Scenario 3: Candidate with both accession and filing_id matching is trusted."""
+        f_id = uuid4()
+        filing = SECFilingRecord(cik="320193", accession_number="0000320193-24-000106", form="10-K", is_amendment=False, report_date=date(2024, 9, 28), id=f_id)
+        cand = _make_candidate(cik="320193", accession_number="0000320193-24-000106", filing_id=f_id, start_date=date(2023, 10, 1), end_date=date(2024, 9, 28))
+
+        p = SECPeriodClassifier.classify_candidate(cand, filing=filing)
+        assert p.period_alignment_status == SECPeriodAlignmentStatus.PRIMARY_REPORT_PERIOD
+        assert p.filing_report_date == date(2024, 9, 28)
+
+    def test_04_and_05_both_present_one_mismatch_fails_closed(self):
+        """Scenario 4 & 5: If both are present, mismatch on either accession or filing_id gives INVALID_CONTEXT."""
+        f_id = uuid4()
+        filing = SECFilingRecord(cik="320193", accession_number="0000320193-24-000106", form="10-K", is_amendment=False, report_date=date(2024, 9, 28), id=f_id)
+
+        # Accession mismatch
+        cand_acc_mismatch = _make_candidate(cik="320193", accession_number="0000320193-23-000001", filing_id=f_id)
+        p_acc = SECPeriodClassifier.classify_candidate(cand_acc_mismatch, filing=filing)
+        assert p_acc.period_alignment_status == SECPeriodAlignmentStatus.INVALID_CONTEXT
+
+        # Filing ID mismatch
+        cand_id_mismatch = _make_candidate(cik="320193", accession_number="0000320193-24-000106", filing_id=uuid4())
+        p_id = SECPeriodClassifier.classify_candidate(cand_id_mismatch, filing=filing)
+        assert p_id.period_alignment_status == SECPeriodAlignmentStatus.INVALID_CONTEXT
+
+    def test_06_to_12_both_missing_cannot_trust_filing_despite_same_cik(self):
+        """Scenario 6-12: If candidate lacks both accession and filing_id, same CIK/form/FY does NOT prove filing identity."""
+        filing_2024 = SECFilingRecord(cik="320193", accession_number="0000320193-24-000106", form="10-K", is_amendment=False, report_date=date(2024, 9, 28))
+        cand_unlinked = _make_candidate(
+            cik="320193",
+            accession_number=None,
+            filing_id=None,
+            form="10-K",
+            fiscal_year=2024,
+            start_date=date(2023, 10, 1),
+            end_date=date(2024, 9, 28),
+        )
+
+        p = SECPeriodClassifier.classify_candidate(cand_unlinked, filing=filing_2024)
+
+        # 6 & 7. Filing is not trusted, filing_report_date is None
+        assert p.filing_report_date is None
+        # 8. Alignment status is UNRESOLVED_FILING (not marked INVALID just for missing lineage)
+        assert p.period_alignment_status == SECPeriodAlignmentStatus.UNRESOLVED_FILING
+        # 9. Period kind still derives correctly from candidate dates
+        assert p.economic_period_kind == SECEconomicPeriodKind.ANNUAL_DURATION
+        assert p.classification_confidence == "LOW"
+        assert any("lacks filing-level association proof" in d for d in p.diagnostics)
+
+    def test_13_wrong_same_issuer_filing_does_not_mark_comparative(self):
+        """Scenario 13: 2023 fact unlinked to accession does not become COMPARATIVE when passed an unrelated 2024 10-K."""
+        filing_2024 = SECFilingRecord(cik="320193", accession_number="0000320193-24-000106", form="10-K", is_amendment=False, report_date=date(2024, 9, 28))
+        cand_2023 = _make_candidate(
+            cik="320193",
+            accession_number=None,
+            filing_id=None,
+            start_date=date(2022, 10, 1),
+            end_date=date(2023, 9, 30),
+        )
+
+        p = SECPeriodClassifier.classify_candidate(cand_2023, filing=filing_2024)
+        # Because association is not proven, filing_report_date is not used, so it is NOT marked COMPARATIVE_PRIOR_PERIOD
+        assert p.period_alignment_status == SECPeriodAlignmentStatus.UNRESOLVED_FILING
+        assert p.is_comparative is False
+        assert p.economic_period_kind == SECEconomicPeriodKind.ANNUAL_DURATION
+
+    def test_14_dei_shares_without_association_proof_cannot_claim_cover_date(self):
+        """Scenario 14: DEI shares without accession/filing_id proof does not get COVER_DATE_CONTEXT from arbitrary filing."""
+        filing = SECFilingRecord(cik="320193", accession_number="0000320193-24-000106", form="10-K", is_amendment=False, report_date=date(2024, 9, 28))
+        cand_dei_unlinked = _make_candidate(
+            canonical_concept="SHARES_OUTSTANDING",
+            taxonomy="dei",
+            source_concept="EntityCommonStockSharesOutstanding",
+            period_type=PeriodType.INSTANT,
+            start_date=None,
+            end_date=date(2024, 10, 18),
+            accession_number=None,
+            filing_id=None,
+        )
+
+        p = SECPeriodClassifier.classify_candidate(cand_dei_unlinked, filing=filing)
+        # Association not proven -> filing_report_date is None -> basic INSTANT + UNRESOLVED_FILING
+        assert p.period_alignment_status == SECPeriodAlignmentStatus.UNRESOLVED_FILING
+        assert p.economic_period_kind == SECEconomicPeriodKind.INSTANT
+        assert p.period_alignment_status != SECPeriodAlignmentStatus.COVER_DATE_CONTEXT
 
 
 # ─────────────────────────────────────────────────────────────────────────────

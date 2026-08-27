@@ -182,12 +182,12 @@ class SECPeriodClassifier:
         diagnostics: List[str] = list(candidate.diagnostics)
 
         # ─────────────────────────────────────────────────────────────────────
-        # 0. Filing vs Candidate Consistency Validation (Fail-Closed)
+        # 0. Filing vs Candidate Consistency & Association Proof Validation
         # ─────────────────────────────────────────────────────────────────────
         filing_report_date: Optional[date] = None
 
         if filing is not None:
-            # Check CIK consistency
+            # 1. CIK consistency check: prerequisite for any association
             cand_cik = normalize_cik(candidate.cik)
             filing_cik = normalize_cik(filing.cik)
             if cand_cik != filing_cik:
@@ -225,8 +225,9 @@ class SECPeriodClassifier:
                     frame=candidate.frame,
                 )
 
-            # Check Accession consistency
-            if candidate.accession_number and filing.accession_number:
+            # 2. Check for explicit mismatches on accession and filing_id
+            accession_match = False
+            if candidate.accession_number is not None and filing.accession_number is not None:
                 if candidate.accession_number.strip() != filing.accession_number.strip():
                     msg = f"Accession mismatch: candidate '{candidate.accession_number}' vs filing '{filing.accession_number}'."
                     return SECPeriodizedFactCandidate(
@@ -261,8 +262,9 @@ class SECPeriodClassifier:
                         filed_date=candidate.filed_date,
                         frame=candidate.frame,
                     )
+                accession_match = True
 
-            # Check Filing ID consistency
+            id_match = False
             if candidate.filing_id is not None and filing.id is not None:
                 if candidate.filing_id != filing.id:
                     msg = f"Filing ID mismatch: candidate filing_id '{candidate.filing_id}' vs filing id '{filing.id}'."
@@ -298,6 +300,7 @@ class SECPeriodClassifier:
                         filed_date=candidate.filed_date,
                         frame=candidate.frame,
                     )
+                id_match = True
 
             # Check Form consistency
             if candidate.form and filing.form:
@@ -336,7 +339,14 @@ class SECPeriodClassifier:
                         frame=candidate.frame,
                     )
 
-            filing_report_date = filing.report_date
+            # 3. Association proof verification: at least one of accession_match or id_match is required
+            if accession_match or id_match:
+                filing_report_date = filing.report_date
+            else:
+                # Both accession and filing_id were absent on candidate (or unlinked)
+                # CIK/form alone is NOT proof of specific filing identity!
+                filing_report_date = None
+                diagnostics.append("Supplied filing ignored because candidate lacks filing-level association proof.")
 
         # ─────────────────────────────────────────────────────────────────────
         # 1. PeriodType.INSTANT Handling
