@@ -10,12 +10,12 @@ Access Classification:
 
 Hardening Invariants:
     - Zero float usage: all prices, volumes, and values are pure Decimal.
+    - Official discovery authority: derives file paths strictly from DataFilePaths.zip manifest.
+    - Zero guessed URLs: fails closed if discovery manifest is unavailable or ambiguous.
     - Raw snapshot first: raw payload and SHA-256 hash are recorded before normalization.
     - PIT integrity: trade_date (effective date) is cleanly separated from retrieved_at (network UTC).
-    - Separates verified resource discovery (BISTBulletinLocator) from content parsing (BISTBulletinParser).
     - ALTIN.S1 modeled as COMMODITY_CERTIFICATE (Darphane, 0.01g gold, 0.995 purity, TRY).
-    - Market price comes strictly from BIST bulletin (no synthetic fair-value or premium/discount calculation).
-    - Non-trading day distinguished from network error or 404.
+    - Non-trading day distinguished from discovery failure, network error, or 404.
     - Schema drift fails closed on missing required columns.
 """
 
@@ -32,7 +32,7 @@ from uuid import UUID, uuid4
 import httpx
 
 from backend.engine.private.bist.constants import (
-    BIST_BULLETIN_DIRECT_BASE_URL,
+    BIST_DATA_FILE_PATHS_URL,
     BIST_DATASTORE_PORTAL_URL,
     BIST_DEFAULT_MIC,
     BIST_OFFICIAL_PORTAL_URL,
@@ -42,6 +42,13 @@ from backend.engine.private.bist.constants import (
 from backend.engine.private.bist.locator import (
     BISTBulletinLocator,
     BISTResolvedResource,
+    BISTResourceResolutionError,
+)
+from backend.engine.private.bist.manifest import (
+    BISTDirectoryManifest,
+    BISTDirectoryManifestCache,
+    BISTDirectoryManifestParser,
+    BISTManifestDiscoveryError,
 )
 from backend.engine.private.bist.models import (
     BISTBulletinSnapshot,
@@ -101,22 +108,90 @@ class BISTEODProvider(DataProviderContract):
         self,
         http_client: Optional[httpx.AsyncClient] = None,
         resolver: Optional[InstrumentResolverService] = None,
-        base_url: Optional[str] = None,
+        base_host: str = "https://www.borsaistanbul.com",
         landing_page_url: Optional[str] = None,
+        manifest_url: str = BIST_DATA_FILE_PATHS_URL,
+        manifest_cache: Optional[BISTDirectoryManifestCache] = None,
         timeout_seconds: float = 10.0,
         max_retries: int = 2,
     ) -> None:
         self._http_client = http_client
         self._resolver = resolver
+        self.base_host = base_host.rstrip("/")
+        self.landing_page_url = landing_page_url or BIST_OFFICIAL_PORTAL_URL
+        self.manifest_url = manifest_url
+        self.manifest_cache = manifest_cache or BISTDirectoryManifestCache()
         self.locator = BISTBulletinLocator(
-            base_download_url=base_url or BIST_BULLETIN_DIRECT_BASE_URL,
-            landing_page_url=landing_page_url or BIST_OFFICIAL_PORTAL_URL,
+            base_host=self.base_host,
+            landing_page_url=self.landing_page_url,
         )
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
 
     def _get_client(self) -> httpx.AsyncClient:
         return self._http_client or get_http_client()
+
+    async def fetch_directory_manifest(
+        self,
+        force_refresh: bool = False,
+    ) -> Tuple[Optional[BISTDirectoryManifest], bool]:
+        """
+        Fetches or retrieves from cache the verified BIST DataFilePaths.zip directory manifest.
+        Returns (manifest, is_stale).
+        """
+        if not force_refresh:
+            cached, is_stale = self.manifest_cache.get_manifest()
+            if cached is not None and not is_stale:
+                return cached, False
+
+        client = self._get_client()
+        attempt = 0
+        last_exc: Optional[Exception] = None
+
+        while attempt <= self.max_retries:
+            attempt += 1
+            try:
+                response = await client.get(self.manifest_url, timeout=self.timeout_seconds)
+                if response.status_code == 200:
+                    raw_bytes = response.content
+                    manifest = BISTDirectoryManifestParser.parse_manifest_bytes(
+                        raw_bytes=raw_bytes,
+                        source_url=self.manifest_url,
+                        retrieved_at=datetime.now(timezone.utc),
+                    )
+                    self.manifest_cache.set_manifest(manifest)
+                    return manifest, False
+                elif response.status_code == 429:
+                    if attempt <= self.max_retries:
+                        await asyncio.sleep(0.5 * attempt)
+                        continue
+                    raise ProviderRateLimitError("BIST manifest rate limit (HTTP 429).", provider_name=self.provider_name)
+                elif response.status_code >= 500:
+                    if attempt <= self.max_retries:
+                        await asyncio.sleep(0.5 * attempt)
+                        continue
+                    raise ProviderServerError(f"BIST manifest server error (HTTP {response.status_code}).", provider_name=self.provider_name)
+            except (httpx.TimeoutException, asyncio.TimeoutError) as exc:
+                last_exc = exc
+                if attempt <= self.max_retries:
+                    await asyncio.sleep(0.5 * attempt)
+                    continue
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt <= self.max_retries:
+                    await asyncio.sleep(0.5 * attempt)
+                    continue
+                break
+
+        # If live retrieval failed, check if stale cache exists
+        cached, _ = self.manifest_cache.get_manifest()
+        if cached is not None:
+            logger.warning("Using stale BIST directory manifest due to fetch failure: %s", last_exc)
+            return cached, True
+
+        logger.error("Failed to fetch BIST directory manifest: %s", last_exc)
+        return None, False
 
     async def fetch_daily_bulletin(
         self,
@@ -125,14 +200,13 @@ class BISTEODProvider(DataProviderContract):
         """
         Fetches and parses the official BIST daily bulletin for a specific trade date.
         
-        Distinguishes:
-            - Non-trading days (weekends)
-            - Empty weekday response (possible holiday / unreleased session)
-            - 404 resource not found / historical DataStore restrictions
-            - Transport / network failures
-            - Schema drift failures
+        Resolution Flow:
+            1. Check non-trading weekends.
+            2. Obtain verified directory manifest from DataFilePaths.zip.
+            3. Resolve exact bulletin URL via BISTBulletinLocator.
+            4. Download bulletin payload and record immutable raw snapshot.
+            5. Parse observations via BISTBulletinParser.
         """
-        resource = self.locator.resolve_bulletin_resource(trade_date)
         now_utc = datetime.now(timezone.utc)
 
         # 1. Known Non-trading days: Weekends (Saturday=5, Sunday=6)
@@ -143,12 +217,12 @@ class BISTEODProvider(DataProviderContract):
                 http_status=200,
                 payload_hash=hashlib.sha256(b"").hexdigest(),
                 content_type="text/plain",
-                file_name=resource.official_filename,
-                source_url=resource.resolved_download_url,
-                landing_page_url=resource.landing_page_url,
-                resolved_download_url=resource.resolved_download_url,
+                file_name=None,
+                source_url="",
+                landing_page_url=self.landing_page_url,
+                resolved_download_url=None,
                 requested_trade_date=trade_date,
-                filename_trade_date=resource.filename_trade_date,
+                filename_trade_date=None,
                 observations=[],
                 raw_bytes=b"",
                 parser_version=self.provider_version,
@@ -156,6 +230,85 @@ class BISTEODProvider(DataProviderContract):
             )
             return snap, []
 
+        # 2. Obtain verified directory manifest
+        try:
+            manifest, is_stale = await self.fetch_directory_manifest()
+        except ProviderRateLimitError:
+            raise
+        except ProviderServerError:
+            raise
+        except ProviderTimeoutError:
+            raise
+        except Exception as exc:
+            snap = BISTBulletinSnapshot(
+                trade_date=trade_date,
+                retrieved_at=now_utc,
+                http_status=500,
+                payload_hash=hashlib.sha256(b"").hexdigest(),
+                content_type="text/plain",
+                file_name=None,
+                source_url=self.manifest_url,
+                landing_page_url=self.landing_page_url,
+                resolved_download_url=None,
+                requested_trade_date=trade_date,
+                filename_trade_date=None,
+                observations=[],
+                raw_bytes=b"",
+                parser_version=self.provider_version,
+                diagnostics=[f"DISCOVERY_FETCH_FAILED: {exc}"],
+            )
+            return snap, []
+
+        if manifest is None:
+            snap = BISTBulletinSnapshot(
+                trade_date=trade_date,
+                retrieved_at=now_utc,
+                http_status=503,
+                payload_hash=hashlib.sha256(b"").hexdigest(),
+                content_type="text/plain",
+                file_name=None,
+                source_url=self.manifest_url,
+                landing_page_url=self.landing_page_url,
+                resolved_download_url=None,
+                requested_trade_date=trade_date,
+                filename_trade_date=None,
+                observations=[],
+                raw_bytes=b"",
+                parser_version=self.provider_version,
+                diagnostics=["DISCOVERY_UNAVAILABLE: Could not obtain verified BIST directory manifest."],
+            )
+            return snap, []
+
+        # 3. Resolve exact official bulletin resource
+        try:
+            resource = self.locator.resolve_bulletin_resource(
+                trade_date=trade_date,
+                manifest=manifest,
+                is_stale_discovery=is_stale,
+            )
+        except BISTResourceResolutionError as res_err:
+            snap = BISTBulletinSnapshot(
+                trade_date=trade_date,
+                retrieved_at=now_utc,
+                http_status=400,
+                payload_hash=hashlib.sha256(b"").hexdigest(),
+                content_type="text/plain",
+                file_name=None,
+                source_url=self.manifest_url,
+                landing_page_url=self.landing_page_url,
+                resolved_download_url=None,
+                requested_trade_date=trade_date,
+                filename_trade_date=None,
+                manifest_hash=manifest.payload_hash,
+                is_stale_discovery=is_stale,
+                observations=[],
+                raw_bytes=b"",
+                parser_version=self.provider_version,
+                diagnostics=[str(res_err)],
+            )
+            return snap, []
+
+        # 4. Fetch bulletin content from resolved URL
         url = resource.resolved_download_url
         client = self._get_client()
         attempt = 0
@@ -173,7 +326,6 @@ class BISTEODProvider(DataProviderContract):
                     content_type = headers.get("content-type", "text/plain") if hasattr(headers, "get") else "text/plain"
 
                     if not raw_bytes:
-                        # Empty weekday response -> possible holiday or session unreleased
                         snap = BISTBulletinSnapshot(
                             trade_date=trade_date,
                             retrieved_at=fetch_time,
@@ -186,6 +338,8 @@ class BISTEODProvider(DataProviderContract):
                             resolved_download_url=url,
                             requested_trade_date=trade_date,
                             filename_trade_date=resource.filename_trade_date,
+                            manifest_hash=resource.manifest_hash,
+                            is_stale_discovery=resource.is_stale_discovery,
                             observations=[],
                             raw_bytes=raw_bytes,
                             parser_version=self.provider_version,
@@ -222,12 +376,18 @@ class BISTEODProvider(DataProviderContract):
                             resolved_download_url=url,
                             requested_trade_date=trade_date,
                             filename_trade_date=resource.filename_trade_date,
+                            manifest_hash=resource.manifest_hash,
+                            is_stale_discovery=resource.is_stale_discovery,
                             observations=[],
                             raw_bytes=raw_bytes,
                             parser_version=self.provider_version,
                             diagnostics=[f"SCHEMA_DRIFT: {drift_err}"],
                         )
                         return snap, []
+
+                    diagnostics = []
+                    if resource.is_stale_discovery:
+                        diagnostics.append("DEGRADED_DISCOVERY: Bulletin URL resolved using stale cached directory manifest.")
 
                     snap = BISTBulletinSnapshot(
                         id=snap_id,
@@ -242,10 +402,12 @@ class BISTEODProvider(DataProviderContract):
                         resolved_download_url=url,
                         requested_trade_date=trade_date,
                         filename_trade_date=resource.filename_trade_date,
+                        manifest_hash=resource.manifest_hash,
+                        is_stale_discovery=resource.is_stale_discovery,
                         observations=observations,
                         raw_bytes=raw_bytes,
                         parser_version=self.provider_version,
-                        diagnostics=[],
+                        diagnostics=diagnostics,
                     )
                     return snap, observations
 
@@ -262,11 +424,13 @@ class BISTEODProvider(DataProviderContract):
                         resolved_download_url=url,
                         requested_trade_date=trade_date,
                         filename_trade_date=resource.filename_trade_date,
+                        manifest_hash=resource.manifest_hash,
+                        is_stale_discovery=resource.is_stale_discovery,
                         observations=[],
                         raw_bytes=None,
                         parser_version=self.provider_version,
                         diagnostics=[
-                            f"RESOURCE_NOT_FOUND: Bulletin file '{resource.official_filename}' not found at public URL (HTTP 404). "
+                            f"RESOURCE_NOT_FOUND: Bulletin file '{resource.official_filename}' not found at resolved URL '{url}' (HTTP 404). "
                             f"If this is an older historical date, archives are restricted to {BIST_DATASTORE_PORTAL_URL}."
                         ],
                     )
@@ -297,6 +461,8 @@ class BISTEODProvider(DataProviderContract):
                         resolved_download_url=url,
                         requested_trade_date=trade_date,
                         filename_trade_date=resource.filename_trade_date,
+                        manifest_hash=resource.manifest_hash,
+                        is_stale_discovery=resource.is_stale_discovery,
                         observations=[],
                         raw_bytes=None,
                         parser_version=self.provider_version,
@@ -375,7 +541,7 @@ class BISTEODProvider(DataProviderContract):
                     canonical_instrument_id=context.canonical_instrument_id,
                     provider_symbol=context.provider_symbol,
                 )
-            
+
             selected_obs = matched[0]
             if selected_obs.status == BISTObservationStatus.VALID:
                 status = DataStatus.COMPLETE
@@ -425,9 +591,6 @@ class BISTEODProvider(DataProviderContract):
         )
 
     def normalize(self, raw: Any) -> Dict[str, Any]:
-        """
-        Maps raw payload to canonical field dictionary without data fabrication.
-        """
         if isinstance(raw, BISTEODObservation):
             return raw.to_dict()
         if isinstance(raw, dict):
@@ -435,10 +598,6 @@ class BISTEODProvider(DataProviderContract):
         return {"raw": raw}
 
     def validate(self, normalized: Dict[str, Any]) -> List[str]:
-        """
-        Validates normalized observation dictionary for schema anomalies or OHLC contradictions.
-        Never raises exceptions — all issues are returned as warning strings.
-        """
         warnings: List[str] = []
         if not isinstance(normalized, dict):
             return ["Invalid normalized payload type: expected dict."]
@@ -458,7 +617,6 @@ class BISTEODProvider(DataProviderContract):
             except Exception:
                 warnings.append(f"Malformed close price: {close_val}")
 
-        # Check OHLC integrity if present
         open_val = normalized.get("open")
         high_val = normalized.get("high")
         low_val = normalized.get("low")
@@ -487,16 +645,12 @@ class BISTEODProvider(DataProviderContract):
         return warnings
 
     def provenance(self, response: ProviderResponse) -> ProviderProvenance:
-        """
-        Returns the audit trail for this provider response.
-        """
         eff_date = response.effective_date or date.today()
-        resource = self.locator.resolve_bulletin_resource(eff_date)
 
         return ProviderProvenance(
             provider_name=self.provider_name,
             provider_version=self.provider_version,
-            endpoint=resource.resolved_download_url,
+            endpoint=self.manifest_url,
             retrieved_at=response.retrieved_at,
             source_quality=self.source_quality,
             canonical_instrument_id=response.canonical_instrument_id,
@@ -507,7 +661,7 @@ class BISTEODProvider(DataProviderContract):
                 "official_source": self.official_source,
                 "developer_api": self.developer_api,
                 "sla_guaranteed": self.sla_guaranteed,
-                "landing_page_url": resource.landing_page_url,
-                "official_filename": resource.official_filename,
+                "landing_page_url": self.landing_page_url,
+                "manifest_url": self.manifest_url,
             },
         )

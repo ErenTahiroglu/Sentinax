@@ -197,9 +197,11 @@ class BISTBulletinSnapshot:
     resolved_download_url: Optional[str] = None
     requested_trade_date: Optional[date] = None
     filename_trade_date: Optional[date] = None
+    manifest_hash: Optional[str] = None
+    is_stale_discovery: bool = False
     observations: List[BISTEODObservation] = field(default_factory=list)
     raw_bytes: Optional[bytes] = None
-    parser_version: str = "1.1.0"
+    parser_version: str = "1.2.0"
     diagnostics: List[str] = field(default_factory=list)
     id: UUID = field(default_factory=uuid4)
 
@@ -217,6 +219,8 @@ class BISTBulletinSnapshot:
             "resolved_download_url": self.resolved_download_url,
             "requested_trade_date": self.requested_trade_date.isoformat() if self.requested_trade_date else None,
             "filename_trade_date": self.filename_trade_date.isoformat() if self.filename_trade_date else None,
+            "manifest_hash": self.manifest_hash,
+            "is_stale_discovery": self.is_stale_discovery,
             "observation_count": len(self.observations),
             "parser_version": self.parser_version,
             "diagnostics": self.diagnostics,
@@ -238,13 +242,15 @@ class BISTBulletinSnapshot:
         return RawProviderSnapshotRecord(
             id=self.id,
             provider="BIST_EOD",
-            endpoint=self.resolved_download_url or self.source_url or "https://www.borsaistanbul.com/data/bulten/",
+            endpoint=self.resolved_download_url or self.source_url or "https://www.borsaistanbul.com/files/DataFilePaths.zip",
             request_params={
                 "trade_date": self.trade_date.isoformat(),
                 "market": "EQUITY",
                 "landing_page_url": self.landing_page_url,
                 "resolved_download_url": self.resolved_download_url,
                 "file_name": self.file_name,
+                "manifest_hash": self.manifest_hash,
+                "is_stale_discovery": self.is_stale_discovery,
             },
             retrieved_at=self.retrieved_at,
             http_status=self.http_status,
@@ -253,6 +259,8 @@ class BISTBulletinSnapshot:
                 "observation_count": len(self.observations),
                 "landing_page_url": self.landing_page_url,
                 "resolved_download_url": self.resolved_download_url,
+                "manifest_hash": self.manifest_hash,
+                "is_stale_discovery": self.is_stale_discovery,
             },
             content_type=self.content_type,
             raw_payload=payload_content,
