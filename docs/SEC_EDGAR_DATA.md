@@ -162,16 +162,45 @@ Phase 8B.1 / 8B.1.6 defines the deterministic registry that maps raw taxonomy ta
 - All candidate entries from original filings, amendments (`10-K/A`), and comparative restatement columns are preserved simultaneously.
 - No candidate is discarded or chosen as a single "winner" in Phase 8B.1 / 8B.1.6.
 
+## 10. Phase 8B.2A — Economic Period Context Classification & Candidate Grouping
+
+Phase 8B.2A deterministically classifies the economic period context of canonical candidates without picking filing winners.
+
+### 10.1 Economic Period Kinds (`SECEconomicPeriodKind`)
+
+- **`INSTANT`**: Balance sheet point-in-time financial observation.
+- **`COVER_DATE_INSTANT`**: Cover page disclosure dated after the balance sheet report date (e.g. DEI shares outstanding).
+- **`ANNUAL_DURATION`**: Full fiscal year period (`330 <= duration_days <= 385` inclusive; supports 52/53-week fiscal years).
+- **`QUARTER_DURATION`**: Standalone ~3-month fiscal quarter (`70 <= duration_days <= 115` inclusive).
+- **`YTD_DURATION`**: Year-to-date interim period (`150 <= duration_days <= 210` for 6M, `240 <= duration_days <= 300` for 9M).
+- **`IRREGULAR_DURATION`**: Non-standard transition, stub, or irregular duration periods.
+- **`UNKNOWN`**: Insufficient or contradictory date evidence.
+
+### 10.2 Period Alignment Status (`SECPeriodAlignmentStatus`)
+
+- **`PRIMARY_REPORT_PERIOD`**: Current period ending on the containing filing's `report_date`.
+- **`COMPARATIVE_PRIOR_PERIOD`**: Prior comparative period disclosed alongside current results (`end_date < filing.report_date`).
+- **`COVER_DATE_CONTEXT`**: Associated with filing cover date / subsequent disclosure.
+- **`NON_PRIMARY_CONTEXT`**: Interim or event filings (`6-K`, `8-K`) or non-primary context.
+- **`UNRESOLVED_FILING`**: Classification based on candidate dates when containing filing report date is unlinked.
+
+### 10.3 Economic Grouping Key
+
+```
+Economic Group Key = (cik, canonical_concept, unit, economic_period_kind, economic_start_date, economic_end_date)
+```
+- Grouping preserves all candidates (original filings, amendments `10-K/A`, and comparative disclosures) without picking a winner.
+
 ---
 
-## 10. Boundary to Phase 8B.2
+## 11. Boundary to Phase 8B.2B (Filing Precedence & Winner Resolution)
 
-Phase 8B.2 is strictly responsible for:
-- Accession and form precedence resolution.
-- Fiscal period alignment (Annual vs Quarter vs Year-to-Date subtraction).
-- Amendment and restatement reconciliation.
-- Point-in-Time (PIT) as-of knowledge view construction.
-- Current-view selection for downstream analytical engines.
+Phase 8B.2B will be strictly responsible for:
+- Filing and accession precedence resolution (e.g. `10-K/A` amendment precedence, latest PIT filing view).
+- Annual vs standalone quarter vs YTD derivation / subtraction.
+- Restatement and comparative reconciliation.
+- Current-view and Point-in-Time (PIT) selection for downstream analytical engines.
+
 
 
 

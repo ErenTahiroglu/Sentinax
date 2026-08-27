@@ -1,7 +1,7 @@
 """
 backend/engine/private/sec/__init__.py
 ========================================
-SEC EDGAR Filing, Raw XBRL & Canonical Concept Resolver Module (Phase 8A + 8B.1).
+SEC EDGAR Filing, Raw XBRL & Canonical Concept Resolver Module (Phase 8A + 8B.1 + 8B.2A).
 """
 
 from backend.engine.private.sec.cik import format_cik_for_path, normalize_cik
@@ -55,6 +55,22 @@ from backend.engine.private.sec.models import (
     build_archive_url,
     build_company_facts_url,
     build_submissions_url,
+)
+from backend.engine.private.sec.period_context import (
+    ANNUAL_MAX_DAYS,
+    ANNUAL_MIN_DAYS,
+    QUARTER_MAX_DAYS,
+    QUARTER_MIN_DAYS,
+    YTD_6M_MAX_DAYS,
+    YTD_6M_MIN_DAYS,
+    YTD_9M_MAX_DAYS,
+    YTD_9M_MIN_DAYS,
+    SECEconomicPeriodKind,
+    SECPeriodAlignmentStatus,
+    SECPeriodClassifier,
+    SECPeriodizedFactCandidate,
+    build_economic_group_key,
+    group_periodized_candidates,
 )
 from backend.engine.private.sec.submissions import (
     SECSubmissionsFetchResult,
@@ -111,4 +127,18 @@ __all__ = [
     "SECConceptResolver",
     "classify_form_role",
     "validate_unit_compatibility",
+    "SECEconomicPeriodKind",
+    "SECPeriodAlignmentStatus",
+    "SECPeriodizedFactCandidate",
+    "SECPeriodClassifier",
+    "build_economic_group_key",
+    "group_periodized_candidates",
+    "ANNUAL_MIN_DAYS",
+    "ANNUAL_MAX_DAYS",
+    "QUARTER_MIN_DAYS",
+    "QUARTER_MAX_DAYS",
+    "YTD_6M_MIN_DAYS",
+    "YTD_6M_MAX_DAYS",
+    "YTD_9M_MIN_DAYS",
+    "YTD_9M_MAX_DAYS",
 ]
