@@ -198,4 +198,13 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Unique & Contiguous Ordinals:** For non-empty manifests, records must be uniquely and contiguously numbered `1, 2, ..., N` without gaps or duplicates.
 - **Deterministic Manifest Preimage:** `manifest_sha256` is computed from compact JSON `[portfolio_id, account_id, source_key, file_content_sha256, [[ord, rec_sha], ...]]`. Display filenames, timestamps, and byte lengths are excluded.
 - **Staging Identity Separation:** `manifest_identity` is `(portfolio_id, account_id, source_key, file_content_sha256, manifest_sha256)`. It remains staging provenance and is NOT mapped to ledger idempotency keys.
-- **Deferred Scope:** Broker parsers (Midas, IBKR, banks, TEFAS), transaction inference, instrument mapping, staging persistence, and validation remain deferred to Phase 13C+.
+
+---
+
+## 13c. Parser-Neutral Record Extraction Contract & Raw-Byte Binding (Phase 13C)
+- **Cryptographic Raw-Byte Binding:** Builders enforce `sha256(raw_record) == record_provenance.record_sha256` before accepting extracted fields. Raw bytes are not stored.
+- **Explicit Parser Revision:** `parser_revision` is a strict positive integer (`>= 1`). Revisions alter `parsed_sha256` and `parsed_identity`.
+- **String-Only Field Model:** `ImportParsedField` retains exact textual representations without semantic coercion, stripping, or Unicode normalization. Blank fields (`""`) remain distinct from absent fields.
+- **Canonical Field Ordering:** Fields are stored sorted by `field_key` ascending; duplicate keys fail closed.
+- **Parsed Identity Tuple:** `(portfolio_id, account_id, source_key, file_content_sha256, record_ordinal, record_sha256, parser_revision, parsed_sha256)`.
+- **Deferred Scope:** Broker parsers (Midas, IBKR, banks, TEFAS), transaction inference, instrument mapping, staging persistence, and validation remain deferred to Phase 13D+.
