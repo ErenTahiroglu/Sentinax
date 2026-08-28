@@ -55,59 +55,102 @@ class SentinaxCanonicalCsvError(ValueError):
     pass
 
 
-def _scan_physical_lines(content: bytes) -> Tuple[List[bytes], List[str]]:
+def _scan_physical_lines(content: bytes) -> List[bytes]:
     """
-    Scans raw content into exact byte slices and line terminators.
-    Enforces no bare CR, no mixed newlines, and no blank lines.
+    Scans raw content into exact byte slices with O(len(content)) single-pass linear complexity.
+
+    Enforces:
+    - No bare CR
+    - No mixed newlines (LF and CRLF)
+    - No blank lines
+    - Immediate failure on physical row size > MAX_RECORD_BYTES (1 MiB)
+    - Immediate failure on data row count > MAX_DATA_RECORDS (250,000)
     """
     lines: List[bytes] = []
-    terminators: List[str] = []
-    pos = 0
+    detected_newline_style: Optional[str] = None
+    row_start = 0
     n = len(content)
+    i = 0
 
-    while pos < n:
-        next_r = content.find(b"\r", pos)
-        next_n = content.find(b"\n", pos)
+    while i < n:
+        # Fail fast if current physical row byte length exceeds maximum limit during scan
+        if i - row_start > MAX_RECORD_BYTES:
+            physical_row = len(lines) + 1
+            raise SentinaxCanonicalCsvError(
+                f"Physical row {physical_row} exceeds maximum size limit of {MAX_RECORD_BYTES} bytes"
+            )
 
-        if next_r == -1 and next_n == -1:
-            # Final line without trailing line terminator
-            line_bytes = content[pos:]
+        b = content[i]
+
+        if b == 0x0A:  # LF
+            if detected_newline_style == "CRLF":
+                raise SentinaxCanonicalCsvError(
+                    "Mixed newline styles (LF and CRLF) detected in CSV content"
+                )
+            detected_newline_style = "LF"
+
+            line_bytes = content[row_start:i]
             if len(line_bytes) == 0:
                 raise SentinaxCanonicalCsvError(f"Blank physical line at row {len(lines) + 1}")
-            lines.append(line_bytes)
-            terminators.append("NONE")
-            break
+            if len(line_bytes) > MAX_RECORD_BYTES:
+                raise SentinaxCanonicalCsvError(
+                    f"Physical row {len(lines) + 1} exceeds maximum size limit of {MAX_RECORD_BYTES} bytes"
+                )
+            if len(lines) >= MAX_DATA_RECORDS + 1:
+                raise SentinaxCanonicalCsvError(
+                    f"Data row count exceeds maximum limit of {MAX_DATA_RECORDS}"
+                )
 
-        if next_r != -1 and (next_n == -1 or next_r < next_n):
-            # \r encountered
-            if next_r + 1 < n and content[next_r + 1] == 0x0A:  # \n follows \r -> CRLF
-                line_bytes = content[pos:next_r]
+            lines.append(line_bytes)
+            row_start = i + 1
+            i += 1
+
+        elif b == 0x0D:  # CR
+            if i + 1 < n and content[i + 1] == 0x0A:  # CRLF
+                if detected_newline_style == "LF":
+                    raise SentinaxCanonicalCsvError(
+                        "Mixed newline styles (LF and CRLF) detected in CSV content"
+                    )
+                detected_newline_style = "CRLF"
+
+                line_bytes = content[row_start:i]
                 if len(line_bytes) == 0:
                     raise SentinaxCanonicalCsvError(f"Blank physical line at row {len(lines) + 1}")
+                if len(line_bytes) > MAX_RECORD_BYTES:
+                    raise SentinaxCanonicalCsvError(
+                        f"Physical row {len(lines) + 1} exceeds maximum size limit of {MAX_RECORD_BYTES} bytes"
+                    )
+                if len(lines) >= MAX_DATA_RECORDS + 1:
+                    raise SentinaxCanonicalCsvError(
+                        f"Data row count exceeds maximum limit of {MAX_DATA_RECORDS}"
+                    )
+
                 lines.append(line_bytes)
-                terminators.append("CRLF")
-                pos = next_r + 2
+                row_start = i + 2
+                i += 2
             else:
                 raise SentinaxCanonicalCsvError(
                     f"Bare CR line terminator is not allowed at physical row {len(lines) + 1}"
                 )
         else:
-            # LF encountered
-            line_bytes = content[pos:next_n]
-            if len(line_bytes) == 0:
-                raise SentinaxCanonicalCsvError(f"Blank physical line at row {len(lines) + 1}")
-            lines.append(line_bytes)
-            terminators.append("LF")
-            pos = next_n + 1
+            i += 1
 
-    # Enforce uniform newline style throughout the file
-    explicit_terminators = {t for t in terminators if t != "NONE"}
-    if len(explicit_terminators) > 1:
-        raise SentinaxCanonicalCsvError(
-            f"Mixed newline styles (LF and CRLF) detected in CSV content: {sorted(explicit_terminators)}"
-        )
+    if row_start < n:
+        if n - row_start > MAX_RECORD_BYTES:
+            physical_row = len(lines) + 1
+            raise SentinaxCanonicalCsvError(
+                f"Physical row {physical_row} exceeds maximum size limit of {MAX_RECORD_BYTES} bytes"
+            )
+        line_bytes = content[row_start:]
+        if len(line_bytes) == 0:
+            raise SentinaxCanonicalCsvError(f"Blank physical line at row {len(lines) + 1}")
+        if len(lines) >= MAX_DATA_RECORDS + 1:
+            raise SentinaxCanonicalCsvError(
+                f"Data row count exceeds maximum limit of {MAX_DATA_RECORDS}"
+            )
+        lines.append(line_bytes)
 
-    return lines, terminators
+    return lines
 
 
 def _validate_csv_line_quotes(line_text: str, physical_row: int) -> None:
@@ -210,7 +253,7 @@ class SentinaxCanonicalCsvParserV1:
         if b"\x00" in content:
             raise SentinaxCanonicalCsvError("NUL bytes are not allowed in Canonical CSV v1")
 
-        lines, _ = _scan_physical_lines(content)
+        lines = _scan_physical_lines(content)
         if len(lines) == 0:
             raise SentinaxCanonicalCsvError("CSV content must contain at least a header row")
 

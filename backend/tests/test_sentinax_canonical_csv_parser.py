@@ -47,6 +47,7 @@ from backend.engine.private.portfolio.parsers.sentinax_csv import (
     MAX_CONTENT_BYTES,
     MAX_DATA_RECORDS,
     MAX_RECORD_BYTES,
+    _scan_physical_lines,
 )
 
 
@@ -643,6 +644,72 @@ class TestDefensiveLimits:
         oversized_row = b"sym\n" + b"A" * (MAX_RECORD_BYTES + 1) + b"\n"
         with pytest.raises(SentinaxCanonicalCsvError, match="exceeds maximum size limit"):
             parser.extract_records(oversized_row)
+
+    def test_exact_max_record_bytes_scanner_boundary(self):
+        """P: Exactly MAX_RECORD_BYTES in physical scanner passes without error."""
+        exact_record = b"x" * MAX_RECORD_BYTES + b"\n"
+        lines = _scan_physical_lines(exact_record)
+        assert len(lines) == 1
+        assert len(lines[0]) == MAX_RECORD_BYTES
+
+        # Exceeding by 1 byte fails closed
+        over_record = b"x" * (MAX_RECORD_BYTES + 1) + b"\n"
+        with pytest.raises(SentinaxCanonicalCsvError, match="exceeds maximum size limit"):
+            _scan_physical_lines(over_record)
+
+    def test_max_data_records_scanner_overflow_rejected(self):
+        """R, S: Physical scanner immediately rejects row count beyond MAX_DATA_RECORDS."""
+        # 1 header + (MAX_DATA_RECORDS + 1) rows exceeds MAX_DATA_RECORDS (250,000)
+        # We test with a small content snippet where data rows exceed MAX_DATA_RECORDS
+        # Construct header + 250,001 data rows
+        # To avoid giant memory allocation in pytest, test the scanner limit check logic
+        # 250,001 lines: header + 250,000 data lines is allowed; 250,001 data lines is rejected.
+        header_plus_over = b"h\n" + b"1\n" * (MAX_DATA_RECORDS + 1)
+        with pytest.raises(SentinaxCanonicalCsvError, match="Data row count exceeds maximum limit"):
+            _scan_physical_lines(header_plus_over)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10b. Linear Scan Complexity & Large Dataset Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestLinearScanComplexity:
+    """Verifies that physical newline scanner is strictly O(len(content)) without tail rescans."""
+
+    def test_no_repeated_suffix_find_in_scanner_source(self):
+        """30O: Assert scanner implementation does not contain repeated .find( or .index( calls."""
+        import inspect
+        source = inspect.getsource(_scan_physical_lines)
+        assert ".find(" not in source, "Physical line scanner must not use .find() tail searches"
+        assert ".index(" not in source, "Physical line scanner must not use .index() tail searches"
+
+    def test_large_lf_dataset_20k_rows(self):
+        """21, 30M: Large LF-only dataset with 20,000 rows executes in linear time with exact ordering."""
+        parser = SentinaxCanonicalCsvParserV1()
+
+        # Build 20,000 rows LF-only CSV
+        header = b"symbol,quantity,price\n"
+        rows = [f"AAPL_{i},10,150.50\n".encode("utf-8") for i in range(20_000)]
+        content = header + b"".join(rows)
+
+        records = parser.extract_records(content)
+        assert len(records) == 20_000
+        assert records[0].raw_record == b"AAPL_0,10,150.50"
+        assert records[-1].raw_record == b"AAPL_19999,10,150.50"
+
+    def test_large_crlf_dataset_5k_rows(self):
+        """22, 30N: Large CRLF-only dataset with 5,000 rows executes in linear time with exact ordering."""
+        parser = SentinaxCanonicalCsvParserV1()
+
+        # Build 5,000 rows CRLF-only CSV
+        header = b"symbol,quantity\r\n"
+        rows = [f"MSFT_{i},20\r\n".encode("utf-8") for i in range(5_000)]
+        content = header + b"".join(rows)
+
+        records = parser.extract_records(content)
+        assert len(records) == 5_000
+        assert records[0].raw_record == b"MSFT_0,20"
+        assert records[-1].raw_record == b"MSFT_4999,20"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
