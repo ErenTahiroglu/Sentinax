@@ -101,6 +101,11 @@ from backend.engine.private.portfolio.import_assessment import (
     build_import_assessment_batch,
     build_import_record_assessment,
 )
+from backend.engine.private.portfolio.import_draft import (
+    ImportTransactionDraft,
+    PortfolioImportDraftError,
+    build_import_transaction_draft,
+)
 from backend.engine.private.portfolio.cash import (
     CashBalanceProjection,
     CashBalanceState,
@@ -182,6 +187,9 @@ __all__ = [
     "ImportAssessmentBatch",
     "build_import_record_assessment",
     "build_import_assessment_batch",
+    "PortfolioImportDraftError",
+    "ImportTransactionDraft",
+    "build_import_transaction_draft",
     "serialize_portfolio",
     "hydrate_portfolio",
     "serialize_portfolio_account",

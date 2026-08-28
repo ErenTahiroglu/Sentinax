@@ -249,4 +249,14 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Diagnostic Integrity:** Diagnostic code follows strict grammar `^[a-z][a-z0-9_]{0,63}$`; message is non-empty, non-whitespace-only, max 2048 chars; optional `field_key` must exist in `parsed_record.fields`. Diagnostics within an assessment are uniquely keyed by `(code, field_key)` and canonically sorted.
 - **Complete Batch Coverage:** An `ImportAssessmentBatch` requires exact 1:1 correspondence for all records in the underlying `ParsedImportBatchManifest` in ascending ordinal order.
 - **Cryptographic Preimage & Manifest Digest:** `assessment_manifest_sha256` deterministically digests `[portfolio_id, account_id, source_key, file_content_sha256, raw_manifest_sha256, parser_revision, parsed_manifest_sha256, [[ord, parsed_sha, status, [[code, field_key, msg], ...]], ...]]`.
-- **Deferred Scope:** Financial transaction-draft creation, broker semantic interpreters, instrument mapping, ledger appending, and persistence remain deferred to Phase 13H+.
+
+---
+
+## 13h. Immutable Source-Neutral Economic Transaction Draft Contract (Phase 13H)
+- **Authoritative READY Gate:** Only records with explicit `ImportAssessmentStatus.READY` in a Phase 13G `ImportAssessmentBatch` may be drafted into typed economics.
+- **Pre-Ledger Domain Boundary:** `ImportTransactionDraft` holds typed financial values but remains strictly pre-ledger. Zero internal transaction UUIDs, zero `recorded_at` timestamps, zero canonical `instrument_id` UUIDs, zero `cash_bucket_id` attributions, zero `external_source` / `external_reference` derivations, and zero ledger mutations.
+- **Strict Typing & Numeric Discipline:** `transaction_type` must be an actual `TransactionType` member (`REVERSAL` forbidden); `effective_date` requires exact `date` type (rejecting `datetime`); `executed_at` requires timezone-aware datetime; financial amounts require strictly positive, finite `Decimal` instances (> 0); currencies require `Currency` enum members.
+- **Field Family Exclusivity:** BUY/SELL requires `instrument_reference`, `quantity`, `unit_price`, `trade_currency`; CASH movements require `cash_amount`, `cash_currency`; INCOME/FEES require `cash_amount`, `cash_currency` with optional `instrument_reference`; FX conversions require `from_currency != to_currency`, `from_amount`, `to_amount`. Contradictory cross-family fields fail closed.
+- **Instrument Reference Authority:** Unresolved instruments are preserved verbatim as `instrument_reference: Optional[str]` (1..256 chars, non-blank) without canonical lookup, stripping, or normalization.
+- **Deterministic Draft Preimage & Digest:** `draft_sha256` binds the draft to `assessment_manifest_sha256`, `record_ordinal`, `parsed_sha256`, and canonicalized economics (canonical Decimal and UTC instant strings).
+- **Deferred Scope:** Canonical instrument resolution, ledger materialization, and persistence remain deferred to Phase 13I+.
