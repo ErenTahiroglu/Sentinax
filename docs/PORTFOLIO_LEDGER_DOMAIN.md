@@ -387,6 +387,13 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Cash Bucket Independence:** `cash_bucket_id = NULL` for all Phase 13Q imported transactions. Cash bucket attribution is deferred.
 - **System Clock Authority:** `recorded_at` is assigned by the owner-bound repository's system clock (`self._get_system_time()`). Source `imported_at` and `bound_at` are NOT used as `recorded_at`.
 - **Database `bound_at` Authority:** `bound_at` on claim binding rows is generated exclusively by PostgreSQL `DEFAULT now()`.
+- **Write-Surface Exclusivity & Trust Boundary:**
+  - `commit_portfolio_import_claim` is a backend persistence primitive executable strictly by `service_role`.
+  - Direct RPC execution is revoked from `authenticated` and `PUBLIC` to prevent callers from bypassing Python domain serialization and supplying arbitrary economic fingerprints.
+  - Direct `INSERT` on `portfolio_import_claim_bindings` is revoked from `authenticated` (and the authenticated INSERT policy is dropped via migration 016) to prevent claim-squatting attacks.
+  - Authenticated users retain owner-scoped `SELECT` visibility (`owner_id = auth.uid()`) on their own claim bindings.
+  - Canonical Python `PortfolioTransaction` and serializers remain the sole financial domain and fingerprint authority.
+  - Immutability trigger (`trg_prevent_import_claim_binding_tamper`) blocks `UPDATE` and `DELETE` on binding rows.
 - **No Fuzzy/Cross-Claim Deduplication:** Distinct raw source records describing identical economics are not merged; each receives its own canonical transaction.
 - **Batch Atomic Commit Deferred:** Multi-intent all-or-nothing batch commit remains deferred to future phases.
 
