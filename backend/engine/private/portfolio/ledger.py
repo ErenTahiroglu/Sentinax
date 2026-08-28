@@ -36,6 +36,10 @@ from backend.engine.private.portfolio.models import (
     PortfolioAccount,
     PortfolioTransaction,
 )
+from backend.engine.private.portfolio.normalization import (
+    normalize_external_reference,
+    normalize_external_source,
+)
 
 
 class AppendStatus(Enum):
@@ -257,11 +261,13 @@ class PortfolioLedger:
 
         # 3. External Reference Idempotency & Conflict Check
         if tx.external_source and tx.external_reference:
+            norm_source = normalize_external_source(tx.external_source)
+            norm_ref = normalize_external_reference(tx.external_reference)
             ext_key = (
                 tx.portfolio_id,
                 tx.account_id,
-                tx.external_source.strip().upper(),
-                tx.external_reference.strip(),
+                norm_source,
+                norm_ref,
             )
             if ext_key in self._external_refs:
                 existing = self._external_refs[ext_key]
@@ -345,11 +351,13 @@ class PortfolioLedger:
         self._tx_by_id[tx.id] = tx
 
         if tx.external_source and tx.external_reference:
+            norm_source = normalize_external_source(tx.external_source)
+            norm_ref = normalize_external_reference(tx.external_reference)
             ext_key = (
                 tx.portfolio_id,
                 tx.account_id,
-                tx.external_source.strip().upper(),
-                tx.external_reference.strip(),
+                norm_source,
+                norm_ref,
             )
             self._external_refs[ext_key] = tx
 

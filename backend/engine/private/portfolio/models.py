@@ -37,6 +37,10 @@ from backend.engine.private.domain import (
     PortfolioMode,
     TransactionType,
 )
+from backend.engine.private.portfolio.normalization import (
+    normalize_external_reference,
+    normalize_external_source,
+)
 
 
 def _validate_decimal_positive(val: Any, field_name: str) -> Decimal:
@@ -294,9 +298,11 @@ class PortfolioTransaction:
                 raise TypeError(
                     f"external_reference must be a str, got {type(self.external_reference).__name__}: {self.external_reference!r}"
                 )
-            if not self.external_source.strip():
+            norm_source = normalize_external_source(self.external_source)
+            norm_ref = normalize_external_reference(self.external_reference)
+            if not norm_source:
                 raise ValueError("external_source cannot be empty or whitespace-only.")
-            if not self.external_reference.strip():
+            if not norm_ref:
                 raise ValueError("external_reference cannot be empty or whitespace-only.")
         else:
             if self.external_source is not None and self.external_reference is None:
@@ -410,8 +416,8 @@ class PortfolioTransaction:
         Computes deterministic SHA-256 economic fingerprint over an unambiguous structured payload.
         Excludes physical internal `id`, `recorded_at`, and mutable `notes`.
         """
-        ext_source_str = self.external_source.strip().upper() if self.external_source else None
-        ext_ref_str = self.external_reference.strip() if self.external_reference else None
+        ext_source_str = normalize_external_source(self.external_source)
+        ext_ref_str = normalize_external_reference(self.external_reference)
 
         payload = [
             str(self.portfolio_id),

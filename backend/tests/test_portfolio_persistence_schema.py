@@ -376,3 +376,59 @@ class TestMigration012ExternalIdentityLookup:
         assert "FROM PUBLIC" in no_comments
         assert "GRANT EXECUTE ON FUNCTION public.lookup_portfolio_transaction_external_identity" in no_comments
         assert "TO authenticated, service_role" in no_comments
+
+
+MIGRATION_013_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "..", "supabase", "migrations", "013_portfolio_external_identity_normalization.sql"
+)
+
+
+@pytest.fixture(scope="module")
+def migration_013_sql() -> str:
+    assert os.path.exists(MIGRATION_013_PATH), f"Migration file missing: {MIGRATION_013_PATH}"
+    with open(MIGRATION_013_PATH, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+class TestMigration013ExternalIdentityNormalization:
+    """Static and structural validation of migration 013."""
+
+    def test_migration_013_file_exists(self, migration_013_sql: str):
+        assert len(migration_013_sql) > 200
+
+    def test_migration_013_index_and_rpc_parity(self, migration_013_sql: str):
+        """Must recreate unique index and lookup RPC with canonical translation table."""
+        no_comments = re.sub(r"--.*", "", migration_013_sql)
+
+        # Index replacement
+        assert "DROP INDEX IF EXISTS public.idx_portfolio_transactions_external_idempotency" in no_comments
+        assert "CREATE UNIQUE INDEX idx_portfolio_transactions_external_idempotency" in no_comments
+        assert "translate(btrim(external_source, ' '), 'abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ')" in no_comments
+        assert "btrim(external_reference, ' ')" in no_comments
+
+        # RPC replacement
+        assert "CREATE OR REPLACE FUNCTION public.lookup_portfolio_transaction_external_identity" in no_comments
+        assert "translate(btrim(pt.external_source, ' '), 'abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ')" in no_comments
+        assert "translate(btrim(p_external_source, ' '), 'abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ')" in no_comments
+        assert "btrim(pt.external_reference, ' ') = btrim(p_external_reference, ' ')" in no_comments
+
+        # No locale-dependent upper() in new migration
+        assert "upper(" not in no_comments
+
+    def test_migration_013_function_security_and_search_path(self, migration_013_sql: str):
+        """Must be SECURITY INVOKER with explicit search_path."""
+        no_comments = re.sub(r"--.*", "", migration_013_sql)
+
+        assert "STABLE" in no_comments
+        assert "SECURITY INVOKER" in no_comments
+        assert "SECURITY DEFINER" not in no_comments
+        assert re.search(r"SET\s+search_path\s*=\s*public\s*,\s*pg_temp", no_comments, re.IGNORECASE)
+
+    def test_migration_013_permissions_hardening(self, migration_013_sql: str):
+        """Must revoke from PUBLIC and grant only to authenticated and service_role."""
+        no_comments = re.sub(r"--.*", "", migration_013_sql)
+
+        assert "REVOKE EXECUTE ON FUNCTION public.lookup_portfolio_transaction_external_identity" in no_comments
+        assert "FROM PUBLIC" in no_comments
+        assert "GRANT EXECUTE ON FUNCTION public.lookup_portfolio_transaction_external_identity" in no_comments
+        assert "TO authenticated, service_role" in no_comments

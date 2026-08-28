@@ -45,6 +45,10 @@ from backend.engine.private.portfolio.postgrest_transport import (
     PORTFOLIO_SELECT,
     PORTFOLIO_TRANSACTION_SELECT,
 )
+from backend.engine.private.portfolio.normalization import (
+    normalize_external_reference,
+    normalize_external_source,
+)
 from backend.engine.private.portfolio.repository import PortfolioRepository
 
 __all__ = [
@@ -58,6 +62,8 @@ __all__ = [
     "PortfolioLedger",
     "PortfolioLedgerValidator",
     "PortfolioRepository",
+    "normalize_external_source",
+    "normalize_external_reference",
     "AppendResult",
     "AppendStatus",
     "serialize_portfolio",

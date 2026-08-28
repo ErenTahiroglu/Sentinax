@@ -47,6 +47,7 @@ from backend.engine.private.portfolio.models import (
     PortfolioAccount,
     PortfolioTransaction,
 )
+from backend.engine.private.portfolio.persistence import serialize_portfolio_transaction
 from backend.engine.private.portfolio.postgrest_transport import (
     CASH_BUCKET_SELECT,
     INVESTMENT_GOAL_SELECT,
@@ -192,6 +193,27 @@ def make_transaction(
 # In-Memory Mock Supabase / PostgREST Client
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _sql_btrim_space(s: Optional[str]) -> Optional[str]:
+    if s is None:
+        return None
+    return s.strip(" ")
+
+
+def _sql_translate_ascii_upper(s: Optional[str]) -> Optional[str]:
+    if s is None:
+        return None
+    trans_table = str.maketrans("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    return s.translate(trans_table)
+
+
+def _sql_norm_source(s: Optional[str]) -> Optional[str]:
+    return _sql_translate_ascii_upper(_sql_btrim_space(s))
+
+
+def _sql_norm_ref(r: Optional[str]) -> Optional[str]:
+    return _sql_btrim_space(r)
+
+
 class MockQueryResult:
     def __init__(self, data: Any, count: Optional[int] = None):
         self.data = data
@@ -205,6 +227,7 @@ class MockQueryBuilder:
         self.projection: Optional[str] = None
         self.eq_filters: Dict[str, Any] = {}
         self.is_filters: Dict[str, Any] = {}
+        self.order_clauses: List[Tuple[str, bool]] = []
         self.range_start: Optional[int] = None
         self.range_end: Optional[int] = None
         self.insert_payload: Optional[Any] = None
@@ -223,6 +246,10 @@ class MockQueryBuilder:
         self.is_filters[column] = value
         return self
 
+    def order(self, column: str, desc: bool = False, **kwargs: Any) -> MockQueryBuilder:
+        self.order_clauses.append((column, desc))
+        return self
+
     def range(self, start: int, end: int) -> MockQueryBuilder:
         self.range_start = start
         self.range_end = end
@@ -235,21 +262,35 @@ class MockQueryBuilder:
         return self
 
     def execute(self) -> MockQueryResult:
-        if self.insert_payload is not None and self.client_store.next_insert_error is not None:
-            err = self.client_store.next_insert_error
-            self.client_store.next_insert_error = None
-            raise err
+        if self.insert_payload is not None:
+            self.client_store.insert_execute_attempt_count += 1
+
+            if self.client_store.on_insert_race_hook is not None:
+                hook = self.client_store.on_insert_race_hook
+                self.client_store.on_insert_race_hook = None
+                self.client_store.race_hook_called = True
+                hook(deepcopy(self.insert_payload))
+                raise APIError({"code": "23505", "message": "duplicate key value violates unique constraint"})
+
+            if self.client_store.next_insert_error is not None:
+                err = self.client_store.next_insert_error
+                self.client_store.next_insert_error = None
+                raise err
+
+            if self.client_store.next_error is not None:
+                err = self.client_store.next_error
+                self.client_store.next_error = None
+                raise err
+
+            row = deepcopy(self.insert_payload)
+            table_rows = self.client_store.tables.setdefault(self.table_name, [])
+            table_rows.append(row)
+            return MockQueryResult(data=[] if self.returning_mode == "minimal" else [row])
 
         if self.client_store.next_error is not None:
             err = self.client_store.next_error
             self.client_store.next_error = None
             raise err
-
-        if self.insert_payload is not None:
-            row = deepcopy(self.insert_payload)
-            table_rows = self.client_store.tables.setdefault(self.table_name, [])
-            table_rows.append(row)
-            return MockQueryResult(data=[] if self.returning_mode == "minimal" else [row])
 
         table_rows = self.client_store.tables.get(self.table_name, [])
         filtered: List[Dict[str, Any]] = []
@@ -272,8 +313,20 @@ class MockQueryBuilder:
 
             filtered.append(deepcopy(r))
 
+        # Apply server order clauses
+        if self.order_clauses:
+            for col, desc in reversed(self.order_clauses):
+                filtered.sort(
+                    key=lambda r: (r.get(col) is None, str(r.get(col)) if r.get(col) is not None else ""),
+                    reverse=desc,
+                )
+
         if self.range_start is not None and self.range_end is not None:
-            paged = filtered[self.range_start : self.range_end + 1]
+            requested_limit = self.range_end - self.range_start + 1
+            effective_limit = requested_limit
+            if self.client_store.server_max_rows is not None:
+                effective_limit = min(effective_limit, self.client_store.server_max_rows)
+            paged = filtered[self.range_start : self.range_start + effective_limit]
             return MockQueryResult(data=paged, count=len(filtered))
 
         return MockQueryResult(data=filtered, count=len(filtered))
@@ -296,8 +349,8 @@ class MockRpcBuilder:
             owner_id = self.params.get("p_owner_id")
             portfolio_id = self.params.get("p_portfolio_id")
             account_id = self.params.get("p_account_id")
-            source = (self.params.get("p_external_source") or "").strip().upper()
-            ref = (self.params.get("p_external_reference") or "").strip()
+            p_src = _sql_norm_source(self.params.get("p_external_source"))
+            p_ref = _sql_norm_ref(self.params.get("p_external_reference"))
 
             txs = self.client_store.tables.get("portfolio_transactions", [])
             for tx in txs:
@@ -305,10 +358,12 @@ class MockRpcBuilder:
                     str(tx.get("owner_id")) == str(owner_id)
                     and str(tx.get("portfolio_id")) == str(portfolio_id)
                     and str(tx.get("account_id")) == str(account_id)
-                    and tx.get("external_source")
-                    and tx.get("external_reference")
-                    and tx.get("external_source").strip().upper() == source
-                    and tx.get("external_reference").strip() == ref
+                    and tx.get("external_source") is not None
+                    and tx.get("external_reference") is not None
+                    and p_src is not None
+                    and p_ref is not None
+                    and _sql_norm_source(tx.get("external_source")) == p_src
+                    and _sql_norm_ref(tx.get("external_reference")) == p_ref
                 ):
                     return MockQueryResult(data=tx["id"])
             return MockQueryResult(data=None)
@@ -324,6 +379,10 @@ class MockSupabaseClient:
         self.recorded_rpcs: List[Any] = []
         self.next_error: Optional[Exception] = None
         self.next_insert_error: Optional[Exception] = None
+        self.server_max_rows: Optional[int] = None
+        self.on_insert_race_hook: Optional[Callable[[Dict[str, Any]], None]] = None
+        self.race_hook_called: bool = False
+        self.insert_execute_attempt_count: int = 0
 
     def table(self, table_name: str) -> MockQueryBuilder:
         return MockQueryBuilder(table_name, self)
@@ -774,7 +833,7 @@ class TestReversals:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestDatabaseRaceAndErrors:
-    """Verifies deterministic resolution of concurrent 23505 uniqueness violations."""
+    """Verifies true concurrent 23505 uniqueness violation race resolution."""
 
     def test_23505_race_physical_id_resolution_same_economics(
         self, repo: PortfolioRepository, mock_client: MockSupabaseClient
@@ -793,14 +852,18 @@ class TestDatabaseRaceAndErrors:
             cash_currency=Currency.USD,
         )
 
-        # First insert succeeds
-        repo.append_transaction(tx)
+        # Hook materializes competing identical transaction during INSERT
+        def _hook(payload: Dict[str, Any]):
+            mock_client.tables.setdefault("portfolio_transactions", []).append(payload)
 
-        # Concurrent attempt where insert raises 23505
-        mock_client.next_insert_error = APIError({"code": "23505", "message": "duplicate key value"})
+        mock_client.on_insert_race_hook = _hook
+        mock_client.insert_execute_attempt_count = 0
         res = repo.append_transaction(tx)
+
         assert res.status == AppendStatus.IDEMPOTENT_DUPLICATE
         assert res.transaction_id == tx.id
+        assert mock_client.race_hook_called is True
+        assert mock_client.insert_execute_attempt_count == 1
 
     def test_23505_race_physical_id_resolution_different_economics(
         self, repo: PortfolioRepository, mock_client: MockSupabaseClient
@@ -811,7 +874,7 @@ class TestDatabaseRaceAndErrors:
         )
 
         tx_id = uuid4()
-        tx1 = make_transaction(
+        tx = make_transaction(
             id=tx_id,
             portfolio_id=port.id,
             account_id=acc.id,
@@ -820,21 +883,22 @@ class TestDatabaseRaceAndErrors:
             cash_amount=Decimal("1000.00"),
             cash_currency=Currency.USD,
         )
-        repo.append_transaction(tx1)
 
-        # Second worker attempts same ID with different cash_amount
-        tx2 = make_transaction(
-            id=tx_id,
-            portfolio_id=port.id,
-            account_id=acc.id,
-            transaction_type=TransactionType.CASH_DEPOSIT,
-            effective_date=date(2026, 8, 28),
-            cash_amount=Decimal("2000.00"),
-            cash_currency=Currency.USD,
-        )
-        mock_client.next_insert_error = APIError({"code": "23505", "message": "duplicate key value"})
-        res = repo.append_transaction(tx2)
+        competing_tx = replace(tx, cash_amount=Decimal("2000.00"))
+
+        # Hook materializes competing row with same ID but different cash_amount
+        def _hook(payload: Dict[str, Any]):
+            row = serialize_portfolio_transaction(competing_tx, repo._owner_id)
+            mock_client.tables.setdefault("portfolio_transactions", []).append(row)
+
+        mock_client.on_insert_race_hook = _hook
+        mock_client.insert_execute_attempt_count = 0
+        res = repo.append_transaction(tx)
+
         assert res.status == AppendStatus.CONFLICT
+        assert isinstance(res.diagnostics, tuple)
+        assert mock_client.race_hook_called is True
+        assert mock_client.insert_execute_attempt_count == 1
 
     def test_23505_race_external_identity_same_economics(
         self, repo: PortfolioRepository, mock_client: MockSupabaseClient
@@ -844,23 +908,9 @@ class TestDatabaseRaceAndErrors:
             make_account(portfolio_id=port.id, name="Acc", base_currency=Currency.USD)
         )
         inst_id = uuid4()
+        competing_id = uuid4()
 
-        tx1 = make_transaction(
-            portfolio_id=port.id,
-            account_id=acc.id,
-            transaction_type=TransactionType.BUY,
-            effective_date=date(2026, 8, 28),
-            instrument_id=inst_id,
-            quantity=Decimal("10"),
-            unit_price=Decimal("100.00"),
-            trade_currency=Currency.USD,
-            external_source="MIDAS",
-            external_reference="ORD-99",
-        )
-        repo.append_transaction(tx1)
-
-        # Worker 2 attempts same external identity concurrently
-        tx2 = make_transaction(
+        tx = make_transaction(
             id=uuid4(),
             portfolio_id=port.id,
             account_id=acc.id,
@@ -873,10 +923,27 @@ class TestDatabaseRaceAndErrors:
             external_source=" midas ",
             external_reference=" ORD-99 ",
         )
-        mock_client.next_insert_error = APIError({"code": "23505", "message": "duplicate key value"})
-        res = repo.append_transaction(tx2)
+
+        competing_tx = replace(
+            tx,
+            id=competing_id,
+            external_source="MIDAS",
+            external_reference="ORD-99",
+        )
+
+        # Hook materializes competing row with same normalized external identity and economics
+        def _hook(payload: Dict[str, Any]):
+            row = serialize_portfolio_transaction(competing_tx, repo._owner_id)
+            mock_client.tables.setdefault("portfolio_transactions", []).append(row)
+
+        mock_client.on_insert_race_hook = _hook
+        mock_client.insert_execute_attempt_count = 0
+        res = repo.append_transaction(tx)
+
         assert res.status == AppendStatus.IDEMPOTENT_DUPLICATE
-        assert res.transaction_id == tx1.id
+        assert res.transaction_id == competing_id
+        assert mock_client.race_hook_called is True
+        assert mock_client.insert_execute_attempt_count == 1
 
     def test_23505_race_external_identity_different_economics(
         self, repo: PortfolioRepository, mock_client: MockSupabaseClient
@@ -886,8 +953,10 @@ class TestDatabaseRaceAndErrors:
             make_account(portfolio_id=port.id, name="Acc", base_currency=Currency.USD)
         )
         inst_id = uuid4()
+        competing_id = uuid4()
 
-        tx1 = make_transaction(
+        tx = make_transaction(
+            id=uuid4(),
             portfolio_id=port.id,
             account_id=acc.id,
             transaction_type=TransactionType.BUY,
@@ -899,24 +968,26 @@ class TestDatabaseRaceAndErrors:
             external_source="MIDAS",
             external_reference="ORD-99",
         )
-        repo.append_transaction(tx1)
 
-        tx2 = make_transaction(
-            id=uuid4(),
-            portfolio_id=port.id,
-            account_id=acc.id,
-            transaction_type=TransactionType.BUY,
-            effective_date=date(2026, 8, 28),
-            instrument_id=inst_id,
-            quantity=Decimal("10"),
-            unit_price=Decimal("200.00"),  # Different economics!
-            trade_currency=Currency.USD,
-            external_source="MIDAS",
-            external_reference="ORD-99",
+        competing_tx = replace(
+            tx,
+            id=competing_id,
+            unit_price=Decimal("200.00"),
         )
-        mock_client.next_insert_error = APIError({"code": "23505", "message": "duplicate key value"})
-        res = repo.append_transaction(tx2)
+
+        # Hook materializes competing row with different economics
+        def _hook(payload: Dict[str, Any]):
+            row = serialize_portfolio_transaction(competing_tx, repo._owner_id)
+            mock_client.tables.setdefault("portfolio_transactions", []).append(row)
+
+        mock_client.on_insert_race_hook = _hook
+        mock_client.insert_execute_attempt_count = 0
+        res = repo.append_transaction(tx)
+
         assert res.status == AppendStatus.CONFLICT
+        assert isinstance(res.diagnostics, tuple)
+        assert mock_client.race_hook_called is True
+        assert mock_client.insert_execute_attempt_count == 1
 
     def test_23505_race_reversal_concurrent_insert(
         self, repo: PortfolioRepository, mock_client: MockSupabaseClient
@@ -936,26 +1007,36 @@ class TestDatabaseRaceAndErrors:
         )
         repo.append_transaction(orig)
 
-        rev1 = make_transaction(
-            portfolio_id=port.id,
-            account_id=acc.id,
-            transaction_type=TransactionType.REVERSAL,
-            effective_date=date(2026, 8, 29),
-            reverses_transaction_id=orig.id,
-        )
-        repo.append_transaction(rev1)
-
-        # Worker 2 attempts concurrent reversal
-        rev2 = make_transaction(
+        rev_id = uuid4()
+        competing_rev_id = uuid4()
+        rev = make_transaction(
+            id=rev_id,
             portfolio_id=port.id,
             account_id=acc.id,
             transaction_type=TransactionType.REVERSAL,
             effective_date=date(2026, 8, 30),
             reverses_transaction_id=orig.id,
         )
-        mock_client.next_insert_error = APIError({"code": "23505", "message": "duplicate key value"})
-        res = repo.append_transaction(rev2)
+
+        competing_rev = replace(
+            rev,
+            id=competing_rev_id,
+        )
+
+        # Hook materializes a concurrent reversal of orig
+        def _hook(payload: Dict[str, Any]):
+            row = serialize_portfolio_transaction(competing_rev, repo._owner_id)
+            mock_client.tables.setdefault("portfolio_transactions", []).append(row)
+
+        mock_client.on_insert_race_hook = _hook
+        mock_client.insert_execute_attempt_count = 0
+        res = repo.append_transaction(rev)
+
         assert res.status == AppendStatus.INVALID
+        assert isinstance(res.diagnostics, tuple)
+        assert "was concurrently reversed by" in res.diagnostics[0]
+        assert mock_client.race_hook_called is True
+        assert mock_client.insert_execute_attempt_count == 1
 
     def test_unexplained_23505_re_raises(
         self, repo: PortfolioRepository, mock_client: MockSupabaseClient
@@ -975,8 +1056,10 @@ class TestDatabaseRaceAndErrors:
         )
 
         mock_client.next_insert_error = APIError({"code": "23505", "message": "unexplained unique error"})
+        mock_client.insert_execute_attempt_count = 0
         with pytest.raises(APIError):
             repo.append_transaction(tx)
+        assert mock_client.insert_execute_attempt_count == 1
 
     def test_non_23505_apierror_propagated(
         self, repo: PortfolioRepository, mock_client: MockSupabaseClient
@@ -996,8 +1079,10 @@ class TestDatabaseRaceAndErrors:
         )
 
         mock_client.next_insert_error = APIError({"code": "23503", "message": "foreign key violation"})
+        mock_client.insert_execute_attempt_count = 0
         with pytest.raises(APIError):
             repo.append_transaction(tx)
+        assert mock_client.insert_execute_attempt_count == 1
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1007,8 +1092,8 @@ class TestDatabaseRaceAndErrors:
 class TestPaginationAndOrdering:
     """Verifies complete multi-page pagination and canonical deterministic ordering."""
 
-    def test_multi_page_transactions_ordering(
-        self, repo: PortfolioRepository, monkeypatch: pytest.MonkeyPatch
+    def test_multi_page_transactions_ordering_with_shuffled_rows(
+        self, repo: PortfolioRepository, mock_client: MockSupabaseClient, monkeypatch: pytest.MonkeyPatch
     ):
         import backend.engine.private.portfolio.repository as repo_module
         monkeypatch.setattr(repo_module, "PAGE_SIZE", 2)
@@ -1062,6 +1147,10 @@ class TestPaginationAndOrdering:
         for t in [t1, t2, t3, t4, t5]:
             repo.append_transaction(t)
 
+        # Deliberately shuffle raw underlying table rows
+        import random
+        random.shuffle(mock_client.tables["portfolio_transactions"])
+
         listed = repo.list_transactions(port.id)
         assert len(listed) == 5
 
@@ -1073,6 +1162,58 @@ class TestPaginationAndOrdering:
             date(2026, 8, 26),
             date(2026, 8, 28),
         ]
+
+    def test_server_cap_smaller_than_page_size_pagination(
+        self, repo: PortfolioRepository, mock_client: MockSupabaseClient, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Phase 12B.2C.1: When server max rows < PAGE_SIZE, pagination keeps paging until empty."""
+        import backend.engine.private.portfolio.repository as repo_module
+        monkeypatch.setattr(repo_module, "PAGE_SIZE", 5)
+
+        # Server cap is 2 (smaller than PAGE_SIZE=5)
+        mock_client.server_max_rows = 2
+
+        port = repo.create_portfolio(make_portfolio(name="Port", base_currency=Currency.USD))
+        acc = repo.create_portfolio_account(
+            make_account(portfolio_id=port.id, name="Acc", base_currency=Currency.USD)
+        )
+
+        for i in range(5):
+            repo.append_transaction(
+                make_transaction(
+                    portfolio_id=port.id,
+                    account_id=acc.id,
+                    transaction_type=TransactionType.CASH_DEPOSIT,
+                    effective_date=date(2026, 8, 1 + i),
+                    cash_amount=Decimal(f"{100 * (i + 1)}.00"),
+                    cash_currency=Currency.USD,
+                )
+            )
+
+        listed = repo.list_transactions(port.id)
+        assert len(listed) == 5
+
+    def test_server_cap_lifecycle_tables_pagination(
+        self, repo: PortfolioRepository, mock_client: MockSupabaseClient, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Lifecycle entities also respect server cap pagination."""
+        import backend.engine.private.portfolio.repository as repo_module
+        monkeypatch.setattr(repo_module, "PAGE_SIZE", 5)
+        mock_client.server_max_rows = 2
+
+        port = repo.create_portfolio(make_portfolio(name="Port", base_currency=Currency.USD))
+        for i in range(5):
+            repo.create_cash_bucket(
+                make_bucket(
+                    portfolio_id=port.id,
+                    name=f"Bucket {i}",
+                    currency=Currency.USD,
+                    purpose=CashPurpose.INVESTABLE,
+                )
+            )
+
+        buckets = repo.list_cash_buckets(port.id)
+        assert len(buckets) == 5
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1147,3 +1288,137 @@ class TestModeAndPortfolioIsolation:
         sandbox_txs = repo.list_transactions(sandbox_port.id)
         assert len(sandbox_txs) == 1
         assert sandbox_txs[0].id == tx_sandbox.id
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. AppendResult Diagnostics Tuple Contract & External Identity Parity
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAppendResultDiagnosticsContract:
+    """Verifies that AppendResult diagnostics is strictly a tuple in all error/conflict states."""
+
+    def test_diagnostics_is_always_tuple(self, repo: PortfolioRepository):
+        port = repo.create_portfolio(make_portfolio(name="Port", base_currency=Currency.USD))
+        acc = repo.create_portfolio_account(
+            make_account(portfolio_id=port.id, name="Acc", base_currency=Currency.USD)
+        )
+
+        # 1. Invalid portfolio ID
+        tx_bad_port = make_transaction(
+            portfolio_id=uuid4(),
+            account_id=acc.id,
+            transaction_type=TransactionType.CASH_DEPOSIT,
+            effective_date=date(2026, 8, 28),
+            cash_amount=Decimal("100.00"),
+            cash_currency=Currency.USD,
+        )
+        res1 = repo.append_transaction(tx_bad_port)
+        assert res1.status == AppendStatus.INVALID
+        assert isinstance(res1.diagnostics, tuple)
+
+        # 2. Invalid account ID
+        tx_bad_acc = make_transaction(
+            portfolio_id=port.id,
+            account_id=uuid4(),
+            transaction_type=TransactionType.CASH_DEPOSIT,
+            effective_date=date(2026, 8, 28),
+            cash_amount=Decimal("100.00"),
+            cash_currency=Currency.USD,
+        )
+        res2 = repo.append_transaction(tx_bad_acc)
+        assert res2.status == AppendStatus.INVALID
+        assert isinstance(res2.diagnostics, tuple)
+
+        # 3. Conflict (physical ID reused with different economics)
+        tx_orig = make_transaction(
+            portfolio_id=port.id,
+            account_id=acc.id,
+            transaction_type=TransactionType.CASH_DEPOSIT,
+            effective_date=date(2026, 8, 28),
+            cash_amount=Decimal("100.00"),
+            cash_currency=Currency.USD,
+        )
+        repo.append_transaction(tx_orig)
+
+        tx_conflict = make_transaction(
+            id=tx_orig.id,
+            portfolio_id=port.id,
+            account_id=acc.id,
+            transaction_type=TransactionType.CASH_DEPOSIT,
+            effective_date=date(2026, 8, 28),
+            cash_amount=Decimal("200.00"),
+            cash_currency=Currency.USD,
+        )
+        res3 = repo.append_transaction(tx_conflict)
+        assert res3.status == AppendStatus.CONFLICT
+        assert isinstance(res3.diagnostics, tuple)
+
+
+class TestExternalIdentityParityInRepository:
+    """Verifies repository-level canonical external identity normalization and parity."""
+
+    def test_repository_external_identity_normalization(self, repo: PortfolioRepository):
+        port = repo.create_portfolio(make_portfolio(name="Port", base_currency=Currency.USD))
+        acc = repo.create_portfolio_account(
+            make_account(portfolio_id=port.id, name="Acc", base_currency=Currency.USD)
+        )
+        inst_id = uuid4()
+
+        tx1 = make_transaction(
+            portfolio_id=port.id,
+            account_id=acc.id,
+            transaction_type=TransactionType.BUY,
+            effective_date=date(2026, 8, 28),
+            instrument_id=inst_id,
+            quantity=Decimal("10"),
+            unit_price=Decimal("100.00"),
+            trade_currency=Currency.USD,
+            external_source="  midas  ",
+            external_reference="  ORD-100  ",
+        )
+        res1 = repo.append_transaction(tx1)
+        assert res1.status == AppendStatus.APPENDED
+
+        # 1. Lookup with uppercase/trimmed strings finds the transaction
+        found_id = repo.lookup_external_identity(port.id, acc.id, "MIDAS", "ORD-100")
+        assert found_id == tx1.id
+
+        # 2. Append with uppercase/trimmed strings is IDEMPOTENT_DUPLICATE
+        tx_replay = make_transaction(
+            id=uuid4(),
+            portfolio_id=port.id,
+            account_id=acc.id,
+            transaction_type=TransactionType.BUY,
+            effective_date=date(2026, 8, 28),
+            instrument_id=inst_id,
+            quantity=Decimal("10"),
+            unit_price=Decimal("100.00"),
+            trade_currency=Currency.USD,
+            external_source="MIDAS",
+            external_reference="ORD-100",
+        )
+        res_replay = repo.append_transaction(tx_replay)
+        assert res_replay.status == AppendStatus.IDEMPOTENT_DUPLICATE
+        assert res_replay.transaction_id == tx1.id
+
+        # 3. Lookup with tab does NOT find the transaction (tabs are preserved, not stripped)
+        found_tabs = repo.lookup_external_identity(port.id, acc.id, "\tMIDAS\t", "ORD-100")
+        assert found_tabs is None
+
+        # 4. Append with tab is distinct and appends as a new transaction
+        tx_tabs = make_transaction(
+            id=uuid4(),
+            portfolio_id=port.id,
+            account_id=acc.id,
+            transaction_type=TransactionType.BUY,
+            effective_date=date(2026, 8, 28),
+            instrument_id=inst_id,
+            quantity=Decimal("10"),
+            unit_price=Decimal("100.00"),
+            trade_currency=Currency.USD,
+            external_source="\tMIDAS\t",
+            external_reference="ORD-100",
+        )
+        res_tabs = repo.append_transaction(tx_tabs)
+        assert res_tabs.status == AppendStatus.APPENDED
+        assert res_tabs.transaction_id == tx_tabs.id

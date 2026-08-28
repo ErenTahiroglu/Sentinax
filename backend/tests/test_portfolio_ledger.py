@@ -787,3 +787,31 @@ def test_sandbox_cross_contamination_isolation():
     res_real = real_ledger.append(sandbox_tx)
     assert res_real.status == AppendStatus.INVALID
     assert len(real_ledger) == 0
+
+
+def test_ledger_external_identity_normalization_parity():
+    """Phase 12B.2C.1: Verifies in-memory ledger canonical normalization parity."""
+    port = _make_portfolio()
+    ledger = PortfolioLedger(port)
+    a_id = uuid4()
+    inst_id = uuid4()
+
+    tx1 = _make_buy(port.id, a_id, inst_id, date(2026, 8, 1), ext_source="  midas  ", ext_ref="  ORD-100  ")
+    res1 = ledger.append(tx1)
+    assert res1.status == AppendStatus.APPENDED
+
+    # 1. Exact replay with upper & trimmed strings -> IDEMPOTENT_DUPLICATE
+    tx_replay = _make_buy(port.id, a_id, inst_id, date(2026, 8, 1), ext_source="MIDAS", ext_ref="ORD-100")
+    res_replay = ledger.append(tx_replay)
+    assert res_replay.status == AppendStatus.IDEMPOTENT_DUPLICATE
+    assert res_replay.transaction_id == tx1.id
+
+    # 2. Replay with tabs -> distinct event (not deduplicated)
+    tx_tabs = _make_buy(port.id, a_id, inst_id, date(2026, 8, 1), ext_source="\tMIDAS\t", ext_ref="ORD-100")
+    res_tabs = ledger.append(tx_tabs)
+    assert res_tabs.status == AppendStatus.APPENDED
+
+    # 3. Conflict on same normalized identity with different quantity
+    tx_conflict = _make_buy(port.id, a_id, inst_id, date(2026, 8, 1), qty=Decimal("200"), ext_source="MIDAS", ext_ref="ORD-100")
+    res_conflict = ledger.append(tx_conflict)
+    assert res_conflict.status == AppendStatus.CONFLICT

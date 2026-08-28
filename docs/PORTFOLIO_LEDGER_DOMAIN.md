@@ -43,11 +43,19 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 
 ---
 
-## 5b. External Idempotency Identity & Deduplication Contract (Phase 12A.6)
-- **All-or-None Pair:** `external_source` and `external_reference` must either BOTH be `None` (manual/internal transaction) or BOTH be non-empty strings (`isinstance(x, str)` and `x.strip() != ""`).
-- **Fail-Closed on Malformed Input:** Partial presence, empty strings, whitespace-only strings, and non-string types are strictly rejected with `ValueError` or `TypeError`. They are NEVER silently downgraded to manual transactions.
+## 5b. External Idempotency Identity & Deduplication Contract (Phase 12A.6, Phase 12B.2C.1)
+- **All-or-None Pair:** `external_source` and `external_reference` must either BOTH be `None` (manual/internal transaction) or BOTH be non-empty strings.
+- **Fail-Closed on Malformed Input:** Partial presence, empty strings, space-only strings, and non-string types are strictly rejected with `ValueError` or `TypeError`. They are NEVER silently downgraded to manual transactions.
+- **Canonical Cross-Language Normalization Contract:**
+  1. `external_source`:
+     - Strips ASCII `U+0020` spaces from boundaries ONLY (`strip(" ")` / `btrim(s, ' ')`).
+     - Case-normalizes ASCII lowercase `a-z` -> `A-Z` via explicit translation table (locale-independent).
+     - Preserves every other character (including tabs, newlines, and non-ASCII Unicode characters).
+  2. `external_reference`:
+     - Strips ASCII `U+0020` spaces from boundaries ONLY (`strip(" ")` / `btrim(s, ' ')`).
+     - Case-sensitive (preserves exact case).
 - **Manual Event Invariant:** Manual transactions (where `external_source` and `external_reference` are `None`) are **NOT economically auto-deduplicated**. Two identical manual economic events with different UUIDs are both appended.
-- **Idempotency Key:** For external events, `(portfolio_id, account_id, external_source.strip().upper(), external_reference.strip())` uniquely identifies the ingestion event:
+- **Idempotency Key:** For external events, `(portfolio_id, account_id, normalize_external_source(external_source), normalize_external_reference(external_reference))` uniquely identifies the ingestion event:
   - Replay of identical economics returns `IDEMPOTENT_DUPLICATE` (pointing to the original transaction ID).
   - Same key with conflicting economics returns `CONFLICT`.
 

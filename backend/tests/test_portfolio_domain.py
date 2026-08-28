@@ -1154,4 +1154,67 @@ def test_economic_fingerprint_special_character_and_delimiter_red_team():
     assert tx_uni_1.economic_fingerprint() == tx_uni_2.economic_fingerprint()
 
 
+def test_external_identity_normalization_parity_and_boundaries():
+    """Phase 12B.2C.1: Canonical cross-language external identity normalization matrix."""
+    p_id = uuid4()
+    a_id = uuid4()
+    inst_id = uuid4()
+    rec_time = datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc)
+
+    def _make_tx(source: str, ref: str) -> PortfolioTransaction:
+        return PortfolioTransaction(
+            portfolio_id=p_id,
+            account_id=a_id,
+            transaction_type=TransactionType.BUY,
+            instrument_id=inst_id,
+            effective_date=date(2026, 8, 28),
+            recorded_at=rec_time,
+            quantity=Decimal("100"),
+            unit_price=Decimal("50.00"),
+            trade_currency=Currency.USD,
+            external_source=source,
+            external_reference=ref,
+        )
+
+    # 1. Source: spaces vs trim
+    tx_src_spaces = _make_tx("  MIDAS  ", "ORD-1")
+    tx_src_clean = _make_tx("MIDAS", "ORD-1")
+    assert tx_src_spaces.economic_fingerprint() == tx_src_clean.economic_fingerprint()
+
+    # 2. Source: ASCII lowercase vs uppercase
+    tx_src_lower = _make_tx("midas", "ORD-1")
+    assert tx_src_lower.economic_fingerprint() == tx_src_clean.economic_fingerprint()
+
+    # 3. Source: tabs vs clean (different identities under canonical contract)
+    tx_src_tabs = _make_tx("\tMIDAS\t", "ORD-1")
+    assert tx_src_tabs.economic_fingerprint() != tx_src_clean.economic_fingerprint()
+
+    # 4. Source: newlines vs clean (different identities under canonical contract)
+    tx_src_newlines = _make_tx("\nMIDAS\n", "ORD-1")
+    assert tx_src_newlines.economic_fingerprint() != tx_src_clean.economic_fingerprint()
+
+    # 5. Source: Non-ASCII characters (locale-independent preservation)
+    tx_isbank_upper = _make_tx("İŞBANK", "ORD-1")
+    tx_isbank_lower = _make_tx("işbank", "ORD-1")
+    # ASCII translate only maps 'a-z' -> 'A-Z', preserving Turkish 'i' with dot or 'ş'
+    assert tx_isbank_upper.economic_fingerprint() != tx_isbank_lower.economic_fingerprint()
+
+    # 6. Reference: spaces vs trim
+    tx_ref_spaces = _make_tx("MIDAS", "  ORD-1  ")
+    assert tx_ref_spaces.economic_fingerprint() == tx_src_clean.economic_fingerprint()
+
+    # 7. Reference: tabs vs clean (different identities)
+    tx_ref_tabs = _make_tx("MIDAS", "\tORD-1\t")
+    assert tx_ref_tabs.economic_fingerprint() != tx_src_clean.economic_fingerprint()
+
+    # 8. Reference: case sensitivity (ORD-1 vs ord-1 are different)
+    tx_ref_lower = _make_tx("MIDAS", "ord-1")
+    assert tx_ref_lower.economic_fingerprint() != tx_src_clean.economic_fingerprint()
+
+    # 9. Reference: Unicode determinism
+    tx_ref_uni1 = _make_tx("MIDAS", "HESAP-101 ₺")
+    tx_ref_uni2 = _make_tx("MIDAS", "HESAP-101 ₺")
+    assert tx_ref_uni1.economic_fingerprint() == tx_ref_uni2.economic_fingerprint()
+
+
 

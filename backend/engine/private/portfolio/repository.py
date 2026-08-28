@@ -56,6 +56,10 @@ from backend.engine.private.portfolio.models import (
     PortfolioAccount,
     PortfolioTransaction,
 )
+from backend.engine.private.portfolio.normalization import (
+    normalize_external_reference,
+    normalize_external_source,
+)
 from backend.engine.private.portfolio.persistence import (
     hydrate_cash_bucket,
     hydrate_investment_goal,
@@ -199,7 +203,7 @@ class PortfolioRepository:
         mode: Optional[PortfolioMode] = None,
         include_archived: bool = False,
     ) -> List[Portfolio]:
-        """Lists portfolios for the bound owner with deterministic pagination and ordering."""
+        """Lists portfolios for the bound owner with deterministic server ordering and pagination."""
         results: List[Portfolio] = []
         offset = 0
 
@@ -213,15 +217,16 @@ class PortfolioRepository:
                 q = q.eq("mode", mode.value)
             if not include_archived:
                 q = q.is_("archived_at", "null")
+            q = q.order("created_at", desc=False).order("id", desc=False)
 
             res = q.range(offset, offset + PAGE_SIZE - 1).execute()
             rows = res.data or []
+            if not rows:
+                break
             for r in rows:
                 results.append(hydrate_portfolio(r, self._owner_id))
 
-            if len(rows) < PAGE_SIZE:
-                break
-            offset += PAGE_SIZE
+            offset += len(rows)
 
         results.sort(key=lambda p: (p.created_at, p.id))
         return results
@@ -286,15 +291,16 @@ class PortfolioRepository:
             )
             if not include_archived:
                 q = q.is_("archived_at", "null")
+            q = q.order("created_at", desc=False).order("id", desc=False)
 
             res = q.range(offset, offset + PAGE_SIZE - 1).execute()
             rows = res.data or []
+            if not rows:
+                break
             for r in rows:
                 results.append(hydrate_portfolio_account(r, self._owner_id))
 
-            if len(rows) < PAGE_SIZE:
-                break
-            offset += PAGE_SIZE
+            offset += len(rows)
 
         results.sort(key=lambda a: (a.created_at, a.id))
         return results
@@ -370,15 +376,16 @@ class PortfolioRepository:
                 q = q.eq("account_id", str(a_id))
             if not include_archived:
                 q = q.is_("archived_at", "null")
+            q = q.order("created_at", desc=False).order("id", desc=False)
 
             res = q.range(offset, offset + PAGE_SIZE - 1).execute()
             rows = res.data or []
+            if not rows:
+                break
             for r in rows:
                 results.append(hydrate_cash_bucket(r, self._owner_id))
 
-            if len(rows) < PAGE_SIZE:
-                break
-            offset += PAGE_SIZE
+            offset += len(rows)
 
         results.sort(key=lambda b: (b.created_at, b.id))
         return results
@@ -448,15 +455,16 @@ class PortfolioRepository:
                 q = q.eq("status", status.value)
             if not include_archived:
                 q = q.is_("archived_at", "null")
+            q = q.order("created_at", desc=False).order("id", desc=False)
 
             res = q.range(offset, offset + PAGE_SIZE - 1).execute()
             rows = res.data or []
+            if not rows:
+                break
             for r in rows:
                 results.append(hydrate_investment_goal(r, self._owner_id))
 
-            if len(rows) < PAGE_SIZE:
-                break
-            offset += PAGE_SIZE
+            offset += len(rows)
 
         results.sort(key=lambda g: (g.created_at, g.id))
         return results
@@ -550,15 +558,16 @@ class PortfolioRepository:
             )
             if status is not None:
                 q = q.eq("status", status.value)
+            q = q.order("expected_date", desc=False).order("created_at", desc=False).order("id", desc=False)
 
             res = q.range(offset, offset + PAGE_SIZE - 1).execute()
             rows = res.data or []
+            if not rows:
+                break
             for r in rows:
                 results.append(hydrate_planned_contribution(r, self._owner_id))
 
-            if len(rows) < PAGE_SIZE:
-                break
-            offset += PAGE_SIZE
+            offset += len(rows)
 
         results.sort(key=lambda c: (c.expected_date, c.created_at, c.id))
         return results
@@ -610,15 +619,16 @@ class PortfolioRepository:
             if account_id is not None:
                 a_id = _normalize_uuid(account_id, "account_id")
                 q = q.eq("account_id", str(a_id))
+            q = q.order("recorded_at", desc=False).order("id", desc=False)
 
             res = q.range(offset, offset + PAGE_SIZE - 1).execute()
             rows = res.data or []
+            if not rows:
+                break
             for r in rows:
                 results.append(hydrate_portfolio_transaction(r, self._owner_id))
 
-            if len(rows) < PAGE_SIZE:
-                break
-            offset += PAGE_SIZE
+            offset += len(rows)
 
         utc_min = datetime.min.replace(tzinfo=timezone.utc)
         results.sort(
@@ -639,18 +649,20 @@ class PortfolioRepository:
         external_reference: str,
     ) -> Optional[UUID]:
         """
-        Invokes Migration 012 RPC lookup_portfolio_transaction_external_identity.
+        Invokes Migration 012/013 RPC lookup_portfolio_transaction_external_identity.
         Returns matching transaction UUID or None.
         """
         p_id = _normalize_uuid(portfolio_id, "portfolio_id")
         a_id = _normalize_uuid(account_id, "account_id")
+        norm_source = normalize_external_source(external_source)
+        norm_reference = normalize_external_reference(external_reference)
 
         params = {
             "p_owner_id": self._owner_id_str,
             "p_portfolio_id": str(p_id),
             "p_account_id": str(a_id),
-            "p_external_source": external_source,
-            "p_external_reference": external_reference,
+            "p_external_source": norm_source,
+            "p_external_reference": norm_reference,
         }
 
         res = self._client.rpc("lookup_portfolio_transaction_external_identity", params).execute()
@@ -687,7 +699,7 @@ class PortfolioRepository:
             return AppendResult(
                 status=AppendStatus.INVALID,
                 transaction_id=tx.id,
-                diagnostics=[f"Portfolio {tx.portfolio_id} does not exist under bound owner."],
+                diagnostics=(f"Portfolio {tx.portfolio_id} does not exist under bound owner.",),
             )
 
         # 3. Resolve parent PortfolioAccount
@@ -696,9 +708,9 @@ class PortfolioRepository:
             return AppendResult(
                 status=AppendStatus.INVALID,
                 transaction_id=tx.id,
-                diagnostics=[
-                    f"PortfolioAccount {tx.account_id} does not exist in portfolio {tx.portfolio_id}."
-                ],
+                diagnostics=(
+                    f"PortfolioAccount {tx.account_id} does not exist in portfolio {tx.portfolio_id}.",
+                ),
             )
 
         # 4. Resolve CashBucket if set
@@ -709,9 +721,9 @@ class PortfolioRepository:
                 return AppendResult(
                     status=AppendStatus.INVALID,
                     transaction_id=tx.id,
-                    diagnostics=[
-                        f"CashBucket {tx.cash_bucket_id} does not exist in portfolio {tx.portfolio_id}."
-                    ],
+                    diagnostics=(
+                        f"CashBucket {tx.cash_bucket_id} does not exist in portfolio {tx.portfolio_id}.",
+                    ),
                 )
 
         # 5. Cross-entity validation via canonical PortfolioLedgerValidator
@@ -726,7 +738,7 @@ class PortfolioRepository:
             return AppendResult(
                 status=AppendStatus.INVALID,
                 transaction_id=tx.id,
-                diagnostics=[str(err)],
+                diagnostics=(str(err),),
             )
 
         # 6. Physical ID Idempotency Precheck
@@ -740,9 +752,9 @@ class PortfolioRepository:
             return AppendResult(
                 status=AppendStatus.CONFLICT,
                 transaction_id=tx.id,
-                diagnostics=[
-                    f"Transaction with ID {tx.id} already exists with different economic fingerprint."
-                ],
+                diagnostics=(
+                    f"Transaction with ID {tx.id} already exists with different economic fingerprint.",
+                ),
             )
 
         # 7. External Identity Idempotency Precheck
@@ -764,10 +776,10 @@ class PortfolioRepository:
                     return AppendResult(
                         status=AppendStatus.CONFLICT,
                         transaction_id=tx.id,
-                        diagnostics=[
+                        diagnostics=(
                             f"External transaction ({tx.external_source}:{tx.external_reference}) "
-                            f"already exists with different economic fingerprint."
-                        ],
+                            f"already exists with different economic fingerprint.",
+                        ),
                     )
 
         # 8. Reversal Preflight
@@ -777,7 +789,7 @@ class PortfolioRepository:
                 return AppendResult(
                     status=AppendStatus.INVALID,
                     transaction_id=tx.id,
-                    diagnostics=["REVERSAL transaction must specify reverses_transaction_id."],
+                    diagnostics=("REVERSAL transaction must specify reverses_transaction_id.",),
                 )
 
             target = self.get_transaction(tx.portfolio_id, target_id)
@@ -785,25 +797,25 @@ class PortfolioRepository:
                 return AppendResult(
                     status=AppendStatus.INVALID,
                     transaction_id=tx.id,
-                    diagnostics=[
-                        f"Reversal target transaction {target_id} not found in portfolio {tx.portfolio_id}."
-                    ],
+                    diagnostics=(
+                        f"Reversal target transaction {target_id} not found in portfolio {tx.portfolio_id}.",
+                    ),
                 )
             if target.account_id != tx.account_id:
                 return AppendResult(
                     status=AppendStatus.INVALID,
                     transaction_id=tx.id,
-                    diagnostics=[
-                        f"Reversal account {tx.account_id} does not match target account {target.account_id}."
-                    ],
+                    diagnostics=(
+                        f"Reversal account {tx.account_id} does not match target account {target.account_id}.",
+                    ),
                 )
             if target.transaction_type == TransactionType.REVERSAL:
                 return AppendResult(
                     status=AppendStatus.INVALID,
                     transaction_id=tx.id,
-                    diagnostics=[
-                        f"Cannot reverse transaction {target_id} which is itself a REVERSAL."
-                    ],
+                    diagnostics=(
+                        f"Cannot reverse transaction {target_id} which is itself a REVERSAL.",
+                    ),
                 )
 
             # Check if target is already reversed
@@ -820,9 +832,9 @@ class PortfolioRepository:
                 return AppendResult(
                     status=AppendStatus.INVALID,
                     transaction_id=tx.id,
-                    diagnostics=[
-                        f"Target transaction {target_id} has already been reversed by {existing_rev.id}."
-                    ],
+                    diagnostics=(
+                        f"Target transaction {target_id} has already been reversed by {existing_rev.id}.",
+                    ),
                 )
 
         # 9. Perform INSERT
@@ -871,9 +883,9 @@ class PortfolioRepository:
             return AppendResult(
                 status=AppendStatus.CONFLICT,
                 transaction_id=tx.id,
-                diagnostics=[
-                    f"Concurrent conflict: ID {tx.id} exists with different economic fingerprint."
-                ],
+                diagnostics=(
+                    f"Concurrent conflict: ID {tx.id} exists with different economic fingerprint.",
+                ),
             )
 
         # B. External identity lookup
@@ -895,10 +907,10 @@ class PortfolioRepository:
                     return AppendResult(
                         status=AppendStatus.CONFLICT,
                         transaction_id=tx.id,
-                        diagnostics=[
+                        diagnostics=(
                             f"Concurrent conflict: external identity ({tx.external_source}:{tx.external_reference}) "
-                            f"exists with different economic fingerprint."
-                        ],
+                            f"exists with different economic fingerprint.",
+                        ),
                     )
 
         # C. Reversal target lookup
@@ -916,9 +928,9 @@ class PortfolioRepository:
                 return AppendResult(
                     status=AppendStatus.INVALID,
                     transaction_id=tx.id,
-                    diagnostics=[
-                        f"Target transaction {tx.reverses_transaction_id} was concurrently reversed by {existing_rev.id}."
-                    ],
+                    diagnostics=(
+                        f"Target transaction {tx.reverses_transaction_id} was concurrently reversed by {existing_rev.id}.",
+                    ),
                 )
 
         # D. Unexplained 23505 -> re-raise original APIError
