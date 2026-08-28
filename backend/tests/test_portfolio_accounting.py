@@ -651,6 +651,190 @@ class TestConstructorHardeningAndRedTeam:
                 cash=cash2,
             )
 
+    def test_different_history_positions_fails_closed(self):
+        """Phase 12C.4.1: Direct constructor with positions from a different ledger history fails closed."""
+        port = _make_portfolio()
+        acc_id = uuid4()
+        inst_id = uuid4()
+
+        # History A: Deposit 1000 + BUY 10 @ 20 -> pos=10, cash=800
+        dep_a = _make_tx(port.id, acc_id, tx_type=TransactionType.CASH_DEPOSIT, cash_amount=Decimal("1000.00"), cash_currency=Currency.USD)
+        buy_a = _make_tx(port.id, acc_id, tx_type=TransactionType.BUY, instrument_id=inst_id, quantity=Decimal("10"), unit_price=Decimal("20.00"), trade_currency=Currency.USD)
+        view_a = build_ledger_projection_view(port, [dep_a, buy_a])
+
+        # History B: Deposit 2000 + BUY 5 @ 20 -> pos=5, cash=1900
+        dep_b = _make_tx(port.id, acc_id, tx_type=TransactionType.CASH_DEPOSIT, cash_amount=Decimal("2000.00"), cash_currency=Currency.USD)
+        buy_b = _make_tx(port.id, acc_id, tx_type=TransactionType.BUY, instrument_id=inst_id, quantity=Decimal("5"), unit_price=Decimal("20.00"), trade_currency=Currency.USD)
+        view_b = build_ledger_projection_view(port, [dep_b, buy_b])
+
+        pos_b = build_position_quantity_projection(view_b)
+        cash_a = build_cash_balance_projection(view_a)
+
+        with pytest.raises(PortfolioAccountingError, match="positions projection is not canonical for ledger_view"):
+            PortfolioAccountingSnapshot(
+                portfolio_id=port.id,
+                mode=port.mode,
+                as_of_recorded_at=None,
+                ledger_view=view_a,
+                positions=pos_b,  # Non-canonical positions for view_a
+                cash=cash_a,
+            )
+
+    def test_different_history_cash_fails_closed(self):
+        """Phase 12C.4.1: Direct constructor with cash from a different ledger history fails closed."""
+        port = _make_portfolio()
+        acc_id = uuid4()
+        inst_id = uuid4()
+
+        # History A: Deposit 1000 + BUY 10 @ 20 -> pos=10, cash=800
+        dep_a = _make_tx(port.id, acc_id, tx_type=TransactionType.CASH_DEPOSIT, cash_amount=Decimal("1000.00"), cash_currency=Currency.USD)
+        buy_a = _make_tx(port.id, acc_id, tx_type=TransactionType.BUY, instrument_id=inst_id, quantity=Decimal("10"), unit_price=Decimal("20.00"), trade_currency=Currency.USD)
+        view_a = build_ledger_projection_view(port, [dep_a, buy_a])
+
+        # History B: Deposit 2000 + BUY 5 @ 20 -> pos=5, cash=1900
+        dep_b = _make_tx(port.id, acc_id, tx_type=TransactionType.CASH_DEPOSIT, cash_amount=Decimal("2000.00"), cash_currency=Currency.USD)
+        buy_b = _make_tx(port.id, acc_id, tx_type=TransactionType.BUY, instrument_id=inst_id, quantity=Decimal("5"), unit_price=Decimal("20.00"), trade_currency=Currency.USD)
+        view_b = build_ledger_projection_view(port, [dep_b, buy_b])
+
+        pos_a = build_position_quantity_projection(view_a)
+        cash_b = build_cash_balance_projection(view_b)
+
+        with pytest.raises(PortfolioAccountingError, match="cash projection is not canonical for ledger_view"):
+            PortfolioAccountingSnapshot(
+                portfolio_id=port.id,
+                mode=port.mode,
+                as_of_recorded_at=None,
+                ledger_view=view_a,
+                positions=pos_a,
+                cash=cash_b,  # Non-canonical cash for view_a
+            )
+
+    def test_both_projections_from_different_history_fails_closed(self):
+        """Phase 12C.4.1: Direct constructor with both projections from a different ledger history fails closed."""
+        port = _make_portfolio()
+        acc_id = uuid4()
+        inst_id = uuid4()
+
+        dep_a = _make_tx(port.id, acc_id, tx_type=TransactionType.CASH_DEPOSIT, cash_amount=Decimal("1000.00"), cash_currency=Currency.USD)
+        buy_a = _make_tx(port.id, acc_id, tx_type=TransactionType.BUY, instrument_id=inst_id, quantity=Decimal("10"), unit_price=Decimal("20.00"), trade_currency=Currency.USD)
+        view_a = build_ledger_projection_view(port, [dep_a, buy_a])
+
+        dep_b = _make_tx(port.id, acc_id, tx_type=TransactionType.CASH_DEPOSIT, cash_amount=Decimal("2000.00"), cash_currency=Currency.USD)
+        buy_b = _make_tx(port.id, acc_id, tx_type=TransactionType.BUY, instrument_id=inst_id, quantity=Decimal("5"), unit_price=Decimal("20.00"), trade_currency=Currency.USD)
+        view_b = build_ledger_projection_view(port, [dep_b, buy_b])
+
+        pos_b = build_position_quantity_projection(view_b)
+        cash_b = build_cash_balance_projection(view_b)
+
+        with pytest.raises(PortfolioAccountingError, match="positions projection is not canonical for ledger_view"):
+            PortfolioAccountingSnapshot(
+                portfolio_id=port.id,
+                mode=port.mode,
+                as_of_recorded_at=None,
+                ledger_view=view_a,
+                positions=pos_b,
+                cash=cash_b,
+            )
+
+    def test_strict_offset_representation_instant_equivalent_rejected(self):
+        """Phase 12C.4.1: Same instant with different timezone representations (+03:00 vs UTC) is rejected."""
+        port = _make_portfolio()
+        cutoff_plus3 = datetime(2026, 8, 28, 15, 0, 0, tzinfo=timezone(timedelta(hours=3)))
+        cutoff_utc = datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc)
+
+        view_plus3 = build_ledger_projection_view(port, [], as_of_recorded_at=cutoff_plus3)
+        pos_plus3 = build_position_quantity_projection(view_plus3)
+        cash_plus3 = build_cash_balance_projection(view_plus3)
+
+        # Attempt to create snapshot with UTC cutoff while components have +03:00 cutoff
+        with pytest.raises(PortfolioAccountingError, match="ledger_view as_of_recorded_at .* does not match snapshot"):
+            PortfolioAccountingSnapshot(
+                portfolio_id=port.id,
+                mode=port.mode,
+                as_of_recorded_at=cutoff_utc,  # Instant-equivalent but different offset representation
+                ledger_view=view_plus3,
+                positions=pos_plus3,
+                cash=cash_plus3,
+            )
+
+    def test_microsecond_representation_mismatch_rejected(self):
+        """Phase 12C.4.1: Microsecond representation mismatch is rejected."""
+        port = _make_portfolio()
+        t1 = datetime(2026, 8, 28, 12, 0, 0, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 8, 28, 12, 0, 0, 2, tzinfo=timezone.utc)
+
+        view1 = build_ledger_projection_view(port, [], as_of_recorded_at=t1)
+        pos1 = build_position_quantity_projection(view1)
+        cash1 = build_cash_balance_projection(view1)
+
+        with pytest.raises(PortfolioAccountingError, match="ledger_view as_of_recorded_at .* does not match snapshot"):
+            PortfolioAccountingSnapshot(
+                portfolio_id=port.id,
+                mode=port.mode,
+                as_of_recorded_at=t2,
+                ledger_view=view1,
+                positions=pos1,
+                cash=cash1,
+            )
+
+    def test_fold_representation_mismatch_rejected(self):
+        """Phase 12C.4.1: Fold representation mismatch is rejected."""
+        port = _make_portfolio()
+        t_fold0 = datetime(2026, 10, 25, 2, 30, tzinfo=timezone.utc, fold=0)
+        t_fold1 = datetime(2026, 10, 25, 2, 30, tzinfo=timezone.utc, fold=1)
+
+        view0 = build_ledger_projection_view(port, [], as_of_recorded_at=t_fold0)
+        pos0 = build_position_quantity_projection(view0)
+        cash0 = build_cash_balance_projection(view0)
+
+        with pytest.raises(PortfolioAccountingError, match="ledger_view as_of_recorded_at .* does not match snapshot"):
+            PortfolioAccountingSnapshot(
+                portfolio_id=port.id,
+                mode=port.mode,
+                as_of_recorded_at=t_fold1,
+                ledger_view=view0,
+                positions=pos0,
+                cash=cash0,
+            )
+
+    def test_none_cutoff_mismatch_rejected(self):
+        """Phase 12C.4.1: None vs aware datetime cutoff mismatch is rejected."""
+        port = _make_portfolio()
+        view_none = build_ledger_projection_view(port, [])
+        pos_none = build_position_quantity_projection(view_none)
+        cash_none = build_cash_balance_projection(view_none)
+        t_utc = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+
+        with pytest.raises(PortfolioAccountingError, match="ledger_view as_of_recorded_at .* does not match snapshot"):
+            PortfolioAccountingSnapshot(
+                portfolio_id=port.id,
+                mode=port.mode,
+                as_of_recorded_at=t_utc,
+                ledger_view=view_none,
+                positions=pos_none,
+                cash=cash_none,
+            )
+
+    def test_canonical_direct_constructor_accepted(self):
+        """Phase 12C.4.1: Canonical direct construction with valid matching components succeeds."""
+        port = _make_portfolio()
+        view = build_ledger_projection_view(port, [])
+        pos = build_position_quantity_projection(view)
+        cash = build_cash_balance_projection(view)
+
+        snap = PortfolioAccountingSnapshot(
+            portfolio_id=port.id,
+            mode=port.mode,
+            as_of_recorded_at=None,
+            ledger_view=view,
+            positions=pos,
+            cash=cash,
+        )
+
+        assert snap.ledger_view is view
+        assert snap.positions is pos
+        assert snap.cash is cash
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 8. Immutability & Mutation Defense
