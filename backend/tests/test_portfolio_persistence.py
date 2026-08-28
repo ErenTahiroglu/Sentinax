@@ -1138,4 +1138,31 @@ class TestAdversarialCodecFailures:
         assert row_f["source_portfolio_id"] == str(src_id)
         assert row_f["source_snapshot_time"] == "2026-01-01T10:00:00+00:00"
 
+    def test_persisted_external_identity_boundary_tampering_fails_hydration(self, owner_id: UUID, portfolio_id: UUID, account_id: UUID, instrument_id: UUID):
+        """
+        Phase 12B.2A.7: Tampering with field boundaries (A:B, C -> A, B:C) in a persisted row
+        must fail hydration with fingerprint mismatch.
+        """
+        tx = PortfolioTransaction(
+            portfolio_id=portfolio_id,
+            account_id=account_id,
+            transaction_type=TransactionType.BUY,
+            effective_date=date(2026, 8, 28),
+            recorded_at=datetime(2026, 8, 28, 15, 0, 0, tzinfo=timezone.utc),
+            instrument_id=instrument_id,
+            quantity=Decimal("100"),
+            unit_price=Decimal("50.00"),
+            trade_currency=Currency.USD,
+            external_source="A:B",
+            external_reference="C",
+        )
+
+        row = serialize_portfolio_transaction(tx, owner_id)
+
+        # Tamper row by shifting boundary across fields without updating fingerprint
+        row_tampered = dict(row, external_source="A", external_reference="B:C")
+        with pytest.raises(ValueError, match="Economic fingerprint mismatch"):
+            hydrate_portfolio_transaction(row_tampered, owner_id)
+
+
 

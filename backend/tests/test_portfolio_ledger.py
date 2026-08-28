@@ -230,6 +230,51 @@ def test_external_idempotency_executed_at_timezone_equivalence():
     assert len(ledger) == 1
 
 
+def test_external_idempotency_colon_boundary_coexistence():
+    """Phase 12B.2A.7: External transactions with different source/reference boundaries (A:B, C vs A, B:C) are distinct."""
+    port = _make_portfolio()
+    p_id = port.id
+    a_id = uuid4()
+    inst_id = uuid4()
+    ledger = PortfolioLedger(port)
+
+    # TX A: source="A:B", ref="C"
+    tx_a = _make_buy(
+        p_id, a_id, inst_id, date(2026, 8, 28),
+        ext_source="A:B", ext_ref="C",
+    )
+    r_a = ledger.append(tx_a)
+    assert r_a.status == AppendStatus.APPENDED
+
+    # TX B: source="A", ref="B:C" (Distinct external identity key)
+    tx_b = _make_buy(
+        p_id, a_id, inst_id, date(2026, 8, 28),
+        ext_source="A", ext_ref="B:C",
+    )
+    r_b = ledger.append(tx_b)
+    assert r_b.status == AppendStatus.APPENDED
+    assert len(ledger) == 2
+
+    # Replay TX A -> IDEMPOTENT_DUPLICATE
+    tx_a_replay = _make_buy(
+        p_id, a_id, inst_id, date(2026, 8, 28),
+        ext_source="A:B", ext_ref="C",
+    )
+    r_a_replay = ledger.append(tx_a_replay)
+    assert r_a_replay.status == AppendStatus.IDEMPOTENT_DUPLICATE
+    assert r_a_replay.transaction_id == tx_a.id
+
+    # Conflict on TX A: same identity but different qty -> CONFLICT
+    tx_a_conflict = _make_buy(
+        p_id, a_id, inst_id, date(2026, 8, 28),
+        qty="200",
+        ext_source="A:B", ext_ref="C",
+    )
+    r_a_conflict = ledger.append(tx_a_conflict)
+    assert r_a_conflict.status == AppendStatus.CONFLICT
+
+
+
 
 
 def test_external_idempotency_conflict_detection():

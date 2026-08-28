@@ -1064,3 +1064,94 @@ def test_economic_fingerprint_executed_at_instant_normalization():
     assert tx_a.economic_fingerprint() != tx_d.economic_fingerprint()
 
 
+def test_economic_fingerprint_colon_boundary_disambiguation():
+    """Phase 12B.2A.7: Preimage boundaries must be unambiguous; colon in fields must NOT cause collision."""
+    p_id = uuid4()
+    a_id = uuid4()
+    inst_id = uuid4()
+    rec_time = datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc)
+
+    # TX A: source="A:B", ref="C"
+    tx_a = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.BUY,
+        instrument_id=inst_id,
+        effective_date=date(2026, 8, 28),
+        recorded_at=rec_time,
+        quantity=Decimal("100"),
+        unit_price=Decimal("50.00"),
+        trade_currency=Currency.USD,
+        external_source="A:B",
+        external_reference="C",
+    )
+
+    # TX B: source="A", ref="B:C"
+    tx_b = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.BUY,
+        instrument_id=inst_id,
+        effective_date=date(2026, 8, 28),
+        recorded_at=rec_time,
+        quantity=Decimal("100"),
+        unit_price=Decimal("50.00"),
+        trade_currency=Currency.USD,
+        external_source="A",
+        external_reference="B:C",
+    )
+
+    # Under naive colon-join, both produced ...:A:B:C:... and collided.
+    # Under structured JSON encoding, they MUST have distinct fingerprints.
+    assert tx_a.economic_fingerprint() != tx_b.economic_fingerprint()
+
+
+def test_economic_fingerprint_special_character_and_delimiter_red_team():
+    """Phase 12B.2A.7: Red-team structured encoding against delimiters, JSON characters, and Unicode."""
+    p_id = uuid4()
+    a_id = uuid4()
+    inst_id = uuid4()
+    rec_time = datetime(2026, 8, 28, 12, 0, 0, tzinfo=timezone.utc)
+
+    def _make_tx(source: str, ref: str) -> PortfolioTransaction:
+        return PortfolioTransaction(
+            portfolio_id=p_id,
+            account_id=a_id,
+            transaction_type=TransactionType.BUY,
+            instrument_id=inst_id,
+            effective_date=date(2026, 8, 28),
+            recorded_at=rec_time,
+            quantity=Decimal("100"),
+            unit_price=Decimal("50.00"),
+            trade_currency=Currency.USD,
+            external_source=source,
+            external_reference=ref,
+        )
+
+    # Comma boundary
+    tx_comma_1 = _make_tx("A,B", "C")
+    tx_comma_2 = _make_tx("A", "B,C")
+    assert tx_comma_1.economic_fingerprint() != tx_comma_2.economic_fingerprint()
+
+    # Brackets
+    tx_brack_1 = _make_tx("A[B]", "C")
+    tx_brack_2 = _make_tx("A", "[B]C")
+    assert tx_brack_1.economic_fingerprint() != tx_brack_2.economic_fingerprint()
+
+    # Quotes & backslashes
+    tx_quote_1 = _make_tx('A"B"', "C")
+    tx_quote_2 = _make_tx("A", '"B"C')
+    assert tx_quote_1.economic_fingerprint() != tx_quote_2.economic_fingerprint()
+
+    # Braces
+    tx_brace_1 = _make_tx("A{B}", "C")
+    tx_brace_2 = _make_tx("A", "{B}C")
+    assert tx_brace_1.economic_fingerprint() != tx_brace_2.economic_fingerprint()
+
+    # Unicode determinism
+    tx_uni_1 = _make_tx("İŞBANK", "HESAP-101 ₺")
+    tx_uni_2 = _make_tx("İŞBANK", "HESAP-101 ₺")
+    assert tx_uni_1.economic_fingerprint() == tx_uni_2.economic_fingerprint()
+
+
+

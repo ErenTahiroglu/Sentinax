@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
 import hashlib
+import json
 from typing import Any, Dict, Optional
 from uuid import UUID, uuid4
 
@@ -66,16 +67,17 @@ def _validate_aware_datetime(dt: Optional[datetime], field_name: str) -> None:
         raise ValueError(f"{field_name} must be a timezone-aware datetime, got naive: {dt}")
 
 
-def _canonical_decimal_str(d: Optional[Decimal]) -> str:
+def _canonical_decimal_str(d: Optional[Decimal]) -> Optional[str]:
     """
     Renders a finite Decimal in canonical text form for economic fingerprinting.
     Numerically equivalent Decimals (e.g. 1, 1.0, 1.00, 1E+0, 1E+3, 1000.00) produce identical text.
+    - None -> None (serialized to JSON null).
     - No float conversion.
     - No context-dependent rounding.
     - No precision loss on arbitrarily large/small finite Decimals.
     """
     if d is None:
-        return "None"
+        return None
     if not isinstance(d, Decimal) or isinstance(d, bool):
         raise TypeError(f"Expected Decimal, got {type(d).__name__}: {d!r}")
     if not d.is_finite():
@@ -91,12 +93,12 @@ def _canonical_decimal_str(d: Optional[Decimal]) -> str:
     return s
 
 
-def _canonical_datetime_str(dt: Optional[datetime]) -> str:
+def _canonical_datetime_str(dt: Optional[datetime]) -> Optional[str]:
     """
     Renders an aware datetime in canonical UTC instant text form for economic fingerprinting.
     Numerically/chronologically equivalent instants with different timezone representations
     (e.g. 2026-08-28T10:00:00+00:00 and 2026-08-28T13:00:00+03:00) produce identical text.
-    - None -> "None"
+    - None -> None (serialized to JSON null).
     - Requires actual datetime
     - Requires timezone-aware (tzinfo is not None)
     - Converts to UTC with dt.astimezone(timezone.utc)
@@ -104,7 +106,7 @@ def _canonical_datetime_str(dt: Optional[datetime]) -> str:
     - Does not drop microseconds
     """
     if dt is None:
-        return "None"
+        return None
     if isinstance(dt, bool) or not isinstance(dt, datetime):
         raise TypeError(f"Expected datetime instance, got {type(dt).__name__}: {dt!r}")
     if dt.tzinfo is None:
@@ -405,34 +407,34 @@ class PortfolioTransaction:
 
     def economic_fingerprint(self) -> str:
         """
-        Computes deterministic SHA-256 economic fingerprint.
+        Computes deterministic SHA-256 economic fingerprint over an unambiguous structured payload.
         Excludes physical internal `id`, `recorded_at`, and mutable `notes`.
         """
-        ext_source_str = self.external_source.strip().upper() if self.external_source else "None"
-        ext_ref_str = self.external_reference.strip() if self.external_reference else "None"
+        ext_source_str = self.external_source.strip().upper() if self.external_source else None
+        ext_ref_str = self.external_reference.strip() if self.external_reference else None
 
-        parts = [
+        payload = [
             str(self.portfolio_id),
             str(self.account_id),
             self.transaction_type.value,
-            str(self.instrument_id) if self.instrument_id else "None",
+            str(self.instrument_id) if self.instrument_id else None,
             self.effective_date.isoformat(),
             _canonical_datetime_str(self.executed_at),
             _canonical_decimal_str(self.quantity),
             _canonical_decimal_str(self.unit_price),
-            self.trade_currency.value if self.trade_currency else "None",
+            self.trade_currency.value if self.trade_currency else None,
             _canonical_decimal_str(self.cash_amount),
-            self.cash_currency.value if self.cash_currency else "None",
-            str(self.cash_bucket_id) if self.cash_bucket_id else "None",
-            self.from_currency.value if self.from_currency else "None",
+            self.cash_currency.value if self.cash_currency else None,
+            str(self.cash_bucket_id) if self.cash_bucket_id else None,
+            self.from_currency.value if self.from_currency else None,
             _canonical_decimal_str(self.from_amount),
-            self.to_currency.value if self.to_currency else "None",
+            self.to_currency.value if self.to_currency else None,
             _canonical_decimal_str(self.to_amount),
             ext_source_str,
             ext_ref_str,
-            str(self.reverses_transaction_id) if self.reverses_transaction_id else "None",
+            str(self.reverses_transaction_id) if self.reverses_transaction_id else None,
         ]
-        raw = ":".join(parts)
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def to_dict(self) -> Dict[str, Any]:
