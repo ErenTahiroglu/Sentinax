@@ -216,4 +216,15 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Deterministic Preimage:** `parsed_manifest_sha256` is computed from compact JSON `[portfolio_id, account_id, source_key, file_content_sha256, raw_manifest_sha256, parser_revision, [[ord, rec_sha, parsed_sha], ...]]`. Display filenames and timestamps are excluded.
 - **Staging Identity Separation:** `parsed_manifest_identity` is `(portfolio_id, account_id, source_key, file_content_sha256, raw_manifest_sha256, parser_revision, parsed_manifest_sha256)`.
 - **Zero-Field Records Count as Coverage:** A parsed record with `fields == ()` satisfies full coverage.
-- **Deferred Scope:** Broker parsers (Midas, IBKR, banks, TEFAS), transaction inference, instrument mapping, staging persistence, and validation remain deferred to Phase 13E+.
+
+---
+
+## 13e. Verified Source-Parser Execution Harness & Canonical Staging Pipeline (Phase 13E)
+- **Parser Metadata Authority:** One `PortfolioImportSourceParser` adapter supplies `source_key` and `parser_revision`. The pipeline captures parser metadata in a single snapshot read; callers cannot supply or override source key or revision.
+- **Single Invocation with Exact Original Payload:** `parser.extract_records(content)` is invoked exactly once with the exact original bytes object without copying, re-encoding, or newline conversion.
+- **Logical Ordinal Assignment:** The sequence order returned by `extract_records` directly defines 1-indexed `record_ordinal` `1..N`. Duplicate raw records are preserved without deduplication.
+- **Closed Layer Composition:** Pure staging pipeline composes all artifacts using closed Phase 13A-13D builders (`build_import_file_provenance`, `build_import_record_provenance`, `build_import_batch_manifest`, `build_parsed_import_record`, `build_parsed_import_batch_manifest`).
+- **Exact Object Binding:** `ImportStagingResult` binds verified `file_provenance`, `raw_manifest`, and `parsed_manifest` with exact object identity.
+- **Raw-Byte Non-Retention:** `ExtractedImportRecord` is an ephemeral DTO; `ImportStagingResult` retains no raw bytes, no raw record strings, and no parser references.
+- **Fail-Closed Error Propagation:** Lower-layer integrity errors (`PortfolioImportProvenanceError`, `PortfolioImportBatchError`, `PortfolioImportParsingError`, `PortfolioParsedImportBatchError`) and parser runtime exceptions propagate unchanged without partial returns.
+- **Deferred Scope:** Broker parsers (Midas, IBKR, banks, TEFAS), transaction inference, instrument mapping, staging persistence, and validation remain deferred to Phase 13F+.
