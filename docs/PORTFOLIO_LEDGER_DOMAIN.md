@@ -304,5 +304,23 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - >= 2 candidates -> `AMBIGUOUS` with canonical ascending candidate UUID tuple and diagnostic code `ambiguous_reference`
   - Drafts without instrument reference (cash, FX, unreferenced dividend/fee) become `NOT_REQUIRED` without invoking the resolver.
 - **Pre-Ledger Domain Boundary:** Pure domain execution harness. Zero `InstrumentResolverService` legacy execution, zero `PortfolioTransaction` construction, zero external identity derivation, zero persistence, and zero ledger mutation.
-- **Deferred Scope:** Ledger transaction materialization, idempotency derivation, cash bucket assignment, and ledger persistence remain deferred to Phase 13L+.
+- **Deferred Scope:** Canonical CSV semantic interpretation, ledger transaction materialization, idempotency derivation, cash bucket assignment, and ledger persistence remain deferred to Phase 13L+.
+
+---
+
+## 13l. Sentinax Canonical CSV v1 Semantic Interpreter to Assessment & Economic Draft Batch (Phase 13L)
+- **Exact 13-Field Canonical Semantic Schema:** Canonical CSV semantic revision 1 requires every data row to decode to exactly the 13 canonical fields: `transaction_type`, `effective_date`, `executed_at`, `instrument_reference`, `quantity`, `unit_price`, `trade_currency`, `cash_amount`, `cash_currency`, `from_currency`, `from_amount`, `to_currency`, `to_amount`. Missing or extraneous fields abort the batch with `SentinaxCanonicalCsvSemanticError`.
+- **Empty String to None Mapping:** At the semantic layer, empty string values (`""`) in optional fields explicitly map to `None`. Non-empty strings are preserved verbatim without whitespace stripping.
+- **Strict Lexical Parsing:**
+  - `transaction_type`: exact lowercase supported enum name (`buy`, `sell`, `cash_deposit`, `cash_withdrawal`, `dividend`, `interest`, `fee`, `tax_withholding`, `fx_conversion`; `reversal` rejected row-level).
+  - `effective_date`: exact `YYYY-MM-DD` calendar-valid date.
+  - `executed_at`: empty or timezone-aware ISO-8601 with explicit `±HH:MM` offset.
+  - `Decimal`: `(?:0|[1-9][0-9]*)(?:\.[0-9]+)?` without signs, commas, exponents, or NaN/Inf.
+  - `Currency`: exact canonical member name (`TRY`, `USD`, `EUR`, `GBP`, `XAU`, `XAG`).
+- **Two-Pass Assessment & Economic Authority:**
+  - Pass 1: Collect all lexical field diagnostics; rows with lexical errors become provisional `REJECTED`, valid rows become provisional `READY`.
+  - Pass 2: Provisional `READY` rows are validated against Phase 13H economic field-family rules via `build_import_transaction_draft`. Contradictory rows become `REJECTED` with diagnostic code `invalid_economic_contract`.
+  - Final authoritative `ImportAssessmentBatch` is constructed, and final typed economic drafts are materialized and bound to it in `ImportDraftBatchManifest`.
+- **Pre-Ledger Boundary:** Pure Python domain converter. Zero instrument resolution, zero external identity derivation, zero cash bucket assignment, zero `PortfolioTransaction` construction, and zero ledger mutation.
+- **Deferred Scope:** Ledger transaction materialization, idempotency derivation, cash bucket assignment, and ledger persistence remain deferred to Phase 13M+.
 
