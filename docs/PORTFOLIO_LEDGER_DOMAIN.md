@@ -239,4 +239,14 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Header Contract:** First physical row is the header; header keys must strictly match Phase 13C field-key grammar (`^[a-z][a-z0-9_]{0,63}$`) and be unique.
 - **Exact Raw Byte Slice Authority:** `ExtractedImportRecord.raw_record` is the exact byte slice of original content excluding only line terminators. Never reconstructed via text encoding.
 - **Textual Fidelity:** Values remain exact strings without stripping, trimming, null-coercion, or date/numeric interpretation.
-- **Deferred Scope:** Broker parsers (Midas, IBKR, banks, TEFAS), transaction inference, instrument mapping, staging persistence, and validation remain deferred to Phase 13G+.
+
+---
+
+## 13g. Immutable Import Interpretation Assessment & Batch Review Foundation (Phase 13G)
+- **Explicit Review Classification:** Every Phase 13C `ParsedImportRecord` is classified into exactly one `ImportAssessmentStatus`: `READY`, `UNRESOLVED`, or `REJECTED`.
+- **READY Status Rule:** `READY` indicates eligibility to proceed to future canonical transaction-draft construction and MUST contain zero diagnostics. It does not imply ledger authorization or valid economics.
+- **Diagnostic Requirement for Exceptions:** `UNRESOLVED` and `REJECTED` statuses require at least one `ImportAssessmentDiagnostic`.
+- **Diagnostic Integrity:** Diagnostic code follows strict grammar `^[a-z][a-z0-9_]{0,63}$`; message is non-empty, non-whitespace-only, max 2048 chars; optional `field_key` must exist in `parsed_record.fields`. Diagnostics within an assessment are uniquely keyed by `(code, field_key)` and canonically sorted.
+- **Complete Batch Coverage:** An `ImportAssessmentBatch` requires exact 1:1 correspondence for all records in the underlying `ParsedImportBatchManifest` in ascending ordinal order.
+- **Cryptographic Preimage & Manifest Digest:** `assessment_manifest_sha256` deterministically digests `[portfolio_id, account_id, source_key, file_content_sha256, raw_manifest_sha256, parser_revision, parsed_manifest_sha256, [[ord, parsed_sha, status, [[code, field_key, msg], ...]], ...]]`.
+- **Deferred Scope:** Financial transaction-draft creation, broker semantic interpreters, instrument mapping, ledger appending, and persistence remain deferred to Phase 13H+.

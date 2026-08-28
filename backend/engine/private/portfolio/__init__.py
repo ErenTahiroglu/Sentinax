@@ -92,6 +92,15 @@ from backend.engine.private.portfolio.parsers import (
     SentinaxCanonicalCsvError,
     SentinaxCanonicalCsvParserV1,
 )
+from backend.engine.private.portfolio.import_assessment import (
+    ImportAssessmentBatch,
+    ImportAssessmentDiagnostic,
+    ImportAssessmentStatus,
+    ImportRecordAssessment,
+    PortfolioImportAssessmentError,
+    build_import_assessment_batch,
+    build_import_record_assessment,
+)
 from backend.engine.private.portfolio.cash import (
     CashBalanceProjection,
     CashBalanceState,
@@ -166,6 +175,13 @@ __all__ = [
     "build_import_staging_result",
     "SentinaxCanonicalCsvError",
     "SentinaxCanonicalCsvParserV1",
+    "PortfolioImportAssessmentError",
+    "ImportAssessmentStatus",
+    "ImportAssessmentDiagnostic",
+    "ImportRecordAssessment",
+    "ImportAssessmentBatch",
+    "build_import_record_assessment",
+    "build_import_assessment_batch",
     "serialize_portfolio",
     "hydrate_portfolio",
     "serialize_portfolio_account",
