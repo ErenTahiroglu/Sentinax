@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS public.portfolio_import_claim_bindings (
 
     transaction_id UUID NOT NULL,
 
-    bound_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
+    bound_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     -- ─────────────────────────────────────────────────────────────────────────
     -- Primary Key: Authoritative Composite Raw Claim Identity (Phase 13O)

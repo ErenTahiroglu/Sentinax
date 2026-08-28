@@ -56,6 +56,16 @@ class TestPortfolioImportClaimSchema:
         for col_pattern in required_cols:
             assert re.search(col_pattern, sql_without_comments, re.IGNORECASE), f"Missing column pattern: {col_pattern}"
 
+    def test_bound_at_default_is_timezone_independent(self, sql_without_comments: str):
+        """Phase 13P.2: bound_at uses native now() DEFAULT without timezone reinterpretation."""
+        assert re.search(
+            r"bound_at\s+TIMESTAMPTZ\s+NOT\s+NULL\s+DEFAULT\s+now\(\)",
+            sql_without_comments,
+            re.IGNORECASE,
+        )
+        assert re.search(r"bound_at[^\n,;]*timezone\s*\(", sql_without_comments, re.IGNORECASE) is None
+        assert re.search(r"bound_at[^\n,;]*AT\s+TIME\s+ZONE", sql_without_comments, re.IGNORECASE) is None
+
     def test_composite_primary_key_and_no_surrogate_id(self, sql_without_comments: str):
         """Matrix C, D, E, F: Primary key is exactly the composite claim identity."""
         # No surrogate id UUID PK
