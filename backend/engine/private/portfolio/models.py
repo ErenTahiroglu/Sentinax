@@ -20,7 +20,7 @@ Key Architectural Invariants:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 import hashlib
 from typing import Any, Dict, Optional
@@ -91,6 +91,28 @@ def _canonical_decimal_str(d: Optional[Decimal]) -> str:
     return s
 
 
+def _canonical_datetime_str(dt: Optional[datetime]) -> str:
+    """
+    Renders an aware datetime in canonical UTC instant text form for economic fingerprinting.
+    Numerically/chronologically equivalent instants with different timezone representations
+    (e.g. 2026-08-28T10:00:00+00:00 and 2026-08-28T13:00:00+03:00) produce identical text.
+    - None -> "None"
+    - Requires actual datetime
+    - Requires timezone-aware (tzinfo is not None)
+    - Converts to UTC with dt.astimezone(timezone.utc)
+    - Formats with isoformat()
+    - Does not drop microseconds
+    """
+    if dt is None:
+        return "None"
+    if isinstance(dt, bool) or not isinstance(dt, datetime):
+        raise TypeError(f"Expected datetime instance, got {type(dt).__name__}: {dt!r}")
+    if dt.tzinfo is None:
+        raise ValueError(f"Datetime must be timezone-aware, got naive: {dt}")
+    utc_dt = dt.astimezone(timezone.utc)
+    return utc_dt.isoformat()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. Portfolio Model (Lifecycle Entity)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -110,7 +132,8 @@ class Portfolio:
     source_snapshot_time: Optional[datetime] = None
     owner_id: Optional[str] = None
 
-    def __post_init__(self) -> None:
+    def validate(self) -> None:
+        """Validates all Portfolio domain invariants."""
         if not self.name or not self.name.strip():
             raise ValueError("Portfolio name cannot be empty.")
         if self.created_at.tzinfo is None:
@@ -129,6 +152,9 @@ class Portfolio:
                 raise ValueError("SANDBOX with source_snapshot_time must specify source_portfolio_id.")
             if self.source_portfolio_id is not None and self.source_portfolio_id == self.id:
                 raise ValueError("SANDBOX source_portfolio_id cannot reference self (no self-cloning).")
+
+    def __post_init__(self) -> None:
+        self.validate()
 
     @property
     def is_active(self) -> bool:
@@ -391,7 +417,7 @@ class PortfolioTransaction:
             self.transaction_type.value,
             str(self.instrument_id) if self.instrument_id else "None",
             self.effective_date.isoformat(),
-            self.executed_at.isoformat() if self.executed_at else "None",
+            _canonical_datetime_str(self.executed_at),
             _canonical_decimal_str(self.quantity),
             _canonical_decimal_str(self.unit_price),
             self.trade_currency.value if self.trade_currency else "None",

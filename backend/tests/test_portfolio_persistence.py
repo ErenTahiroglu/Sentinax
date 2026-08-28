@@ -1025,3 +1025,117 @@ class TestAdversarialCodecFailures:
         with pytest.raises(TypeError, match="must be date instance"):
             serialize_investment_goal(goal_date, owner_id)
 
+    def test_simulated_timestamptz_normalization_round_trip(self, owner_id: UUID, portfolio_id: UUID, account_id: UUID, instrument_id: UUID):
+        """
+        Phase 12B.2A.6: When PostgreSQL normalizes executed_at (e.g. +03:00 -> UTC),
+        hydrating the normalized instant matches the original economic fingerprint.
+        """
+        from datetime import timedelta
+        tz_plus_3 = timezone(timedelta(hours=3))
+
+        tx = PortfolioTransaction(
+            portfolio_id=portfolio_id,
+            account_id=account_id,
+            transaction_type=TransactionType.BUY,
+            effective_date=date(2026, 8, 28),
+            executed_at=datetime(2026, 8, 28, 13, 0, 0, tzinfo=tz_plus_3),
+            recorded_at=datetime(2026, 8, 28, 15, 0, 0, tzinfo=timezone.utc),
+            instrument_id=instrument_id,
+            quantity=Decimal("100"),
+            unit_price=Decimal("50.00"),
+            trade_currency=Currency.USD,
+        )
+
+        row = serialize_portfolio_transaction(tx, owner_id)
+        original_fp = row["economic_fingerprint"]
+
+        # Simulate PostgreSQL TIMESTAMPTZ representation change to UTC instant
+        row_utc = dict(row, executed_at="2026-08-28T10:00:00+00:00")
+        hydrated = hydrate_portfolio_transaction(row_utc, owner_id)
+        assert hydrated.executed_at == datetime(2026, 8, 28, 10, 0, 0, tzinfo=timezone.utc)
+        assert hydrated.economic_fingerprint() == original_fp
+
+        # Genuine instant change must fail fingerprint validation on hydration
+        row_tampered = dict(row, executed_at="2026-08-28T10:00:01+00:00")
+        with pytest.raises(ValueError, match="Economic fingerprint mismatch"):
+            hydrate_portfolio_transaction(row_tampered, owner_id)
+
+    def test_portfolio_provenance_outbound_mutation_rejection(self, owner_id: UUID):
+        """
+        Phase 12B.2A.6: Serializer must fail closed if a valid Portfolio is later mutated
+        into an invalid state violating provenance rules.
+        """
+        # Case A: MY_PORTFOLIO mutated with source_portfolio_id -> rejected
+        port_a = Portfolio(
+            mode=PortfolioMode.MY_PORTFOLIO,
+            name="Main Portfolio",
+            base_currency=Currency.TRY,
+            created_at=datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
+        )
+        port_a.source_portfolio_id = uuid4()
+        with pytest.raises(ValueError, match="MY_PORTFOLIO cannot have source_portfolio_id"):
+            serialize_portfolio(port_a, owner_id)
+
+        # Case B: MY_PORTFOLIO mutated with source_snapshot_time -> rejected
+        port_b = Portfolio(
+            mode=PortfolioMode.MY_PORTFOLIO,
+            name="Main Portfolio",
+            base_currency=Currency.TRY,
+            created_at=datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
+        )
+        port_b.source_snapshot_time = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+        with pytest.raises(ValueError, match="MY_PORTFOLIO cannot have source_snapshot_time"):
+            serialize_portfolio(port_b, owner_id)
+
+        # Case C: SANDBOX mutated to have snapshot time without source portfolio -> rejected
+        src_id = uuid4()
+        port_c = Portfolio(
+            mode=PortfolioMode.SANDBOX,
+            name="Sandbox Portfolio",
+            base_currency=Currency.TRY,
+            created_at=datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
+            source_portfolio_id=src_id,
+            source_snapshot_time=datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
+        )
+        port_c.source_portfolio_id = None
+        with pytest.raises(ValueError, match="SANDBOX with source_snapshot_time must specify source_portfolio_id"):
+            serialize_portfolio(port_c, owner_id)
+
+        # Case D: SANDBOX mutated to reference self -> rejected
+        port_d = Portfolio(
+            mode=PortfolioMode.SANDBOX,
+            name="Sandbox Portfolio",
+            base_currency=Currency.TRY,
+            created_at=datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
+        )
+        port_d.source_portfolio_id = port_d.id
+        with pytest.raises(ValueError, match="SANDBOX source_portfolio_id cannot reference self"):
+            serialize_portfolio(port_d, owner_id)
+
+        # Case E: Unchanged valid MY_PORTFOLIO -> succeeds
+        port_e = Portfolio(
+            mode=PortfolioMode.MY_PORTFOLIO,
+            name="Main Portfolio",
+            base_currency=Currency.TRY,
+            created_at=datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
+        )
+        row_e = serialize_portfolio(port_e, owner_id)
+        assert row_e["mode"] == "my_portfolio"
+        assert row_e["source_portfolio_id"] is None
+        assert row_e["source_snapshot_time"] is None
+
+        # Case F: Valid SANDBOX with legitimate distinct source portfolio -> succeeds
+        port_f = Portfolio(
+            mode=PortfolioMode.SANDBOX,
+            name="Sandbox Portfolio",
+            base_currency=Currency.TRY,
+            created_at=datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
+            source_portfolio_id=src_id,
+            source_snapshot_time=datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
+        )
+        row_f = serialize_portfolio(port_f, owner_id)
+        assert row_f["mode"] == "sandbox"
+        assert row_f["source_portfolio_id"] == str(src_id)
+        assert row_f["source_snapshot_time"] == "2026-01-01T10:00:00+00:00"
+
+

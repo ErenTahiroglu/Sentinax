@@ -978,3 +978,89 @@ def test_economic_fingerprint_numeric_difference_produces_different_hash():
 
     assert tx1.economic_fingerprint() != tx2.economic_fingerprint()
 
+
+def test_economic_fingerprint_executed_at_instant_normalization():
+    """Phase 12B.2A.6: Executed_at timestamps representing the same physical instant must produce the SAME fingerprint."""
+    from datetime import timedelta
+    p_id = uuid4()
+    a_id = uuid4()
+    inst_id = uuid4()
+    rec_time = datetime(2026, 8, 28, 15, 0, 0, tzinfo=timezone.utc)
+    tz_plus_3 = timezone(timedelta(hours=3))
+
+    # TX A: 10:00:00 UTC
+    tx_a = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.BUY,
+        instrument_id=inst_id,
+        effective_date=date(2026, 8, 28),
+        executed_at=datetime(2026, 8, 28, 10, 0, 0, tzinfo=timezone.utc),
+        recorded_at=rec_time,
+        quantity=Decimal("100"),
+        unit_price=Decimal("50.00"),
+        trade_currency=Currency.USD,
+    )
+
+    # TX B: 13:00:00 +03:00 (Same physical instant)
+    tx_b = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.BUY,
+        instrument_id=inst_id,
+        effective_date=date(2026, 8, 28),
+        executed_at=datetime(2026, 8, 28, 13, 0, 0, tzinfo=tz_plus_3),
+        recorded_at=rec_time,
+        quantity=Decimal("100"),
+        unit_price=Decimal("50.00"),
+        trade_currency=Currency.USD,
+    )
+
+    # TX C: 10:00:01 UTC (Different physical instant)
+    tx_c = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.BUY,
+        instrument_id=inst_id,
+        effective_date=date(2026, 8, 28),
+        executed_at=datetime(2026, 8, 28, 10, 0, 1, tzinfo=timezone.utc),
+        recorded_at=rec_time,
+        quantity=Decimal("100"),
+        unit_price=Decimal("50.00"),
+        trade_currency=Currency.USD,
+    )
+
+    # TX D: 10:00:00.123456 UTC (Microsecond precision)
+    tx_d = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.BUY,
+        instrument_id=inst_id,
+        effective_date=date(2026, 8, 28),
+        executed_at=datetime(2026, 8, 28, 10, 0, 0, 123456, tzinfo=timezone.utc),
+        recorded_at=rec_time,
+        quantity=Decimal("100"),
+        unit_price=Decimal("50.00"),
+        trade_currency=Currency.USD,
+    )
+
+    # TX E: 13:00:00.123456 +03:00 (Same microsecond instant as D)
+    tx_e = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.BUY,
+        instrument_id=inst_id,
+        effective_date=date(2026, 8, 28),
+        executed_at=datetime(2026, 8, 28, 13, 0, 0, 123456, tzinfo=tz_plus_3),
+        recorded_at=rec_time,
+        quantity=Decimal("100"),
+        unit_price=Decimal("50.00"),
+        trade_currency=Currency.USD,
+    )
+
+    assert tx_a.economic_fingerprint() == tx_b.economic_fingerprint()
+    assert tx_a.economic_fingerprint() != tx_c.economic_fingerprint()
+    assert tx_d.economic_fingerprint() == tx_e.economic_fingerprint()
+    assert tx_a.economic_fingerprint() != tx_d.economic_fingerprint()
+
+

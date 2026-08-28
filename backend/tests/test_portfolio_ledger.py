@@ -189,6 +189,48 @@ def test_external_idempotency_decimal_lexical_variation():
     assert len(ledger) == 1
 
 
+def test_external_idempotency_executed_at_timezone_equivalence():
+    """Phase 12B.2A.6: Replaying external transaction with same physical instant across timezones is IDEMPOTENT_DUPLICATE."""
+    from datetime import timedelta
+    port = _make_portfolio()
+    p_id = port.id
+    a_id = uuid4()
+    inst_id = uuid4()
+    ledger = PortfolioLedger(port)
+    tz_plus_3 = timezone(timedelta(hours=3))
+
+    # Event 1: executed_at = 10:00:00 UTC
+    tx1 = _make_buy(
+        p_id, a_id, inst_id, date(2026, 8, 28),
+        exec_at=datetime(2026, 8, 28, 10, 0, 0, tzinfo=timezone.utc),
+        ext_source="MIDAS", ext_ref="ORD-TZ-1",
+    )
+    r1 = ledger.append(tx1)
+    assert r1.status == AppendStatus.APPENDED
+
+    # Replay: executed_at = 13:00:00 +03:00 (Same physical instant)
+    tx2 = _make_buy(
+        p_id, a_id, inst_id, date(2026, 8, 28),
+        exec_at=datetime(2026, 8, 28, 13, 0, 0, tzinfo=tz_plus_3),
+        ext_source="MIDAS", ext_ref="ORD-TZ-1",
+    )
+    r2 = ledger.append(tx2)
+    assert r2.status == AppendStatus.IDEMPOTENT_DUPLICATE
+    assert r2.transaction_id == tx1.id
+    assert len(ledger) == 1
+
+    # Conflict test: replay with different physical instant (10:00:01 UTC)
+    tx3 = _make_buy(
+        p_id, a_id, inst_id, date(2026, 8, 28),
+        exec_at=datetime(2026, 8, 28, 10, 0, 1, tzinfo=timezone.utc),
+        ext_source="MIDAS", ext_ref="ORD-TZ-1",
+    )
+    r3 = ledger.append(tx3)
+    assert r3.status == AppendStatus.CONFLICT
+    assert len(ledger) == 1
+
+
+
 
 def test_external_idempotency_conflict_detection():
     port = _make_portfolio()

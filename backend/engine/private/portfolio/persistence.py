@@ -362,10 +362,11 @@ def serialize_portfolio(portfolio: Portfolio, owner_id: UUID | str) -> Dict[str,
     """
     Serializes a Portfolio domain aggregate into a database row dictionary.
     Whitelists columns from public.portfolios (never includes `is_active`).
-    Validates domain entity fields prior to emission.
+    Validates domain entity fields and provenance invariants prior to emission.
     """
     if not isinstance(portfolio, Portfolio):
         raise TypeError(f"Expected Portfolio instance, got {type(portfolio).__name__}")
+    portfolio.validate()
     trusted_owner = _parse_required_uuid(owner_id, "owner_id")
 
     if portfolio.owner_id is not None:
