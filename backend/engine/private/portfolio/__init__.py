@@ -45,6 +45,7 @@ from backend.engine.private.portfolio.postgrest_transport import (
     PORTFOLIO_SELECT,
     PORTFOLIO_TRANSACTION_SELECT,
 )
+from backend.engine.private.portfolio.repository import PortfolioRepository
 
 __all__ = [
     "Portfolio",
@@ -56,6 +57,7 @@ __all__ = [
     "PositionLot",
     "PortfolioLedger",
     "PortfolioLedgerValidator",
+    "PortfolioRepository",
     "AppendResult",
     "AppendStatus",
     "serialize_portfolio",

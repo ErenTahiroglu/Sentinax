@@ -320,3 +320,59 @@ class TestPortfolioPersistenceSchema:
         assert "cash_balances" not in sql_without_comments
         assert "UPDATE public.cash_buckets" not in sql_without_comments
         assert "INSERT INTO public.portfolio_transactions" not in sql_without_comments
+
+
+MIGRATION_012_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "..", "supabase", "migrations", "012_portfolio_external_identity_lookup.sql"
+)
+
+
+@pytest.fixture(scope="module")
+def migration_012_sql() -> str:
+    assert os.path.exists(MIGRATION_012_PATH), f"Migration file missing: {MIGRATION_012_PATH}"
+    with open(MIGRATION_012_PATH, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+class TestMigration012ExternalIdentityLookup:
+    """Static and structural validation of migration 012."""
+
+    def test_migration_012_file_exists(self, migration_012_sql: str):
+        assert len(migration_012_sql) > 200
+
+    def test_migration_012_function_signature_and_security(self, migration_012_sql: str):
+        """Must define lookup_portfolio_transaction_external_identity with SECURITY INVOKER."""
+        no_comments = re.sub(r"--.*", "", migration_012_sql)
+
+        assert "CREATE OR REPLACE FUNCTION public.lookup_portfolio_transaction_external_identity" in no_comments
+        assert "RETURNS UUID" in no_comments
+        assert "LANGUAGE sql" in no_comments
+        assert "STABLE" in no_comments
+        assert "SECURITY INVOKER" in no_comments
+        assert "SECURITY DEFINER" not in no_comments
+
+    def test_migration_012_deterministic_search_path(self, migration_012_sql: str):
+        """Must set explicit deterministic search_path."""
+        no_comments = re.sub(r"--.*", "", migration_012_sql)
+        assert re.search(r"SET\s+search_path\s*=\s*public\s*,\s*pg_temp", no_comments, re.IGNORECASE)
+
+    def test_migration_012_where_clause_and_normalization(self, migration_012_sql: str):
+        """Must strictly scope owner, portfolio, account, and use normalized string comparisons."""
+        no_comments = re.sub(r"--.*", "", migration_012_sql)
+
+        assert "pt.owner_id = p_owner_id" in no_comments
+        assert "pt.portfolio_id = p_portfolio_id" in no_comments
+        assert "pt.account_id = p_account_id" in no_comments
+        assert "upper(trim(pt.external_source)) = upper(trim(p_external_source))" in no_comments
+        assert "trim(pt.external_reference) = trim(p_external_reference)" in no_comments
+        assert "SELECT pt.id" in no_comments
+        assert "NUMERIC" not in no_comments
+
+    def test_migration_012_permissions_hardening(self, migration_012_sql: str):
+        """Must revoke from PUBLIC and grant only to authenticated and service_role."""
+        no_comments = re.sub(r"--.*", "", migration_012_sql)
+
+        assert "REVOKE EXECUTE ON FUNCTION public.lookup_portfolio_transaction_external_identity" in no_comments
+        assert "FROM PUBLIC" in no_comments
+        assert "GRANT EXECUTE ON FUNCTION public.lookup_portfolio_transaction_external_identity" in no_comments
+        assert "TO authenticated, service_role" in no_comments
