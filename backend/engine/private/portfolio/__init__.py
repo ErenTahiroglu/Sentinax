@@ -129,6 +129,9 @@ from backend.engine.private.portfolio.parsers.sentinax_csv_semantics import (
     SentinaxCanonicalCsvSemanticError,
     SentinaxCanonicalCsvSemanticInterpreterV1,
 )
+from backend.engine.private.portfolio.sentinax_csv_import import (
+    run_sentinax_canonical_csv_import_v1,
+)
 from backend.engine.private.portfolio.cash import (
     CashBalanceProjection,
     CashBalanceState,
@@ -228,6 +231,7 @@ __all__ = [
     "resolve_import_draft_batch_instruments",
     "SentinaxCanonicalCsvSemanticError",
     "SentinaxCanonicalCsvSemanticInterpreterV1",
+    "run_sentinax_canonical_csv_import_v1",
     "serialize_portfolio",
     "hydrate_portfolio",
     "serialize_portfolio_account",

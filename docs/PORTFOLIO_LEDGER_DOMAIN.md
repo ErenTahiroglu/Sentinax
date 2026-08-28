@@ -324,3 +324,14 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Pre-Ledger Boundary:** Pure Python domain converter. Zero instrument resolution, zero external identity derivation, zero cash bucket assignment, zero `PortfolioTransaction` construction, and zero ledger mutation.
 - **Deferred Scope:** Ledger transaction materialization, idempotency derivation, cash bucket assignment, and ledger persistence remain deferred to Phase 13M+.
 
+---
+
+## 13m. Sentinax Canonical CSV v1 End-to-End Pre-Ledger Import Orchestration (Phase 13M)
+- **Thin End-to-End Pre-Ledger Composition:** Single authoritative entry point `run_sentinax_canonical_csv_import_v1` composes raw immutable CSV bytes through Phase 13E/F staging and parsing (`SentinaxCanonicalCsvParserV1`), Phase 13L semantic interpretation (`SentinaxCanonicalCsvSemanticInterpreterV1`), and Phase 13K PIT instrument resolver execution (`resolve_import_draft_batch_instruments`).
+- **Direct Authoritative Return:** Returns the immutable Phase 13J `ImportInstrumentResolutionBatch` directly without redundant result wrappers. The complete nested provenance chain (`resolution_batch` -> `draft_manifest` -> `assessment_batch` -> `parsed_manifest` -> `raw_manifest` -> `file_provenance`) is fully inspectable.
+- **Exception & Rejection Semantics:** Lower-layer domain exceptions and resolver adapter errors propagate unchanged without wrapping. Semantically `REJECTED` rows remain inspectable in the assessment batch but receive no draft or resolver invocation and do not abort the valid batch.
+- **Zero New Hashes or UUIDs:** Introduces zero new cryptographic hashes or identifier schemes; relies exclusively on the closed immutable hash manifest hierarchy established in Phases 13A–13L.
+- **Provenance Authority:** `imported_at` is explicit caller observation metadata and is not mapped to ledger `recorded_at`.
+- **Pre-Ledger Domain Boundary:** Pure pre-ledger pipeline orchestration. Zero `PortfolioTransaction` construction, zero external identity/idempotency derivation, zero cash bucket assignment, zero repository or database persistence, and zero mutation of the financial ledger.
+- **Deferred Scope:** Ledger transaction materialization, idempotency key derivation, cash bucket attribution, and ledger persistence remain deferred to Phase 13N+.
+
