@@ -872,3 +872,89 @@ class TestRegressionsAndInvariants:
         m2 = interpreter.interpret(_parse_csv_bytes(csv2))
         assert m1.drafts[0].instrument_reference == "AAPL"
         assert m2.drafts[0].instrument_reference == "MSFT"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 13. Phase 13L.1 Fixed-Metadata Immutability Hardening
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestFixedMetadataImmutabilityHardening:
+    """Tests for Phase 13L.1 fixed metadata immutability and bypass prevention."""
+
+    def test_metadata_attributes_immutable(self):
+        """Section 10: Mutating source_key, parser_revision, or semantic_revision raises AttributeError."""
+        interpreter = SentinaxCanonicalCsvSemanticInterpreterV1()
+
+        with pytest.raises(AttributeError):
+            interpreter.source_key = "evil_source"  # type: ignore
+
+        with pytest.raises(AttributeError):
+            interpreter.parser_revision = 999  # type: ignore
+
+        with pytest.raises(AttributeError):
+            interpreter.semantic_revision = 999  # type: ignore
+
+        # Verify values remain unchanged
+        assert interpreter.source_key == "sentinax_csv"
+        assert interpreter.parser_revision == 1
+        assert interpreter.semantic_revision == 1
+
+    def test_slots_prevents_instance_dict(self):
+        """Section 8: Interpreter has __slots__ = () and no mutable __dict__."""
+        interpreter = SentinaxCanonicalCsvSemanticInterpreterV1()
+        assert not hasattr(interpreter, "__dict__")
+
+    def test_foreign_source_bypass_red_team(self):
+        """Section 11: Foreign source cannot bypass interpreter gate."""
+        interpreter = SentinaxCanonicalCsvSemanticInterpreterV1()
+
+        class ForeignSourceParser(SentinaxCanonicalCsvParserV1):
+            @property
+            def source_key(self) -> str:
+                return "foreign_source"
+
+        staging = build_import_staging_result(
+            portfolio_id=uuid4(),
+            account_id=uuid4(),
+            filename="test.csv",
+            content=_make_single_row_csv(),
+            imported_at=datetime(2026, 8, 28, 14, 0, tzinfo=timezone.utc),
+            parser=ForeignSourceParser(),
+        )
+
+        with pytest.raises(AttributeError):
+            interpreter.source_key = "foreign_source"  # type: ignore
+
+        with pytest.raises(SentinaxCanonicalCsvSemanticError, match="source_key"):
+            interpreter.interpret(staging.parsed_manifest)
+
+    def test_parser_revision_2_bypass_red_team(self):
+        """Section 12: Parser revision 2 cannot bypass interpreter gate."""
+        interpreter = SentinaxCanonicalCsvSemanticInterpreterV1()
+
+        class Revision2Parser(SentinaxCanonicalCsvParserV1):
+            @property
+            def parser_revision(self) -> int:
+                return 2
+
+        staging = build_import_staging_result(
+            portfolio_id=uuid4(),
+            account_id=uuid4(),
+            filename="test.csv",
+            content=_make_single_row_csv(),
+            imported_at=datetime(2026, 8, 28, 14, 0, tzinfo=timezone.utc),
+            parser=Revision2Parser(),
+        )
+
+        with pytest.raises(AttributeError):
+            interpreter.parser_revision = 2  # type: ignore
+
+        with pytest.raises(SentinaxCanonicalCsvSemanticError, match="parser_revision"):
+            interpreter.interpret(staging.parsed_manifest)
+
+    def test_class_contract_defaults(self):
+        """Section 13: Newly created interpreter always has exact fixed metadata."""
+        interpreter = SentinaxCanonicalCsvSemanticInterpreterV1()
+        assert interpreter.source_key == "sentinax_csv"
+        assert interpreter.parser_revision == 1
+        assert interpreter.semantic_revision == 1

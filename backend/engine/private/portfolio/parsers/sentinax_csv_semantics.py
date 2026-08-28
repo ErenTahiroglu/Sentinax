@@ -149,9 +149,19 @@ class SentinaxCanonicalCsvSemanticInterpreterV1:
     Source-specific semantic interpreter for Sentinax Canonical CSV v1.
     Stateless, deterministic converter from ParsedImportBatchManifest to ImportDraftBatchManifest.
     """
-    source_key: str = "sentinax_csv"
-    parser_revision: int = 1
-    semantic_revision: int = 1
+    __slots__ = ()
+
+    @property
+    def source_key(self) -> str:
+        return "sentinax_csv"
+
+    @property
+    def parser_revision(self) -> int:
+        return 1
+
+    @property
+    def semantic_revision(self) -> int:
+        return 1
 
     def interpret(
         self,
