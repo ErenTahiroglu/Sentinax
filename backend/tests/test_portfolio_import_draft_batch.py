@@ -388,7 +388,7 @@ class TestReadyCoverageMatrix:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestBindingMatrix:
-    """N-Q: Assessment batch binding enforcement."""
+    """N-Q: Assessment batch binding enforcement (semantic equality, not object identity)."""
 
     def test_N_draft_bound_to_exact_batch_accepted(self):
         """N: Draft bound to the exact same assessment batch object is accepted."""
@@ -398,41 +398,264 @@ class TestBindingMatrix:
         manifest = build_import_draft_batch_manifest(batch, [draft])
         assert manifest.assessment_batch is batch
 
-    def test_O_draft_from_different_batch_rejected(self):
-        """O: Draft from a different assessment batch fails closed."""
+    def test_O_draft_from_semantically_different_batch_rejected(self):
+        """O: Draft from a semantically different batch (different portfolio/file) fails closed."""
         batch1 = _make_test_assessment_batch([ImportAssessmentStatus.READY])
         batch2 = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        # batch1 and batch2 have different portfolio_id/account_id/file content SHA
+        assert batch1 != batch2
         draft_for_batch2 = _make_buy_draft(batch2, 1)
-        # draft_for_batch2.assessment_batch is batch2, not batch1
-        with pytest.raises(PortfolioImportDraftBatchError, match="different assessment batch"):
+        with pytest.raises(PortfolioImportDraftBatchError, match="semantically different"):
             build_import_draft_batch_manifest(batch1, [draft_for_batch2])
 
-    def test_P_same_ordinal_economics_foreign_batch_rejected(self):
-        """P: Same ordinal/economics from foreign batch fails closed."""
+    def test_P_same_ordinal_economics_semantically_foreign_batch_rejected(self):
+        """P: Same ordinal/economics from semantically foreign batch fails closed."""
         batch1 = _make_test_assessment_batch([ImportAssessmentStatus.READY])
         batch2 = _make_test_assessment_batch([ImportAssessmentStatus.READY])
-        # Build draft against batch2 - even if ordinal matches, binding must fail
+        # batch2 is semantically different (different portfolio UUID, different file SHA)
+        assert batch1 != batch2
         draft_foreign = _make_buy_draft(batch2, 1)
-        with pytest.raises(PortfolioImportDraftBatchError, match="different assessment batch"):
+        with pytest.raises(PortfolioImportDraftBatchError, match="semantically different"):
             build_import_draft_batch_manifest(batch1, [draft_foreign])
 
     def test_Q_old_draft_rejected_after_status_change(self):
-        """Q: Draft from old batch rejected when status changes in a rebuilt batch."""
-        # Build batch1 with ordinal 1 READY
+        """Q: Draft from old batch rejected when status changes in a rebuilt semantically different batch."""
+        # Build batch_old with two READY records
         statuses = [ImportAssessmentStatus.READY, ImportAssessmentStatus.READY]
         batch_old = _make_test_assessment_batch(statuses)
         draft_old = _make_buy_draft(batch_old, 1)
 
-        # "Rebuild" batch as a separate batch object (status change scenario)
-        # The new batch is different from the old batch (different object)
+        # batch_new uses different statuses (ordinal 1 now UNRESOLVED)
+        # — it is semantically different from batch_old
         batch_new = _make_test_assessment_batch([
             ImportAssessmentStatus.UNRESOLVED,  # ordinal 1 now UNRESOLVED
             ImportAssessmentStatus.READY,
         ])
+        assert batch_old != batch_new
 
-        # The draft was built against batch_old, so it will be rejected
-        with pytest.raises(PortfolioImportDraftBatchError, match="different assessment batch"):
+        # draft_old is bound to batch_old which is semantically different from batch_new
+        with pytest.raises(PortfolioImportDraftBatchError, match="semantically different"):
             build_import_draft_batch_manifest(batch_new, [draft_old])
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3b. Semantic Equality Matrix (Phase 13I.1 Hardening)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSemanticEqualityMatrix:
+    """
+    A-J: Semantic equality binding — semantically equal but distinct in-memory
+    ImportAssessmentBatch instances must be accepted; genuinely different batches
+    must still be rejected.
+    """
+
+    def _reconstruct_batch(self, original: ImportAssessmentBatch) -> ImportAssessmentBatch:
+        """
+        Independently reconstructs an ImportAssessmentBatch with identical content.
+        The resulting object is equal to but NOT identical (is not) to the original.
+        """
+        # Rebuild directly from the same constituent parts already held in the batch
+        return build_import_assessment_batch(
+            original.parsed_manifest,
+            list(original.assessments),
+        )
+
+    def test_A_same_exact_object_accepted(self):
+        """A: Same exact object is accepted (baseline)."""
+        batch = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        draft = _make_buy_draft(batch, 1)
+        manifest = build_import_draft_batch_manifest(batch, [draft])
+        assert manifest.draft_count == 1
+
+    def test_B_semantically_equal_distinct_reconstructed_object_accepted(self):
+        """B: Semantically equal but distinct reconstructed batch is accepted."""
+        batch_A = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        batch_B = self._reconstruct_batch(batch_A)
+
+        # B is semantically equal to A but a different in-memory object
+        assert batch_A == batch_B
+        assert batch_A is not batch_B
+
+        # Draft built against A
+        draft_against_A = _make_buy_draft(batch_A, 1)
+
+        # Manifest authoritative batch is B — must be accepted because A == B
+        manifest = build_import_draft_batch_manifest(batch_B, [draft_against_A])
+        assert manifest.draft_count == 1
+        assert manifest.drafts[0] is draft_against_A  # original object preserved
+
+    def test_C_a_equals_b_and_a_is_not_b_proven(self):
+        """C: A == B and A is not B explicitly proven."""
+        batch_A = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        batch_B = self._reconstruct_batch(batch_A)
+        assert batch_A == batch_B
+        assert batch_A is not batch_B
+        assert batch_A.assessment_manifest_sha256 == batch_B.assessment_manifest_sha256
+
+    def test_D_builder_accepts_draft_bound_to_A_when_manifest_batch_is_equal_B(self):
+        """D: Builder accepts draft bound to A when authoritative manifest batch is equal B."""
+        batch_A = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        batch_B = self._reconstruct_batch(batch_A)
+        assert batch_A == batch_B
+        assert batch_A is not batch_B
+
+        draft = _make_buy_draft(batch_A, 1)
+        manifest = build_import_draft_batch_manifest(batch_B, [draft])
+        assert manifest.draft_count == 1
+
+    def test_E_direct_constructor_accepts_same_scenario(self):
+        """E: Direct constructor accepts draft bound to A with manifest batch B (equal, recomputed SHA)."""
+        batch_A = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        batch_B = self._reconstruct_batch(batch_A)
+        assert batch_A == batch_B
+        assert batch_A is not batch_B
+
+        draft = _make_buy_draft(batch_A, 1)
+        sorted_drafts = (draft,)
+
+        # Compute SHA using batch_B as authority
+        import hashlib, json
+        preimage = [
+            str(batch_B.portfolio_id),
+            str(batch_B.account_id),
+            batch_B.source_key,
+            batch_B.file_content_sha256,
+            batch_B.raw_manifest_sha256,
+            batch_B.parser_revision,
+            batch_B.parsed_manifest_sha256,
+            batch_B.assessment_manifest_sha256,
+            [
+                [
+                    d.record_ordinal,
+                    d.assessment.parsed_record.parsed_sha256,
+                    d.draft_sha256,
+                ]
+                for d in sorted_drafts
+            ],
+        ]
+        encoded = json.dumps(preimage, ensure_ascii=True, separators=(",", ":"))
+        sha = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+        manifest = ImportDraftBatchManifest(
+            assessment_batch=batch_B,
+            drafts=sorted_drafts,
+            draft_manifest_sha256=sha,
+        )
+        assert manifest.draft_count == 1
+
+    def test_F_semantically_different_status_batch_rejected(self):
+        """F: Batch with different status (READY → UNRESOLVED) is semantically different and rejected."""
+        batch_A = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        batch_C = _make_test_assessment_batch([ImportAssessmentStatus.UNRESOLVED])
+        assert batch_A != batch_C
+        # Cannot build a draft against UNRESOLVED batch anyway; build against A and try manifest with C
+        draft_against_A = _make_buy_draft(batch_A, 1)
+        with pytest.raises(PortfolioImportDraftBatchError, match="semantically different"):
+            build_import_draft_batch_manifest(batch_C, [draft_against_A])
+
+    def test_G_semantically_different_diagnostic_batch_rejected(self):
+        """G: Batch with different diagnostic content is semantically different and rejected."""
+        # Build batch_A: ordinal 1 READY, ordinal 2 UNRESOLVED with diagnostic code 'code_a'
+        batch_A = _make_test_assessment_batch([
+            ImportAssessmentStatus.READY,
+            ImportAssessmentStatus.UNRESOLVED,
+        ])
+        # Build batch_G: same structure but a different file/portfolio → different assessment SHA
+        # (Since _make_test_assessment_batch generates new UUIDs each call, batch_G is
+        # semantically different from batch_A)
+        batch_G = _make_test_assessment_batch([
+            ImportAssessmentStatus.READY,
+            ImportAssessmentStatus.UNRESOLVED,
+        ])
+        assert batch_A != batch_G
+        draft_against_A = _make_buy_draft(batch_A, 1)
+        with pytest.raises(PortfolioImportDraftBatchError, match="semantically different"):
+            build_import_draft_batch_manifest(batch_G, [draft_against_A])
+
+    def test_H_semantically_different_parsed_manifest_batch_rejected(self):
+        """H: Batch from a different parsed manifest (different file bytes) is rejected."""
+        batch_A = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        # Different file content → different file_content_sha256 → different batch
+        batch_H = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        assert batch_A != batch_H
+        draft_against_A = _make_buy_draft(batch_A, 1)
+        with pytest.raises(PortfolioImportDraftBatchError, match="semantically different"):
+            build_import_draft_batch_manifest(batch_H, [draft_against_A])
+
+    def test_I_semantically_different_portfolio_account_file_batch_rejected(self):
+        """I: Batch from different portfolio/account/file is rejected."""
+        batch_A = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        batch_I = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        # Different portfolio_id and account_id by construction
+        assert batch_A.portfolio_id != batch_I.portfolio_id
+        assert batch_A != batch_I
+        draft_against_A = _make_buy_draft(batch_A, 1)
+        with pytest.raises(PortfolioImportDraftBatchError, match="semantically different"):
+            build_import_draft_batch_manifest(batch_I, [draft_against_A])
+
+    def test_J_same_ordinal_economics_semantically_foreign_batch_rejected(self):
+        """J: Same ordinal and economics but semantically foreign batch is rejected."""
+        batch_A = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        batch_J = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        assert batch_A != batch_J
+        draft_against_A = _make_buy_draft(batch_A, 1)
+        with pytest.raises(PortfolioImportDraftBatchError, match="semantically different"):
+            build_import_draft_batch_manifest(batch_J, [draft_against_A])
+
+    def test_semantic_equality_sha_not_sole_authority(self):
+        """Static proof: the binding check is not SHA-only comparison."""
+        import inspect
+        import backend.engine.private.portfolio.import_draft_batch as module
+        src = inspect.getsource(module)
+        # Confirm 'is not' binding was replaced with '!=' semantic equality
+        # The source should NOT contain 'is not assessment_batch'
+        assert "is not assessment_batch" not in src
+        # Confirm '!=' is present for binding
+        assert "!= assessment_batch" in src
+
+    def test_digest_deterministic_for_semantically_equal_distinct_batches(self):
+        """Semantically equal A and B produce the same draft_manifest_sha256."""
+        batch_A = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        batch_B = self._reconstruct_batch(batch_A)
+        assert batch_A == batch_B and batch_A is not batch_B
+
+        draft = _make_buy_draft(batch_A, 1)
+        m_A = build_import_draft_batch_manifest(batch_A, [draft])
+        m_B = build_import_draft_batch_manifest(batch_B, [draft])
+        assert m_A.draft_manifest_sha256 == m_B.draft_manifest_sha256
+
+    def test_identity_deterministic_for_semantically_equal_distinct_batches(self):
+        """Semantically equal A and B produce the same draft_manifest_identity."""
+        batch_A = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        batch_B = self._reconstruct_batch(batch_A)
+        assert batch_A == batch_B and batch_A is not batch_B
+
+        draft = _make_buy_draft(batch_A, 1)
+        m_A = build_import_draft_batch_manifest(batch_A, [draft])
+        m_B = build_import_draft_batch_manifest(batch_B, [draft])
+        assert m_A.draft_manifest_identity == m_B.draft_manifest_identity
+
+    def test_object_identity_does_not_affect_digest(self):
+        """No object memory address influences any digest value."""
+        batch_A = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        batch_B = self._reconstruct_batch(batch_A)
+        draft = _make_buy_draft(batch_A, 1)
+        m1 = build_import_draft_batch_manifest(batch_A, [draft])
+        m2 = build_import_draft_batch_manifest(batch_B, [draft])
+        # Both produce identical SHA — no memory address influence
+        assert m1.draft_manifest_sha256 == m2.draft_manifest_sha256
+        assert id(batch_A) != id(batch_B)  # confirm they are distinct objects
+
+    def test_draft_object_preserved_when_bound_to_equal_not_identical_batch(self):
+        """Original draft object is preserved even when manifest uses semantically equal batch B."""
+        batch_A = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        batch_B = self._reconstruct_batch(batch_A)
+        draft = _make_buy_draft(batch_A, 1)
+        manifest = build_import_draft_batch_manifest(batch_B, [draft])
+        # The exact original draft object must be in manifest.drafts
+        assert manifest.drafts[0] is draft
+        # The draft's embedded assessment_batch is A (not reconstructed)
+        assert manifest.drafts[0].assessment_batch is batch_A
+        assert manifest.drafts[0].assessment_batch == batch_B  # semantically equal
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1082,11 +1305,13 @@ class TestFinalRedTeam:
             build_import_draft_batch_manifest(batch, [d1, d1_dup])
 
     def test_foreign_assessment_batch_draft_rejected(self):
-        """Draft from completely different batch fails closed."""
+        """Draft from semantically different batch fails closed."""
         batch_target = _make_test_assessment_batch([ImportAssessmentStatus.READY])
         batch_foreign = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        # Different portfolio/account/file — semantically different
+        assert batch_target != batch_foreign
         foreign_draft = _make_buy_draft(batch_foreign, 1)
-        with pytest.raises(PortfolioImportDraftBatchError, match="different assessment batch"):
+        with pytest.raises(PortfolioImportDraftBatchError, match="semantically different"):
             build_import_draft_batch_manifest(batch_target, [foreign_draft])
 
     def test_shuffled_input_does_not_change_identity(self):

@@ -97,7 +97,9 @@ def _validate_draft_batch_invariants(
     - assessment_batch is a genuine ImportAssessmentBatch.
     - drafts is a tuple.
     - Each element is an ImportTransactionDraft.
-    - Each draft's assessment_batch is the same object as the batch (not merely same SHA).
+    - Each draft's assessment_batch is semantically equal to the manifest batch (full dataclass
+      equality, not object identity). Semantically equal but distinct in-memory objects are accepted.
+      Only genuinely different assessment state fails closed.
     - No duplicate record ordinals.
     - Every draft ordinal is READY in the authoritative assessment batch.
     - No UNRESOLVED/REJECTED ordinals are drafted.
@@ -133,12 +135,16 @@ def _validate_draft_batch_invariants(
                 f"got {type(draft).__name__}"
             )
 
-        # Binding: same assessment batch object (semantic equality required)
-        if draft.assessment_batch is not assessment_batch:
+        # Binding: full semantic equality required.
+        # Object identity is NOT the authority. Semantically equal but distinct in-memory
+        # ImportAssessmentBatch instances (e.g. reconstructed after serialization/hydration)
+        # must be accepted. Only a genuinely different assessment state (different portfolio,
+        # account, file, statuses, diagnostics, parsed records, or digest) fails closed.
+        if draft.assessment_batch != assessment_batch:
             raise PortfolioImportDraftBatchError(
                 f"Draft at index {idx} (ordinal {draft.record_ordinal}) is bound to a "
-                f"different assessment batch. All drafts must reference the same "
-                f"ImportAssessmentBatch as the manifest."
+                f"semantically different assessment batch. All drafts must be bound to an "
+                f"ImportAssessmentBatch that is semantically equal to the manifest's batch."
             )
 
         ordinal = draft.record_ordinal
@@ -269,7 +275,8 @@ def build_import_draft_batch_manifest(
     Builder:
     - Accepts drafts only as a materialized list or tuple (generators, sets, dicts, etc. rejected).
     - Validates each item type.
-    - Validates that every draft is bound to the same assessment_batch object.
+    - Validates that every draft is semantically bound to the same assessment_batch content
+      (full dataclass equality, not object identity).
     - Detects duplicate record ordinals explicitly (no silent dedup).
     - Derives authoritative READY ordinals from assessment_batch.
     - Proves exact READY coverage.
@@ -302,11 +309,14 @@ def build_import_draft_batch_manifest(
                 f"got {type(draft).__name__}"
             )
 
-        if draft.assessment_batch is not assessment_batch:
+        # Binding: full semantic equality required.
+        # Object identity is NOT the authority. Semantically equal but distinct in-memory
+        # ImportAssessmentBatch instances must be accepted.
+        if draft.assessment_batch != assessment_batch:
             raise PortfolioImportDraftBatchError(
                 f"Draft at index {idx} (ordinal {draft.record_ordinal}) is bound to a "
-                f"different assessment batch. All drafts must reference the same "
-                f"ImportAssessmentBatch as the manifest."
+                f"semantically different assessment batch. All drafts must be bound to an "
+                f"ImportAssessmentBatch that is semantically equal to the manifest's batch."
             )
 
         ordinal = draft.record_ordinal
