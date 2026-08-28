@@ -136,10 +136,3 @@ CREATE POLICY "Users can insert own import claim bindings"
     FOR INSERT
     TO authenticated
     WITH CHECK ((SELECT auth.uid()) = owner_id);
-
-CREATE POLICY "Service role full access on portfolio_import_claim_bindings"
-    ON public.portfolio_import_claim_bindings
-    FOR ALL
-    TO service_role
-    USING (true)
-    WITH CHECK (true);

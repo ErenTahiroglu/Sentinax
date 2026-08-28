@@ -478,6 +478,146 @@ class TestPersistenceInvarianceAndSensitivity:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 4. Direct Model Type Integrity Tests (Phase 13P.1)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestDirectModelTypeIntegrity:
+    """Matrix J-Q: Direct PersistedImportLedgerBinding constructor type enforcement."""
+
+    def test_direct_model_accepts_actual_types(self):
+        """Matrix J, O: Direct construction with actual UUIDs and aware datetime succeeds."""
+        owner_id = uuid4()
+        port_id = uuid4()
+        acc_id = uuid4()
+        tx_id = uuid4()
+        bound_at = datetime(2026, 8, 28, 15, 30, tzinfo=timezone.utc)
+
+        binding = PersistedImportLedgerBinding(
+            owner_id=owner_id,
+            portfolio_id=port_id,
+            account_id=acc_id,
+            source_key="sentinax_csv",
+            file_content_sha256="a" * 64,
+            record_ordinal=1,
+            record_sha256="b" * 64,
+            expected_plan_sha256="c" * 64,
+            transaction_id=tx_id,
+            bound_at=bound_at,
+        )
+
+        assert type(binding.owner_id) is UUID
+        assert type(binding.portfolio_id) is UUID
+        assert type(binding.account_id) is UUID
+        assert type(binding.transaction_id) is UUID
+        assert type(binding.bound_at) is datetime
+
+    def test_direct_model_rejects_string_uuids(self):
+        """Matrix K, L, M, N: Direct model rejects canonical UUID strings."""
+        owner_id = uuid4()
+        port_id = uuid4()
+        acc_id = uuid4()
+        tx_id = uuid4()
+        bound_at = datetime(2026, 8, 28, 15, 30, tzinfo=timezone.utc)
+
+        # owner_id as str
+        with pytest.raises(PortfolioImportCommitPersistenceError, match="owner_id"):
+            PersistedImportLedgerBinding(
+                owner_id=str(owner_id),  # type: ignore[arg-type]
+                portfolio_id=port_id,
+                account_id=acc_id,
+                source_key="sentinax_csv",
+                file_content_sha256="a" * 64,
+                record_ordinal=1,
+                record_sha256="b" * 64,
+                expected_plan_sha256="c" * 64,
+                transaction_id=tx_id,
+                bound_at=bound_at,
+            )
+
+        # portfolio_id as str
+        with pytest.raises(PortfolioImportCommitPersistenceError, match="portfolio_id"):
+            PersistedImportLedgerBinding(
+                owner_id=owner_id,
+                portfolio_id=str(port_id),  # type: ignore[arg-type]
+                account_id=acc_id,
+                source_key="sentinax_csv",
+                file_content_sha256="a" * 64,
+                record_ordinal=1,
+                record_sha256="b" * 64,
+                expected_plan_sha256="c" * 64,
+                transaction_id=tx_id,
+                bound_at=bound_at,
+            )
+
+        # account_id as str
+        with pytest.raises(PortfolioImportCommitPersistenceError, match="account_id"):
+            PersistedImportLedgerBinding(
+                owner_id=owner_id,
+                portfolio_id=port_id,
+                account_id=str(acc_id),  # type: ignore[arg-type]
+                source_key="sentinax_csv",
+                file_content_sha256="a" * 64,
+                record_ordinal=1,
+                record_sha256="b" * 64,
+                expected_plan_sha256="c" * 64,
+                transaction_id=tx_id,
+                bound_at=bound_at,
+            )
+
+        # transaction_id as str
+        with pytest.raises(PortfolioImportCommitPersistenceError, match="transaction_id"):
+            PersistedImportLedgerBinding(
+                owner_id=owner_id,
+                portfolio_id=port_id,
+                account_id=acc_id,
+                source_key="sentinax_csv",
+                file_content_sha256="a" * 64,
+                record_ordinal=1,
+                record_sha256="b" * 64,
+                expected_plan_sha256="c" * 64,
+                transaction_id=str(tx_id),  # type: ignore[arg-type]
+                bound_at=bound_at,
+            )
+
+    def test_direct_model_rejects_string_and_naive_datetime(self):
+        """Matrix P, Q: Direct model rejects datetime strings and naive datetimes."""
+        owner_id = uuid4()
+        port_id = uuid4()
+        acc_id = uuid4()
+        tx_id = uuid4()
+
+        # string bound_at
+        with pytest.raises(PortfolioImportCommitPersistenceError, match="bound_at"):
+            PersistedImportLedgerBinding(
+                owner_id=owner_id,
+                portfolio_id=port_id,
+                account_id=acc_id,
+                source_key="sentinax_csv",
+                file_content_sha256="a" * 64,
+                record_ordinal=1,
+                record_sha256="b" * 64,
+                expected_plan_sha256="c" * 64,
+                transaction_id=tx_id,
+                bound_at="2026-08-28T15:30:00+00:00",  # type: ignore[arg-type]
+            )
+
+        # naive bound_at
+        with pytest.raises(PortfolioImportCommitPersistenceError, match="bound_at"):
+            PersistedImportLedgerBinding(
+                owner_id=owner_id,
+                portfolio_id=port_id,
+                account_id=acc_id,
+                source_key="sentinax_csv",
+                file_content_sha256="a" * 64,
+                record_ordinal=1,
+                record_sha256="b" * 64,
+                expected_plan_sha256="c" * 64,
+                transaction_id=tx_id,
+                bound_at=datetime(2026, 8, 28, 15, 30),
+            )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 4. Static / Source Inspection Tests (Sections 74-77)
 # ─────────────────────────────────────────────────────────────────────────────
 

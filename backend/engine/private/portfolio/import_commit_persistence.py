@@ -38,9 +38,41 @@ class PortfolioImportCommitPersistenceError(ValueError):
     pass
 
 
+def _validate_uuid_instance(val: Any, field_name: str) -> UUID:
+    """
+    Validates that a field is an actual canonical UUID instance.
+    Direct model construction strictly rejects strings, ints, bools, etc.
+    """
+    if val is None:
+        raise PortfolioImportCommitPersistenceError(f"Required UUID field '{field_name}' is missing or None.")
+    if isinstance(val, bool) or type(val) is not UUID:
+        raise PortfolioImportCommitPersistenceError(
+            f"Field '{field_name}' must be a UUID instance, got {type(val).__name__}: {val!r}"
+        )
+    return val
+
+
+def _validate_aware_datetime_instance(val: Any, field_name: str = "bound_at") -> datetime:
+    """
+    Validates that a field is an actual timezone-aware datetime instance.
+    Direct model construction strictly rejects strings, naive datetimes, etc.
+    """
+    if val is None:
+        raise PortfolioImportCommitPersistenceError(f"Required datetime field '{field_name}' is missing or None.")
+    if isinstance(val, bool) or type(val) is not datetime:
+        raise PortfolioImportCommitPersistenceError(
+            f"Field '{field_name}' must be a datetime instance, got {type(val).__name__}: {val!r}"
+        )
+    if val.tzinfo is None or val.tzinfo.utcoffset(val) is None:
+        raise PortfolioImportCommitPersistenceError(
+            f"Datetime field '{field_name}' must be timezone-aware, got naive: {val}"
+        )
+    return val
+
+
 def _parse_strict_uuid(val: Any, field_name: str) -> UUID:
     """
-    Parses and strictly validates a UUID field.
+    Parses and strictly validates a UUID field from boundary/wire input.
     Accepts UUID instances or canonical lowercase hyphenated UUID strings.
     Rejects uppercase, braces, hyphenless, whitespace, bool, and int.
     """
@@ -109,7 +141,7 @@ def _parse_strict_record_ordinal(val: Any, field_name: str = "record_ordinal") -
 
 
 def _parse_strict_datetime(val: Any, field_name: str = "bound_at") -> datetime:
-    """Strictly validates timezone-aware datetime."""
+    """Strictly validates timezone-aware datetime from boundary/wire input."""
     if val is None:
         raise PortfolioImportCommitPersistenceError(f"Required datetime field '{field_name}' is missing or None.")
     if isinstance(val, bool) or not isinstance(val, (datetime, str)):
@@ -125,7 +157,7 @@ def _parse_strict_datetime(val: Any, field_name: str = "bound_at") -> datetime:
             raise PortfolioImportCommitPersistenceError(f"Invalid datetime string for '{field_name}': {val!r}") from e
     else:
         dt = val
-    if dt.tzinfo is None:
+    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
         raise PortfolioImportCommitPersistenceError(
             f"Datetime field '{field_name}' must be timezone-aware, got naive: {dt}"
         )
@@ -153,16 +185,16 @@ class PersistedImportLedgerBinding:
     bound_at: datetime
 
     def __post_init__(self) -> None:
-        _parse_strict_uuid(self.owner_id, "owner_id")
-        _parse_strict_uuid(self.portfolio_id, "portfolio_id")
-        _parse_strict_uuid(self.account_id, "account_id")
+        _validate_uuid_instance(self.owner_id, "owner_id")
+        _validate_uuid_instance(self.portfolio_id, "portfolio_id")
+        _validate_uuid_instance(self.account_id, "account_id")
         _validate_strict_source_key(self.source_key, "source_key")
         _validate_strict_sha256_hex(self.file_content_sha256, "file_content_sha256")
         _parse_strict_record_ordinal(self.record_ordinal, "record_ordinal")
         _validate_strict_sha256_hex(self.record_sha256, "record_sha256")
         _validate_strict_sha256_hex(self.expected_plan_sha256, "expected_plan_sha256")
-        _parse_strict_uuid(self.transaction_id, "transaction_id")
-        _parse_strict_datetime(self.bound_at, "bound_at")
+        _validate_uuid_instance(self.transaction_id, "transaction_id")
+        _validate_aware_datetime_instance(self.bound_at, "bound_at")
 
     @property
     def claim_identity(self) -> Tuple[UUID, UUID, str, str, int, str]:

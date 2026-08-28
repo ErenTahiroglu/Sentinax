@@ -115,12 +115,13 @@ class TestPortfolioImportClaimSchema:
         assert "Immutability violation" in sql_without_comments
 
     def test_rls_and_policies(self, sql_without_comments: str):
-        """Matrix P, Q, R, S, T: RLS enabled with owner SELECT/INSERT only."""
+        """Matrix P, Q, R, S, T: RLS enabled with owner SELECT/INSERT only; no UPDATE, DELETE, or FOR ALL."""
         assert "ALTER TABLE public.portfolio_import_claim_bindings ENABLE ROW LEVEL SECURITY" in sql_without_comments
         assert "FOR SELECT" in sql_without_comments
         assert "FOR INSERT" in sql_without_comments
         assert "FOR UPDATE" not in sql_without_comments
         assert "FOR DELETE" not in sql_without_comments
+        assert "FOR ALL" not in sql_without_comments
 
     def test_transaction_id_index_non_unique(self, sql_without_comments: str):
         """Transaction ID has a non-unique index."""
