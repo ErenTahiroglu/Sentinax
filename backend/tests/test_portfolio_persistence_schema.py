@@ -1,16 +1,19 @@
 """
 backend/tests/test_portfolio_persistence_schema.py
 ==================================================
-Comprehensive Schema & DB Invariant Verification for Supabase Migration 011 (Phase 12B.1).
+Comprehensive Schema & DB Invariant Verification for Supabase Migration 011 (Phase 12B.1 & 12B.1A).
 
 Verifies that the Supabase SQL migration `011_portfolio_ledger_persistence.sql`:
     - Creates exactly the 6 authoritative domain tables (and no derived projection tables).
     - Preserves exact NUMERIC precision for all monetary/quantity values (NO float/real/double).
+    - Enforces exact parity with canonical `ContributionStatus` enum (rejects 'deferred').
+    - Enforces exact parity with canonical `Currency` enum across all currency-bearing columns.
+    - Enforces CashBucket identity/reference immutability via BEFORE UPDATE trigger.
     - Encodes all 10 transaction types with fail-closed field-family CHECK constraints.
     - Encodes external idempotency all-or-none validation and normalized partial unique index.
     - Encodes reference-only REVERSAL constraints, single-reversal unique index, and cross-row validation.
     - Encodes CashBucket reference consistency and currency matching.
-    - Enforces strict append-only immutability (UPDATE and DELETE blocked by trigger).
+    - Enforces strict append-only immutability (UPDATE and DELETE blocked by trigger on transactions).
     - Enforces Row Level Security (RLS) with auth.uid() owner isolation on all 6 tables.
     - Enforces ON DELETE RESTRICT on all ledger-critical foreign keys.
 """
@@ -18,6 +21,8 @@ Verifies that the Supabase SQL migration `011_portfolio_ledger_persistence.sql`:
 import os
 import re
 import pytest
+
+from backend.engine.private.domain import ContributionStatus, Currency, TransactionType
 
 MIGRATION_011_PATH = os.path.join(
     os.path.dirname(__file__), "..", "..", "supabase", "migrations", "011_portfolio_ledger_persistence.sql"
@@ -95,13 +100,116 @@ class TestPortfolioPersistenceSchema:
 
     def test_all_ten_transaction_types_represented(self, sql_without_comments: str):
         """All 10 canonical TransactionType enum values must be in the transaction_type check."""
-        expected_types = [
-            "buy", "sell", "cash_deposit", "cash_withdrawal",
-            "dividend", "interest", "fx_conversion", "fee",
-            "tax_withholding", "reversal"
-        ]
-        for t in expected_types:
-            assert f"'{t}'" in sql_without_comments
+        expected_types = {e.value for e in TransactionType}
+        assert len(expected_types) == 10
+
+        # Extract transaction_type CHECK list
+        match = re.search(
+            r"transaction_type\s+VARCHAR\(32\)\s+NOT\s+NULL\s+CHECK\s*\(\s*transaction_type\s+IN\s*\((.*?)\)\s*\)",
+            sql_without_comments,
+            re.DOTALL | re.IGNORECASE,
+        )
+        assert match is not None, "transaction_type CHECK constraint not found"
+        raw_items = match.group(1)
+        found_types = set(re.findall(r"'([a-z_]+)'", raw_items))
+        assert found_types == expected_types
+
+    def test_contribution_status_exact_domain_parity(self, sql_without_comments: str):
+        """Phase 12B.1A: planned_contributions.status must match ContributionStatus exactly."""
+        expected_statuses = {e.value for e in ContributionStatus}
+        assert expected_statuses == {"planned", "confirmed", "cancelled", "received"}
+
+        # Extract status CHECK list from planned_contributions table
+        match = re.search(
+            r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?public\.planned_contributions\s*\((.*?)\);",
+            sql_without_comments,
+            re.DOTALL | re.IGNORECASE,
+        )
+        assert match is not None, "planned_contributions table definition not found"
+        table_def = match.group(1)
+
+        status_match = re.search(
+            r"status\s+VARCHAR\(20\)\s+NOT\s+NULL\s+DEFAULT\s+'planned'\s+CHECK\s*\(\s*status\s+IN\s*\((.*?)\)\s*\)",
+            table_def,
+            re.DOTALL | re.IGNORECASE,
+        )
+        assert status_match is not None, "planned_contributions.status CHECK constraint not found"
+        found_statuses = set(re.findall(r"'([a-z_]+)'", status_match.group(1)))
+        assert found_statuses == expected_statuses
+
+        # Explicitly verify 'deferred' is rejected and NOT present
+        assert "deferred" not in found_statuses
+        assert "'deferred'" not in table_def
+
+    def test_currency_universe_exact_domain_parity(self, sql_without_comments: str):
+        """Phase 12B.1A: All currency columns must be restricted to canonical Currency enum values."""
+        expected_currencies = {e.value for e in Currency}
+        assert expected_currencies == {"TRY", "USD", "EUR", "GBP", "XAU", "XAG"}
+
+        # Helper to extract and verify currency IN (...) list
+        def check_currency_constraint(table_name: str, col_name: str):
+            table_match = re.search(
+                rf"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?public\.{table_name}\s*\((.*?)\);",
+                sql_without_comments,
+                re.DOTALL | re.IGNORECASE,
+            )
+            assert table_match is not None, f"Table {table_name} definition not found"
+            t_def = table_match.group(1)
+
+            col_match = re.search(
+                rf"{col_name}\s+VARCHAR\(10\)(?:.*?CHECK\s*\(\s*(?:{col_name}\s+IS\s+NULL\s+OR\s+)?{col_name}\s+IN\s*\((.*?)\)\s*\))",
+                t_def,
+                re.DOTALL | re.IGNORECASE,
+            )
+            assert col_match is not None, f"Currency CHECK constraint for {table_name}.{col_name} not found"
+            found_curr = set(re.findall(r"'([A-Z]+)'", col_match.group(1)))
+            assert found_curr == expected_currencies, (
+                f"Mismatch in {table_name}.{col_name}: found {found_curr} != expected {expected_currencies}"
+            )
+
+        # 1. portfolios.base_currency
+        check_currency_constraint("portfolios", "base_currency")
+        # 2. portfolio_accounts.base_currency
+        check_currency_constraint("portfolio_accounts", "base_currency")
+        # 3. cash_buckets.currency
+        check_currency_constraint("cash_buckets", "currency")
+        # 4. investment_goals.target_currency
+        check_currency_constraint("investment_goals", "target_currency")
+        # 5. planned_contributions.currency
+        check_currency_constraint("planned_contributions", "currency")
+        # 6. portfolio_transactions trade_currency, cash_currency, from_currency, to_currency
+        check_currency_constraint("portfolio_transactions", "trade_currency")
+        check_currency_constraint("portfolio_transactions", "cash_currency")
+        check_currency_constraint("portfolio_transactions", "from_currency")
+        check_currency_constraint("portfolio_transactions", "to_currency")
+
+    def test_cash_bucket_identity_immutability_trigger(self, sql_without_comments: str):
+        """Phase 12B.1A: cash_buckets must have BEFORE UPDATE trigger protecting identity fields."""
+        assert "prevent_cash_bucket_identity_mutation" in sql_without_comments
+        assert "trg_prevent_cash_bucket_identity_mutation" in sql_without_comments
+        assert "BEFORE UPDATE ON public.cash_buckets" in sql_without_comments
+
+        # Extract trigger function definition
+        func_match = re.search(
+            r"CREATE\s+OR\s+REPLACE\s+FUNCTION\s+public\.prevent_cash_bucket_identity_mutation\(\).*?BEGIN(.*?)END;",
+            sql_without_comments,
+            re.DOTALL | re.IGNORECASE,
+        )
+        assert func_match is not None, "prevent_cash_bucket_identity_mutation function body not found"
+        func_body = func_match.group(1)
+
+        # Protected identity fields
+        assert "OLD.id IS DISTINCT FROM NEW.id" in func_body
+        assert "OLD.portfolio_id IS DISTINCT FROM NEW.portfolio_id" in func_body
+        assert "OLD.owner_id IS DISTINCT FROM NEW.owner_id" in func_body
+        assert "OLD.account_id IS DISTINCT FROM NEW.account_id" in func_body
+        assert "OLD.currency IS DISTINCT FROM NEW.currency" in func_body
+
+        # Ensure lifecycle fields (name, purpose, included_in_investable_assets, archived_at) are NOT blocked
+        assert "OLD.name IS DISTINCT FROM" not in func_body
+        assert "OLD.purpose IS DISTINCT FROM" not in func_body
+        assert "OLD.included_in_investable_assets IS DISTINCT FROM" not in func_body
+        assert "OLD.archived_at IS DISTINCT FROM" not in func_body
 
     def test_field_family_check_constraints_present(self, sql_without_comments: str):
         """CHECK constraint on field families must enforce mutually exclusive contracts."""
@@ -111,7 +219,6 @@ class TestPortfolioPersistenceSchema:
 
     def test_external_idempotency_rules_and_partial_unique_index(self, sql_without_comments: str):
         """External idempotency must use normalized partial unique index without constraining manual events."""
-        # Index on upper(trim(external_source)), trim(external_reference)
         assert "idx_portfolio_transactions_external_idempotency" in sql_without_comments
         assert "upper(trim(external_source))" in sql_without_comments
         assert "trim(external_reference)" in sql_without_comments
@@ -129,13 +236,13 @@ class TestPortfolioPersistenceSchema:
         assert "Reversal of a reversal transaction is strictly forbidden" in sql_without_comments
 
     def test_cash_bucket_currency_and_portfolio_integrity_trigger(self, sql_without_comments: str):
-        """Cash bucket currency and ownership must be validated in trigger."""
+        """Cash bucket currency and ownership must be validated in transaction insert trigger."""
         assert "CashBucket portfolio % does not match transaction portfolio" in sql_without_comments
         assert "CashBucket account % does not match transaction account" in sql_without_comments
         assert "Referenced CashBucket currency % does not match transaction cash_currency" in sql_without_comments
         assert "Referenced funding CashBucket currency % does not match transaction trade_currency" in sql_without_comments
 
-    def test_immutability_anti_tamper_trigger(self, sql_without_comments: str):
+    def test_immutability_anti_tamper_trigger_on_transactions(self, sql_without_comments: str):
         """Strict append-only immutability: UPDATE and DELETE on portfolio_transactions must be blocked."""
         assert "prevent_portfolio_transaction_tamper" in sql_without_comments
         assert "trg_prevent_portfolio_transaction_tamper" in sql_without_comments

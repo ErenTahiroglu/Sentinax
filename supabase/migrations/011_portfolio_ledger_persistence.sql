@@ -1,6 +1,6 @@
 -- 011_portfolio_ledger_persistence.sql
 -- Sentinax Private Personal Investment Decision Engine
--- Phase 12B.1: Portfolio Ledger Supabase Persistence Schema & DB Invariants
+-- Phase 12B.1 & Phase 12B.1A: Portfolio Ledger Supabase Persistence Schema & DB Invariants
 --
 -- Persistent Tables:
 --   1. public.portfolios (Root portfolio aggregate, MY_PORTFOLIO vs SANDBOX boundary)
@@ -13,11 +13,14 @@
 -- Core Invariants Enforced at DB Level:
 --   - Strict owner isolation referencing auth.users(id)
 --   - Exact NUMERIC precision for all financial quantities (NO REAL / FLOAT / DOUBLE)
+--   - Strict canonical Currency domain universe ('TRY', 'USD', 'EUR', 'GBP', 'XAU', 'XAG')
+--   - Parity with ContributionStatus ('planned', 'confirmed', 'cancelled', 'received')
 --   - Mutually exclusive transaction field families (fail-closed CHECK constraints)
 --   - Strictly reference-only REVERSAL events with zero independent economics
 --   - Single-reversal and anti-reversal-of-reversal protection
 --   - Normalized partial unique index on external source + reference
 --   - Immutability trigger preventing UPDATE and DELETE on portfolio_transactions
+--   - Immutability trigger preventing identity/currency/ownership mutation on cash_buckets
 --   - Foreign key integrity referencing public.instruments(id) ON DELETE RESTRICT
 
 -- ============================================================================
@@ -29,7 +32,9 @@ CREATE TABLE IF NOT EXISTS public.portfolios (
     owner_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE RESTRICT,
     mode VARCHAR(32) NOT NULL CHECK (mode IN ('my_portfolio', 'sandbox')),
     name VARCHAR(255) NOT NULL CHECK (length(trim(name)) > 0),
-    base_currency VARCHAR(10) NOT NULL CHECK (length(trim(base_currency)) > 0),
+    base_currency VARCHAR(10) NOT NULL CHECK (
+        base_currency IN ('TRY', 'USD', 'EUR', 'GBP', 'XAU', 'XAG')
+    ),
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
     archived_at TIMESTAMPTZ,
     source_portfolio_id UUID,
@@ -76,7 +81,9 @@ CREATE TABLE IF NOT EXISTS public.portfolio_accounts (
     portfolio_id UUID NOT NULL,
     owner_id UUID NOT NULL,
     name VARCHAR(255) NOT NULL CHECK (length(trim(name)) > 0),
-    base_currency VARCHAR(10) NOT NULL CHECK (length(trim(base_currency)) > 0),
+    base_currency VARCHAR(10) NOT NULL CHECK (
+        base_currency IN ('TRY', 'USD', 'EUR', 'GBP', 'XAU', 'XAG')
+    ),
     broker_label VARCHAR(255),
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
     archived_at TIMESTAMPTZ,
@@ -109,7 +116,9 @@ CREATE TABLE IF NOT EXISTS public.cash_buckets (
     owner_id UUID NOT NULL,
     account_id UUID, -- Optional: NULL for portfolio-wide cash buckets
     name VARCHAR(255) NOT NULL CHECK (length(trim(name)) > 0),
-    currency VARCHAR(10) NOT NULL CHECK (length(trim(currency)) > 0),
+    currency VARCHAR(10) NOT NULL CHECK (
+        currency IN ('TRY', 'USD', 'EUR', 'GBP', 'XAU', 'XAG')
+    ),
     purpose VARCHAR(32) NOT NULL CHECK (
         purpose IN ('investable', 'emergency_reserve', 'near_term', 'restricted_other')
     ),
@@ -152,7 +161,9 @@ CREATE TABLE IF NOT EXISTS public.investment_goals (
     owner_id UUID NOT NULL,
     name VARCHAR(255) NOT NULL CHECK (length(trim(name)) > 0),
     target_amount NUMERIC NOT NULL CHECK (target_amount > 0),
-    target_currency VARCHAR(10) NOT NULL CHECK (length(trim(target_currency)) > 0),
+    target_currency VARCHAR(10) NOT NULL CHECK (
+        target_currency IN ('TRY', 'USD', 'EUR', 'GBP', 'XAU', 'XAG')
+    ),
     target_date DATE,
     priority VARCHAR(20) NOT NULL DEFAULT 'medium' CHECK (
         priority IN ('low', 'medium', 'high', 'critical')
@@ -188,9 +199,11 @@ CREATE TABLE IF NOT EXISTS public.planned_contributions (
     cash_bucket_id UUID,
     expected_date DATE NOT NULL,
     amount NUMERIC NOT NULL CHECK (amount > 0),
-    currency VARCHAR(10) NOT NULL CHECK (length(trim(currency)) > 0),
+    currency VARCHAR(10) NOT NULL CHECK (
+        currency IN ('TRY', 'USD', 'EUR', 'GBP', 'XAU', 'XAG')
+    ),
     status VARCHAR(20) NOT NULL DEFAULT 'planned' CHECK (
-        status IN ('planned', 'received', 'cancelled', 'deferred')
+        status IN ('planned', 'confirmed', 'cancelled', 'received')
     ),
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
 
@@ -243,17 +256,25 @@ CREATE TABLE IF NOT EXISTS public.portfolio_transactions (
     instrument_id UUID REFERENCES public.instruments(id) ON DELETE RESTRICT,
     quantity NUMERIC CHECK (quantity IS NULL OR quantity > 0),
     unit_price NUMERIC CHECK (unit_price IS NULL OR unit_price > 0),
-    trade_currency VARCHAR(10),
+    trade_currency VARCHAR(10) CHECK (
+        trade_currency IS NULL OR trade_currency IN ('TRY', 'USD', 'EUR', 'GBP', 'XAU', 'XAG')
+    ),
 
     -- Cash Movement Fields (CASH_DEPOSIT, CASH_WITHDRAWAL, DIVIDEND, INTEREST, FEE, TAX_WITHHOLDING)
     cash_amount NUMERIC CHECK (cash_amount IS NULL OR cash_amount > 0),
-    cash_currency VARCHAR(10),
+    cash_currency VARCHAR(10) CHECK (
+        cash_currency IS NULL OR cash_currency IN ('TRY', 'USD', 'EUR', 'GBP', 'XAU', 'XAG')
+    ),
     cash_bucket_id UUID,
 
     -- FX Conversion Fields (Two-leg Economics)
-    from_currency VARCHAR(10),
+    from_currency VARCHAR(10) CHECK (
+        from_currency IS NULL OR from_currency IN ('TRY', 'USD', 'EUR', 'GBP', 'XAU', 'XAG')
+    ),
     from_amount NUMERIC CHECK (from_amount IS NULL OR from_amount > 0),
-    to_currency VARCHAR(10),
+    to_currency VARCHAR(10) CHECK (
+        to_currency IS NULL OR to_currency IN ('TRY', 'USD', 'EUR', 'GBP', 'XAU', 'XAG')
+    ),
     to_amount NUMERIC CHECK (to_amount IS NULL OR to_amount > 0),
 
     -- External Source & Idempotency Metadata
@@ -410,7 +431,43 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_portfolio_transactions_unique_reversal
 
 
 -- ============================================================================
--- 7. Cross-Row Reversal & Cash-Bucket Consistency Trigger
+-- 7. Cash Bucket Identity Immutability Trigger (Phase 12B.1A)
+-- ============================================================================
+-- Once a CashBucket is created, its identity and ownership fields (id, portfolio_id,
+-- owner_id, account_id, currency) CANNOT be mutated.
+-- Lifecycle fields (name, purpose, included_in_investable_assets, archived_at) remain editable.
+
+CREATE OR REPLACE FUNCTION public.prevent_cash_bucket_identity_mutation()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD.id IS DISTINCT FROM NEW.id THEN
+        RAISE EXCEPTION 'Immutability violation: cash_buckets id cannot be modified.';
+    END IF;
+    IF OLD.portfolio_id IS DISTINCT FROM NEW.portfolio_id THEN
+        RAISE EXCEPTION 'Immutability violation: cash_buckets portfolio_id cannot be modified.';
+    END IF;
+    IF OLD.owner_id IS DISTINCT FROM NEW.owner_id THEN
+        RAISE EXCEPTION 'Immutability violation: cash_buckets owner_id cannot be modified.';
+    END IF;
+    IF OLD.account_id IS DISTINCT FROM NEW.account_id THEN
+        RAISE EXCEPTION 'Immutability violation: cash_buckets account_id cannot be modified.';
+    END IF;
+    IF OLD.currency IS DISTINCT FROM NEW.currency THEN
+        RAISE EXCEPTION 'Immutability violation: cash_buckets currency cannot be modified.';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_prevent_cash_bucket_identity_mutation ON public.cash_buckets;
+CREATE TRIGGER trg_prevent_cash_bucket_identity_mutation
+    BEFORE UPDATE ON public.cash_buckets
+    FOR EACH ROW
+    EXECUTE FUNCTION public.prevent_cash_bucket_identity_mutation();
+
+
+-- ============================================================================
+-- 8. Cross-Row Reversal & Cash-Bucket Consistency Trigger
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION public.validate_portfolio_transaction_integrity()
@@ -492,7 +549,7 @@ CREATE TRIGGER trg_validate_portfolio_transaction_integrity
 
 
 -- ============================================================================
--- 8. Anti-Tamper Immutability Trigger on Portfolio Transactions
+-- 9. Anti-Tamper Immutability Trigger on Portfolio Transactions
 -- ============================================================================
 -- Enforces that portfolio_transactions is STRICTLY append-only.
 -- No UPDATE or DELETE is allowed under any circumstances. Corrections require REVERSAL.
@@ -517,7 +574,7 @@ CREATE TRIGGER trg_prevent_portfolio_transaction_tamper
 
 
 -- ============================================================================
--- 9. Row Level Security (RLS) & User Isolation
+-- 10. Row Level Security (RLS) & User Isolation
 -- ============================================================================
 
 ALTER TABLE public.portfolios ENABLE ROW LEVEL SECURITY;
