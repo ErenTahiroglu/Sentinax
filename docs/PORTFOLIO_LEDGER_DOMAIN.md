@@ -158,7 +158,17 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Shared Authority:** Positions and cash share identical reversal deactivation and point-in-time (PIT) cutoffs inherited strictly from the input ledger view.
 - **Fail-Closed Composition:** Lower-level projection errors (`PositionProjectionError`, `CashProjectionError`) propagate directly. Partial or incomplete accounting snapshots are never produced.
 - **Exact Object Binding:** Preserves original ledger view, positions, and cash instances by object identity without copying or altering timestamps.
-- **Deferred Scope:** Lot matching, cost basis, valuation, weights, and cash buckets remain deferred to Phase 12C.5+.
+- **Deferred Scope:** Lot matching, cost basis, valuation, weights, and cash buckets remain deferred to Phase 12C.6+.
+
+---
+
+## 10f. Owner-Bound Persisted Accounting Snapshot Query Service (Phase 12C.5)
+- **Owner-Bound Query Bridge:** `PortfolioAccountingQueryService` bridges the owner-scoped `PortfolioRepository` and the pure ledger/accounting projection stack.
+- **Strict Owner Isolation:** The service inherits owner isolation directly from the injected `PortfolioRepository`. No `owner_id`, `user_id`, or credentials can be passed to query methods.
+- **Complete Portfolio Projection:** Projections represent the entire portfolio across all accounts. `list_transactions(portfolio.id)` is called without account filters.
+- **Explicit Knowledge Cutoff:** Current snapshot queries capture an explicit UTC system clock cutoff exactly once. Point-in-time (`get_snapshot_as_of`) queries preserve the exact caller-provided timezone-aware representation without normalization.
+- **Read-Only & Uncached:** Pure query service with no write/mutation methods and no internal stateful caching.
+- **Fail-Closed Error Propagation:** Database/repository failures, non-existent portfolios, and projection errors propagate directly. No partial snapshots or silent empty-history fallbacks.
 
 ---
 
@@ -168,6 +178,6 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 
 ---
 
-## 12. Deferred Scope (Phase 12C.5+ & Phase 14)
-- **Phase 12C.5+:** Lot matching engines (FIFO/LIFO/Average Cost), cash bucket attribution, realized/unrealized P&L, portfolio valuations.
+## 12. Deferred Scope (Phase 12C.6+ & Phase 14)
+- **Phase 12C.6+:** Lot matching engines (FIFO/LIFO/Average Cost), cash bucket attribution, realized/unrealized P&L, portfolio valuations.
 - **Phase 14:** Turkish and international tax rules, withholding calculations, and fee optimization.

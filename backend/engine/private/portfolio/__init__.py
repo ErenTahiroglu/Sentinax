@@ -54,6 +54,10 @@ from backend.engine.private.portfolio.accounting import (
     PortfolioAccountingSnapshot,
     build_portfolio_accounting_snapshot,
 )
+from backend.engine.private.portfolio.accounting_service import (
+    PortfolioAccountingQueryError,
+    PortfolioAccountingQueryService,
+)
 from backend.engine.private.portfolio.cash import (
     CashBalanceProjection,
     CashBalanceState,
@@ -104,6 +108,8 @@ __all__ = [
     "PortfolioAccountingError",
     "PortfolioAccountingSnapshot",
     "build_portfolio_accounting_snapshot",
+    "PortfolioAccountingQueryError",
+    "PortfolioAccountingQueryService",
     "serialize_portfolio",
     "hydrate_portfolio",
     "serialize_portfolio_account",
