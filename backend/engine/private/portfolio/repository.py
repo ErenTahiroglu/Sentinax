@@ -30,7 +30,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import re
 from typing import Any, Callable, Dict, List, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from postgrest.exceptions import APIError
 
@@ -42,6 +42,10 @@ from backend.engine.private.domain import (
     GoalStatus,
     PortfolioMode,
     TransactionType,
+)
+from backend.engine.private.portfolio.import_commit import ImportLedgerBindingIntent
+from backend.engine.private.portfolio.import_commit_persistence import (
+    serialize_import_ledger_binding,
 )
 from backend.engine.private.portfolio.ledger import (
     AppendResult,
@@ -935,3 +939,181 @@ class PortfolioRepository:
 
         # D. Unexplained 23505 -> re-raise original APIError
         raise original_error
+
+    def commit_import_binding_intent(
+        self,
+        intent: ImportLedgerBindingIntent,
+    ) -> AppendResult:
+        """
+        Atomically commits an ImportLedgerBindingIntent to persistence.
+
+        Phase 13Q Invariants:
+            1. Atomic all-or-nothing execution: inserts candidate PortfolioTransaction
+               and ImportLedgerBinding in a single RPC transaction.
+            2. Idempotent replay: if the raw claim is already bound to a transaction
+               with identical expected_plan_sha256 and economic_fingerprint, returns
+               IDEMPOTENT_DUPLICATE with the existing transaction ID.
+            3. Conflict detection: if the raw claim is already bound to a different
+               plan SHA or different economic fingerprint, returns CONFLICT.
+            4. External identity is NULL: import claims are NOT mapped to external_source/reference.
+            5. Cash bucket is NULL: import transactions do not assign cash buckets.
+            6. Reversals are forbidden: import transactions cannot be reversals.
+            7. Safe readback & fingerprint verification on success / duplicate.
+        """
+        if not isinstance(intent, ImportLedgerBindingIntent):
+            raise TypeError(
+                f"intent must be an ImportLedgerBindingIntent instance, got {type(intent).__name__}: {intent!r}"
+            )
+
+        # 1. Preflight: Verify target portfolio and account exist under trusted owner context
+        portfolio = self.get_portfolio(intent.portfolio_id)
+        if portfolio is None:
+            return AppendResult(
+                status=AppendStatus.INVALID,
+                transaction_id=uuid4(),
+                diagnostics=(
+                    f"Target portfolio {intent.portfolio_id} does not exist or is inaccessible under current owner.",
+                ),
+            )
+
+        account = self.get_portfolio_account(intent.portfolio_id, intent.account_id)
+        if account is None:
+            return AppendResult(
+                status=AppendStatus.INVALID,
+                transaction_id=uuid4(),
+                diagnostics=(
+                    f"Target portfolio account {intent.account_id} does not exist or does not belong to portfolio {intent.portfolio_id}.",
+                ),
+            )
+
+        # 2. Construct canonical candidate PortfolioTransaction from intent.plan
+        plan = intent.plan
+        candidate_tx = PortfolioTransaction(
+            id=uuid4(),
+            portfolio_id=intent.portfolio_id,
+            account_id=intent.account_id,
+            transaction_type=plan.transaction_type,
+            effective_date=plan.effective_date,
+            executed_at=plan.executed_at,
+            recorded_at=self._get_system_time(),
+            instrument_id=plan.instrument_id,
+            quantity=plan.quantity,
+            unit_price=plan.unit_price,
+            trade_currency=plan.trade_currency,
+            cash_amount=plan.cash_amount,
+            cash_currency=plan.cash_currency,
+            cash_bucket_id=None,
+            from_currency=plan.from_currency,
+            from_amount=plan.from_amount,
+            to_currency=plan.to_currency,
+            to_amount=plan.to_amount,
+            external_source=None,
+            external_reference=None,
+            reverses_transaction_id=None,
+            notes=None,
+        )
+
+        # 3. Cross-entity validation (consistency with portfolio & account)
+        try:
+            PortfolioLedgerValidator.validate_transaction_portfolio_consistency(
+                candidate_tx,
+                portfolio,
+                account,
+                None,
+            )
+        except ValueError as err:
+            return AppendResult(
+                status=AppendStatus.INVALID,
+                transaction_id=candidate_tx.id,
+                diagnostics=(str(err),),
+            )
+
+        # 4. Serialize transaction and binding using canonical codecs
+        tx_payload = serialize_portfolio_transaction(candidate_tx, self._owner_id)
+        binding_payload = serialize_import_ledger_binding(
+            intent,
+            transaction_id=candidate_tx.id,
+            expected_owner_id=self._owner_id,
+        )
+
+        # 5. Call atomic commit RPC
+        rpc_res = self._client.rpc(
+            "commit_portfolio_import_claim",
+            {
+                "p_transaction": tx_payload,
+                "p_binding": binding_payload,
+            },
+        ).execute()
+
+        # 6. Parse and validate RPC return
+        if not rpc_res.data or not isinstance(rpc_res.data, list) or len(rpc_res.data) != 1:
+            raise RuntimeError(
+                f"Malformed return from commit_portfolio_import_claim RPC: expected list with 1 dict, got {rpc_res.data!r}"
+            )
+
+        result_row = rpc_res.data[0]
+        if not isinstance(result_row, dict):
+            raise RuntimeError(
+                f"Malformed result row from commit_portfolio_import_claim: expected dict, got {type(result_row).__name__}"
+            )
+
+        commit_status = result_row.get("commit_status")
+        raw_tx_id = result_row.get("transaction_id")
+        diagnostic = result_row.get("diagnostic")
+
+        if not isinstance(commit_status, str):
+            raise RuntimeError(f"Missing or non-string commit_status from RPC: {commit_status!r}")
+
+        if raw_tx_id is None:
+            raise RuntimeError(f"Missing transaction_id from commit_portfolio_import_claim RPC result.")
+
+        if isinstance(raw_tx_id, UUID):
+            res_tx_id = raw_tx_id
+        elif isinstance(raw_tx_id, str):
+            if not _CANONICAL_UUID_PATTERN.match(raw_tx_id):
+                raise RuntimeError(f"Invalid transaction_id UUID string from RPC: {raw_tx_id!r}")
+            try:
+                res_tx_id = UUID(raw_tx_id)
+            except Exception as e:
+                raise RuntimeError(f"Invalid transaction_id UUID string from RPC: {raw_tx_id!r}") from e
+        else:
+            raise RuntimeError(f"Invalid transaction_id type from RPC: {type(raw_tx_id).__name__}")
+
+        if diagnostic is not None and not isinstance(diagnostic, str):
+            raise RuntimeError(f"Non-string diagnostic returned from RPC: {type(diagnostic).__name__}")
+
+        # 7. Handle statuses
+        if commit_status == "appended":
+            persisted = self.get_transaction(candidate_tx.portfolio_id, res_tx_id)
+            if persisted is None:
+                raise RuntimeError(
+                    f"Appended transaction {res_tx_id} could not be read back from persistence."
+                )
+            if persisted.economic_fingerprint() != candidate_tx.economic_fingerprint():
+                raise RuntimeError(
+                    f"Persisted transaction {res_tx_id} economic fingerprint mismatch."
+                )
+            return AppendResult(status=AppendStatus.APPENDED, transaction_id=persisted.id)
+
+        elif commit_status == "idempotent_duplicate":
+            persisted = self.get_transaction(candidate_tx.portfolio_id, res_tx_id)
+            if persisted is None:
+                raise RuntimeError(
+                    f"Idempotent duplicate transaction {res_tx_id} could not be read back from persistence."
+                )
+            if persisted.economic_fingerprint() != candidate_tx.economic_fingerprint():
+                raise RuntimeError(
+                    f"Idempotent duplicate transaction {res_tx_id} economic fingerprint mismatch: "
+                    f"existing={persisted.economic_fingerprint()} vs candidate={candidate_tx.economic_fingerprint()}"
+                )
+            return AppendResult(status=AppendStatus.IDEMPOTENT_DUPLICATE, transaction_id=persisted.id)
+
+        elif commit_status == "conflict":
+            return AppendResult(
+                status=AppendStatus.CONFLICT,
+                transaction_id=res_tx_id,
+                diagnostics=(diagnostic,) if diagnostic else ("Import claim conflict.",),
+            )
+
+        else:
+            raise RuntimeError(f"Unknown commit_status '{commit_status}' returned from commit_portfolio_import_claim RPC.")

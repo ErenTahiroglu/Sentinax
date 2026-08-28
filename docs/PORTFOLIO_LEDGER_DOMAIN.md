@@ -373,3 +373,20 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Owner Context Defense-in-Depth:** Serializer and hydrator enforce explicit trusted `expected_owner_id`.
 - **Persistence Boundary:** Phase 13P establishes schema and codec only; runtime atomic ledger commit and conflict resolution are deferred to Phase 13Q.
 
+---
+
+## 13q. Atomic Import Claim + Ledger Transaction Commit RPC & Owner-Bound Repository Execution (Phase 13Q)
+- **First Real Import-to-Ledger Write Boundary:** Bridges an immutable `ImportLedgerBindingIntent` (Phase 13O) to persistent ledger storage via owner-scoped `PortfolioRepository.commit_import_binding_intent`.
+- **Single-Intent Atomic Execution:** Exactly one binding intent is committed at a time. The database function `public.commit_portfolio_import_claim` atomically inserts both the candidate `portfolio_transactions` row and the `portfolio_import_claim_bindings` row within a single PL/pgSQL transaction.
+- **Raw Claim Idempotency Authority:** The raw claim identity `(portfolio_id, account_id, source_key, file_content_sha256, record_ordinal, record_sha256)` is the sole authority for import deduplication.
+- **Idempotent Replay vs. Conflict Behavior:**
+  - *Same Claim, Same Plan & Economics:* Returns `AppendStatus.IDEMPOTENT_DUPLICATE` with the existing bound transaction UUID. Zero new rows are inserted.
+  - *Same Claim, Changed Plan or Economics:* Returns `AppendStatus.CONFLICT` with the existing bound transaction UUID and diagnostic. Zero new rows are inserted.
+- **Race-Safe Subtransaction Handling (SQLSTATE 23505):** Concurrent execution races on the same claim identity roll back tentative transaction insertions in losing subtransactions and re-read the authoritative persisted claim.
+- **External Identity Separation:** Import transactions strictly have `external_source = NULL` and `external_reference = NULL`. Import raw claim identity is not mapped to ledger external identity.
+- **Cash Bucket Independence:** `cash_bucket_id = NULL` for all Phase 13Q imported transactions. Cash bucket attribution is deferred.
+- **System Clock Authority:** `recorded_at` is assigned by the owner-bound repository's system clock (`self._get_system_time()`). Source `imported_at` and `bound_at` are NOT used as `recorded_at`.
+- **Database `bound_at` Authority:** `bound_at` on claim binding rows is generated exclusively by PostgreSQL `DEFAULT now()`.
+- **No Fuzzy/Cross-Claim Deduplication:** Distinct raw source records describing identical economics are not merged; each receives its own canonical transaction.
+- **Batch Atomic Commit Deferred:** Multi-intent all-or-nothing batch commit remains deferred to future phases.
+
