@@ -137,12 +137,28 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 
 ---
 
+## 10d. Exact Account Cash Balance Projection (Phase 12C.3)
+- **Input Authority:** Account cash balance projection (`build_cash_balance_projection`) consumes `LedgerProjectionView.active_transactions` exclusively.
+- **Cash Balance Scoping:** Cash identity is strictly `(portfolio_id, account_id, currency)`. Currencies are never implicitly converted; distinct accounts maintain separate balances.
+- **Exact Transaction Cash Effects:**
+  - `BUY`: `- (quantity * unit_price)` in `trade_currency`
+  - `SELL`: `+ (quantity * unit_price)` in `trade_currency`
+  - `CASH_DEPOSIT`, `DIVIDEND`, `INTEREST`: `+ cash_amount` in `cash_currency`
+  - `CASH_WITHDRAWAL`, `FEE`, `TAX_WITHHOLDING`: `- cash_amount` in `cash_currency`
+  - `FX_CONVERSION`: `- from_amount` in `from_currency`, `+ to_amount` in `to_currency`
+- **Context-Independent Exact Decimal Math:** Both trade notional multiplication and delta summation use arbitrary-precision integer arithmetic, immune to ambient Decimal context precision.
+- **Zero-Balance Retention & Positive Balances:** Touched cash accounts with net balance `Decimal("0")` remain in `balances` for audit; `positive_balances` includes strictly positive holdings.
+- **Negative Cash Fail-Closed:** Any net balance `< Decimal("0")` raises `CashProjectionError`. Overdraft and margin borrowing are unsupported.
+- **Deferred Scope:** Cash bucket allocation, base-currency conversion, and investable-cash calculations remain deferred.
+
+---
+
 ## 11. Multi-Currency Rules
 - **No Implicit Conversion:** Portfolio `base_currency` defines user reporting preference, but individual transactions strictly retain their native `trade_currency`, `cash_currency`, and FX conversion currencies.
 - **Exact Decimal Precision:** Floating-point representations, strings, integers (for monetary amounts), `NaN`, and `Infinity` are rejected.
 
 ---
 
-## 12. Deferred Scope (Phase 12C.3+ & Phase 14)
-- **Phase 12C.3+:** Lot matching engines (FIFO/LIFO/Average Cost), cash balance calculations, realized/unrealized P&L, valuations.
+## 12. Deferred Scope (Phase 12C.4+ & Phase 14)
+- **Phase 12C.4+:** Lot matching engines (FIFO/LIFO/Average Cost), cash bucket attribution, realized/unrealized P&L, portfolio valuations.
 - **Phase 14:** Turkish and international tax rules, withholding calculations, and fee optimization.
