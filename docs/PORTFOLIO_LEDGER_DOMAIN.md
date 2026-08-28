@@ -153,12 +153,21 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 
 ---
 
+## 10e. Canonical Portfolio Accounting Snapshot Composition (Phase 12C.4)
+- **Unified Composition:** `build_portfolio_accounting_snapshot` composes one `LedgerProjectionView`, one derived `PositionQuantityProjection`, and one derived `CashBalanceProjection` into an immutable `PortfolioAccountingSnapshot`.
+- **Shared Authority:** Positions and cash share identical reversal deactivation and point-in-time (PIT) cutoffs inherited strictly from the input ledger view.
+- **Fail-Closed Composition:** Lower-level projection errors (`PositionProjectionError`, `CashProjectionError`) propagate directly. Partial or incomplete accounting snapshots are never produced.
+- **Exact Object Binding:** Preserves original ledger view, positions, and cash instances by object identity without copying or altering timestamps.
+- **Deferred Scope:** Lot matching, cost basis, valuation, weights, and cash buckets remain deferred to Phase 12C.5+.
+
+---
+
 ## 11. Multi-Currency Rules
 - **No Implicit Conversion:** Portfolio `base_currency` defines user reporting preference, but individual transactions strictly retain their native `trade_currency`, `cash_currency`, and FX conversion currencies.
 - **Exact Decimal Precision:** Floating-point representations, strings, integers (for monetary amounts), `NaN`, and `Infinity` are rejected.
 
 ---
 
-## 12. Deferred Scope (Phase 12C.4+ & Phase 14)
-- **Phase 12C.4+:** Lot matching engines (FIFO/LIFO/Average Cost), cash bucket attribution, realized/unrealized P&L, portfolio valuations.
+## 12. Deferred Scope (Phase 12C.5+ & Phase 14)
+- **Phase 12C.5+:** Lot matching engines (FIFO/LIFO/Average Cost), cash bucket attribution, realized/unrealized P&L, portfolio valuations.
 - **Phase 14:** Turkish and international tax rules, withholding calculations, and fee optimization.

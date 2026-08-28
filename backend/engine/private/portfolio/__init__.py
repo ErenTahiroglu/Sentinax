@@ -49,6 +49,11 @@ from backend.engine.private.portfolio.normalization import (
     normalize_external_reference,
     normalize_external_source,
 )
+from backend.engine.private.portfolio.accounting import (
+    PortfolioAccountingError,
+    PortfolioAccountingSnapshot,
+    build_portfolio_accounting_snapshot,
+)
 from backend.engine.private.portfolio.cash import (
     CashBalanceProjection,
     CashBalanceState,
@@ -96,6 +101,9 @@ __all__ = [
     "CashBalanceState",
     "CashBalanceProjection",
     "build_cash_balance_projection",
+    "PortfolioAccountingError",
+    "PortfolioAccountingSnapshot",
+    "build_portfolio_accounting_snapshot",
     "serialize_portfolio",
     "hydrate_portfolio",
     "serialize_portfolio_account",
