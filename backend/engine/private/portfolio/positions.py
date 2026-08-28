@@ -54,6 +54,15 @@ _ALLOWED_QUANTITY_NEUTRAL_TYPES = frozenset({
 })
 
 
+def _is_aware_datetime(dt: Optional[datetime]) -> bool:
+    """
+    Returns True if dt is a non-bool datetime instance with tzinfo and a non-None utcoffset.
+    """
+    if dt is None or isinstance(dt, bool) or not isinstance(dt, datetime):
+        return False
+    return dt.tzinfo is not None and dt.tzinfo.utcoffset(dt) is not None
+
+
 @dataclass(frozen=True)
 class PositionQuantityState:
     """Exact unit quantity held for an instrument within a specific account."""
@@ -117,9 +126,9 @@ class PositionQuantityProjection:
                 raise PositionProjectionError(
                     f"as_of_recorded_at must be None or datetime, got {type(self.as_of_recorded_at).__name__}"
                 )
-            if self.as_of_recorded_at.tzinfo is None:
+            if not _is_aware_datetime(self.as_of_recorded_at):
                 raise PositionProjectionError(
-                    f"as_of_recorded_at must be timezone-aware, got naive: {self.as_of_recorded_at}"
+                    f"as_of_recorded_at must be timezone-aware with non-null utcoffset, got naive or null-offset: {self.as_of_recorded_at}"
                 )
 
         if not isinstance(self.positions, tuple):
@@ -278,9 +287,9 @@ def build_position_quantity_projection(
             raise PositionProjectionError(
                 f"view.as_of_recorded_at must be None or datetime, got {type(view.as_of_recorded_at).__name__}"
             )
-        if view.as_of_recorded_at.tzinfo is None:
+        if not _is_aware_datetime(view.as_of_recorded_at):
             raise PositionProjectionError(
-                f"view.as_of_recorded_at must be timezone-aware, got naive: {view.as_of_recorded_at}"
+                f"view.as_of_recorded_at must be timezone-aware with non-null utcoffset, got naive or null-offset: {view.as_of_recorded_at}"
             )
 
     # Boundary validation of supplied active transactions

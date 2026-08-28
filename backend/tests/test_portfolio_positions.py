@@ -20,7 +20,7 @@ Test Matrix:
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, tzinfo
 from decimal import Decimal, localcontext
 import random
 from typing import Optional
@@ -40,6 +40,18 @@ from backend.engine.private.portfolio.projection import (
     LedgerProjectionView,
     build_ledger_projection_view,
 )
+
+
+class NullOffsetTZ(tzinfo):
+    """Custom tzinfo implementation returning None for utcoffset (non-None tzinfo but not aware)."""
+    def utcoffset(self, dt):
+        return None
+
+    def dst(self, dt):
+        return None
+
+    def tzname(self, dt):
+        return "NULL"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -947,6 +959,22 @@ class TestRuntimeTypeHardening:
         with pytest.raises(PositionProjectionError, match="view.as_of_recorded_at must be timezone-aware"):
             build_position_quantity_projection(forged_view)
 
+    def test_null_utcoffset_view_as_of_recorded_at_fails_closed(self):
+        """Phase 12C.2.2: view.as_of_recorded_at with NullOffsetTZ fails closed with PositionProjectionError."""
+        port = _make_portfolio()
+
+        forged_view = LedgerProjectionView(
+            portfolio_id=port.id,
+            mode=port.mode,
+            as_of_recorded_at=datetime(2026, 8, 10, 12, 0, 0, tzinfo=NullOffsetTZ()),
+            known_transactions=(),
+            transaction_states=(),
+            active_transactions=(),
+        )
+
+        with pytest.raises(PositionProjectionError, match="view.as_of_recorded_at must be timezone-aware with non-null utcoffset"):
+            build_position_quantity_projection(forged_view)
+
     def test_valid_timezone_aware_non_utc_timestamp_accepted(self):
         """J: Timezone-aware non-UTC timestamp in view is accepted unchanged."""
         port = _make_portfolio()
@@ -1230,6 +1258,18 @@ class TestProjectionConstructorInvariants:
                 portfolio_id=port_id,
                 mode=PortfolioMode.MY_PORTFOLIO,
                 as_of_recorded_at=datetime(2026, 8, 10, 12, 0, 0),  # Naive
+                positions=(),
+                open_positions=(),
+            )
+
+    def test_null_utcoffset_as_of_recorded_at_rejected(self):
+        """Phase 12C.2.2: Direct constructor with NullOffsetTZ fails closed."""
+        port_id = uuid4()
+        with pytest.raises(PositionProjectionError, match="as_of_recorded_at must be timezone-aware with non-null utcoffset"):
+            PositionQuantityProjection(
+                portfolio_id=port_id,
+                mode=PortfolioMode.MY_PORTFOLIO,
+                as_of_recorded_at=datetime(2026, 8, 10, 12, 0, 0, tzinfo=NullOffsetTZ()),
                 positions=(),
                 open_positions=(),
             )
