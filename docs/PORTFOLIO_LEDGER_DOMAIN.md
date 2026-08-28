@@ -393,7 +393,20 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Direct `INSERT` on `portfolio_import_claim_bindings` is revoked from `authenticated` (and the authenticated INSERT policy is dropped via migration 016) to prevent claim-squatting attacks.
   - Authenticated users retain owner-scoped `SELECT` visibility (`owner_id = auth.uid()`) on their own claim bindings.
   - Canonical Python `PortfolioTransaction` and serializers remain the sole financial domain and fingerprint authority.
-  - Immutability trigger (`trg_prevent_import_claim_binding_tamper`) blocks `UPDATE` and `DELETE` on binding rows.
 - **No Fuzzy/Cross-Claim Deduplication:** Distinct raw source records describing identical economics are not merged; each receives its own canonical transaction.
-- **Batch Atomic Commit Deferred:** Multi-intent all-or-nothing batch commit remains deferred to future phases.
+
+---
+
+## 13r. File-Level Atomic Binding-Batch Commit & All-or-Nothing Import Execution (Phase 13R)
+- **File-Level Commit Unit:** `ImportLedgerBindingBatch` represents the transactional commit unit for an entire imported file.
+- **Zero-Intent NOOP:** Zero-intent binding batches return `ImportBatchCommitStatus.NOOP` without database calls, clock access, or UUID allocation.
+- **Atomic Batch RPC:** Non-empty batches are committed in a single PostgreSQL call via `public.commit_portfolio_import_claim_batch(p_items JSONB)` with `service_role` exclusivity.
+- **Single-Intent Delegation:** The batch RPC delegates each item to the closed `public.commit_portfolio_import_claim`, preserving one canonical SQL validation and constraint boundary.
+- **All-or-Nothing Conflict Rollback (SQLSTATE P13R1):** Any item conflict triggers a dedicated internal exception (`P13R1`), completely rolling back all newly inserted transactions and claims created earlier in the batch.
+- **Generic Database Error Safety:** Any structural or constraint error from PostgreSQL aborts the entire batch statement, preventing partial imports.
+- **Shared Ingestion Clock:** All candidate transactions in a single batch share a single `recorded_at` timestamp obtained once from `self._get_system_time()`.
+- **Coexistence of New & Replayed Items:** Mixed batches (containing both new records and exact replays) commit successfully with `batch_status = appended`, returning all final transaction UUIDs in original input order.
+- **Full Replay Idempotency:** Batches consisting entirely of exact replays return `batch_status = idempotent_duplicate` with existing transaction UUIDs and zero writes.
+- **Rejection & Scope Boundaries:** Semantic `REJECTED` rows remain outside the binding batch; no cross-file fuzzy deduplication, external identity derivation, or cash bucket assignment.
+
 

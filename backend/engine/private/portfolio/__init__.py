@@ -152,6 +152,11 @@ from backend.engine.private.portfolio.import_commit_persistence import (
     hydrate_import_ledger_binding,
     serialize_import_ledger_binding,
 )
+from backend.engine.private.portfolio.import_batch_commit import (
+    ImportBatchCommitResult,
+    ImportBatchCommitStatus,
+    ImportBatchItemCommitStatus,
+)
 from backend.engine.private.portfolio.cash import (
     CashBalanceProjection,
     CashBalanceState,
@@ -266,6 +271,9 @@ __all__ = [
     "PersistedImportLedgerBinding",
     "serialize_import_ledger_binding",
     "hydrate_import_ledger_binding",
+    "ImportBatchCommitStatus",
+    "ImportBatchItemCommitStatus",
+    "ImportBatchCommitResult",
     "serialize_portfolio",
     "hydrate_portfolio",
     "serialize_portfolio_account",

@@ -43,7 +43,15 @@ from backend.engine.private.domain import (
     PortfolioMode,
     TransactionType,
 )
-from backend.engine.private.portfolio.import_commit import ImportLedgerBindingIntent
+from backend.engine.private.portfolio.import_commit import (
+    ImportLedgerBindingBatch,
+    ImportLedgerBindingIntent,
+)
+from backend.engine.private.portfolio.import_batch_commit import (
+    ImportBatchCommitResult,
+    ImportBatchCommitStatus,
+    ImportBatchItemCommitStatus,
+)
 from backend.engine.private.portfolio.import_commit_persistence import (
     serialize_import_ledger_binding,
 )
@@ -1117,3 +1125,250 @@ class PortfolioRepository:
 
         else:
             raise RuntimeError(f"Unknown commit_status '{commit_status}' returned from commit_portfolio_import_claim RPC.")
+
+    def commit_import_binding_batch(
+        self,
+        batch: ImportLedgerBindingBatch,
+    ) -> ImportBatchCommitResult:
+        """Atomically commits a complete ImportLedgerBindingBatch as a single PostgreSQL transaction.
+
+        Invariants enforced:
+        1. batch must be an instance of ImportLedgerBindingBatch.
+        2. If batch.intent_count == 0: returns ImportBatchCommitStatus.NOOP (0 clock calls, 0 UUIDs, 0 RPCs).
+        3. Preflights portfolio and account targets for ALL intents before any RPC call.
+           If any target is missing or inconsistent, returns ImportBatchCommitStatus.INVALID with problem ordinal.
+        4. Invokes self._get_system_time() exactly once for the entire batch.
+        5. Generates fresh unique UUID for each candidate PortfolioTransaction.
+        6. Validates cross-entity consistency via PortfolioLedgerValidator for every candidate.
+           If invalid, returns ImportBatchCommitStatus.INVALID with problem ordinal before RPC.
+        7. Serializes all candidate transactions and binding intents using canonical serializers.
+        8. Executes commit_portfolio_import_claim_batch RPC in a single call.
+        9. On conflict: SQL rolls back all earlier new inserts; returns ImportBatchCommitStatus.CONFLICT.
+        10. On appended/idempotent_duplicate: reads back EVERY returned transaction in intent order
+            and verifies persisted economic_fingerprint() == candidate economic_fingerprint().
+        """
+        if not isinstance(batch, ImportLedgerBindingBatch):
+            raise TypeError(f"batch must be an ImportLedgerBindingBatch, got {type(batch)}")
+
+        if batch.intent_count == 0:
+            return ImportBatchCommitResult(status=ImportBatchCommitStatus.NOOP)
+
+        # 1. Preflight target portfolios and accounts for all intents
+        portfolio_cache: Dict[UUID, Optional[Portfolio]] = {}
+        account_cache: Dict[UUID, Optional[PortfolioAccount]] = {}
+
+        for intent in batch.intents:
+            port = portfolio_cache.get(intent.portfolio_id)
+            if port is None and intent.portfolio_id not in portfolio_cache:
+                port = self.get_portfolio(intent.portfolio_id)
+                portfolio_cache[intent.portfolio_id] = port
+            if port is None:
+                return ImportBatchCommitResult(
+                    status=ImportBatchCommitStatus.INVALID,
+                    problem_record_ordinal=intent.record_ordinal,
+                    diagnostics=(
+                        f"Target portfolio {intent.portfolio_id} does not exist or is not accessible.",
+                    ),
+                )
+
+            acc = account_cache.get(intent.account_id)
+            if acc is None and intent.account_id not in account_cache:
+                acc = self.get_portfolio_account(intent.portfolio_id, intent.account_id)
+                account_cache[intent.account_id] = acc
+            if acc is None:
+                return ImportBatchCommitResult(
+                    status=ImportBatchCommitStatus.INVALID,
+                    problem_record_ordinal=intent.record_ordinal,
+                    diagnostics=(
+                        f"Target portfolio account {intent.account_id} does not exist or does not belong to portfolio {intent.portfolio_id}.",
+                    ),
+                )
+
+        # 2. Shared batch recorded_at timestamp (single clock call)
+        batch_recorded_at = self._get_system_time()
+
+        # 3. Construct candidate transactions, validate consistency, and serialize payloads
+        items: List[Dict[str, Any]] = []
+        candidate_txs: List[PortfolioTransaction] = []
+
+        for intent in batch.intents:
+            plan = intent.plan
+            tx_id = uuid4()
+            candidate_tx = PortfolioTransaction(
+                id=tx_id,
+                portfolio_id=intent.portfolio_id,
+                account_id=intent.account_id,
+                transaction_type=plan.transaction_type,
+                effective_date=plan.effective_date,
+                executed_at=plan.executed_at,
+                recorded_at=batch_recorded_at,
+                instrument_id=plan.instrument_id,
+                quantity=plan.quantity,
+                unit_price=plan.unit_price,
+                trade_currency=plan.trade_currency,
+                cash_amount=plan.cash_amount,
+                cash_currency=plan.cash_currency,
+                cash_bucket_id=None,
+                from_currency=plan.from_currency,
+                from_amount=plan.from_amount,
+                to_currency=plan.to_currency,
+                to_amount=plan.to_amount,
+                external_source=None,
+                external_reference=None,
+                reverses_transaction_id=None,
+                notes=None,
+            )
+
+            port = portfolio_cache[intent.portfolio_id]
+            acc = account_cache[intent.account_id]
+
+            try:
+                PortfolioLedgerValidator.validate_transaction_portfolio_consistency(
+                    candidate_tx,
+                    port,
+                    acc,
+                    None,
+                )
+            except ValueError as err:
+                return ImportBatchCommitResult(
+                    status=ImportBatchCommitStatus.INVALID,
+                    problem_record_ordinal=intent.record_ordinal,
+                    diagnostics=(str(err),),
+                )
+
+            tx_payload = serialize_portfolio_transaction(candidate_tx, self._owner_id)
+            binding_payload = serialize_import_ledger_binding(
+                intent,
+                transaction_id=tx_id,
+                expected_owner_id=self._owner_id,
+            )
+
+            items.append({
+                "transaction": tx_payload,
+                "binding": binding_payload,
+            })
+            candidate_txs.append(candidate_tx)
+
+        # 4. Call atomic batch commit RPC
+        rpc_res = self._client.rpc(
+            "commit_portfolio_import_claim_batch",
+            {
+                "p_items": items,
+            },
+        ).execute()
+
+        # 5. Parse and validate RPC return
+        if not rpc_res.data or not isinstance(rpc_res.data, list) or len(rpc_res.data) != 1:
+            raise RuntimeError(
+                f"Malformed return from commit_portfolio_import_claim_batch RPC: expected list with 1 dict, got {rpc_res.data!r}"
+            )
+
+        result_row = rpc_res.data[0]
+        if not isinstance(result_row, dict):
+            raise RuntimeError(
+                f"Malformed result row from commit_portfolio_import_claim_batch: expected dict, got {type(result_row).__name__}"
+            )
+
+        batch_status_raw = result_row.get("batch_status")
+        raw_tx_ids = result_row.get("transaction_ids")
+        raw_item_statuses = result_row.get("item_statuses")
+        conflict_ordinal = result_row.get("conflict_record_ordinal")
+        raw_conflict_tx_id = result_row.get("conflict_transaction_id")
+        diagnostic = result_row.get("diagnostic")
+
+        if not isinstance(batch_status_raw, str):
+            raise RuntimeError(f"Missing or non-string batch_status from RPC: {batch_status_raw!r}")
+
+        if diagnostic is not None and not isinstance(diagnostic, str):
+            raise RuntimeError(f"Non-string diagnostic returned from RPC: {type(diagnostic).__name__}")
+
+        if batch_status_raw == "conflict":
+            if conflict_ordinal is None or not isinstance(conflict_ordinal, int) or conflict_ordinal < 1:
+                raise RuntimeError(f"Invalid conflict_record_ordinal from RPC: {conflict_ordinal!r}")
+
+            matching_intent = next((it for it in batch.intents if it.record_ordinal == conflict_ordinal), None)
+            if matching_intent is None:
+                raise RuntimeError(
+                    f"conflict_record_ordinal {conflict_ordinal} does not match any intent in batch."
+                )
+
+            if raw_conflict_tx_id is None:
+                raise RuntimeError("Missing conflict_transaction_id from batch conflict RPC result.")
+
+            if isinstance(raw_conflict_tx_id, UUID):
+                conflict_tx_id = raw_conflict_tx_id
+            elif isinstance(raw_conflict_tx_id, str):
+                if not _CANONICAL_UUID_PATTERN.match(raw_conflict_tx_id):
+                    raise RuntimeError(f"Invalid conflict_transaction_id UUID string: {raw_conflict_tx_id!r}")
+                conflict_tx_id = UUID(raw_conflict_tx_id)
+            else:
+                raise RuntimeError(f"Invalid conflict_transaction_id type: {type(raw_conflict_tx_id).__name__}")
+
+            return ImportBatchCommitResult(
+                status=ImportBatchCommitStatus.CONFLICT,
+                problem_record_ordinal=conflict_ordinal,
+                conflict_transaction_id=conflict_tx_id,
+                diagnostics=(diagnostic,) if diagnostic else ("Import batch conflict.",),
+            )
+
+        elif batch_status_raw in ("appended", "idempotent_duplicate"):
+            if not isinstance(raw_tx_ids, list) or len(raw_tx_ids) != batch.intent_count:
+                raise RuntimeError(
+                    f"Expected transaction_ids list of length {batch.intent_count}, got {raw_tx_ids!r}"
+                )
+            if not isinstance(raw_item_statuses, list) or len(raw_item_statuses) != batch.intent_count:
+                raise RuntimeError(
+                    f"Expected item_statuses list of length {batch.intent_count}, got {raw_item_statuses!r}"
+                )
+
+            parsed_tx_ids: List[UUID] = []
+            for tid in raw_tx_ids:
+                if isinstance(tid, UUID):
+                    parsed_tx_ids.append(tid)
+                elif isinstance(tid, str) and _CANONICAL_UUID_PATTERN.match(tid):
+                    parsed_tx_ids.append(UUID(tid))
+                else:
+                    raise RuntimeError(f"Invalid transaction_id in batch success: {tid!r}")
+
+            parsed_item_statuses: List[ImportBatchItemCommitStatus] = []
+            for st in raw_item_statuses:
+                if st == "appended":
+                    parsed_item_statuses.append(ImportBatchItemCommitStatus.APPENDED)
+                elif st == "idempotent_duplicate":
+                    parsed_item_statuses.append(ImportBatchItemCommitStatus.IDEMPOTENT_DUPLICATE)
+                else:
+                    raise RuntimeError(f"Invalid item_status in batch success: {st!r}")
+
+            if batch_status_raw == "appended":
+                if not any(s == ImportBatchItemCommitStatus.APPENDED for s in parsed_item_statuses):
+                    raise RuntimeError("Batch status 'appended' but no item status was 'appended'.")
+                final_batch_status = ImportBatchCommitStatus.APPENDED
+            else:
+                if not all(s == ImportBatchItemCommitStatus.IDEMPOTENT_DUPLICATE for s in parsed_item_statuses):
+                    raise RuntimeError("Batch status 'idempotent_duplicate' but some items were not 'idempotent_duplicate'.")
+                final_batch_status = ImportBatchCommitStatus.IDEMPOTENT_DUPLICATE
+
+            # Read back every returned transaction and verify economic fingerprint
+            for idx, tx_id in enumerate(parsed_tx_ids):
+                cand_tx = candidate_txs[idx]
+                persisted = self.get_transaction(cand_tx.portfolio_id, tx_id)
+                if persisted is None:
+                    raise RuntimeError(
+                        f"Transaction {tx_id} for intent {idx} (record ordinal {batch.intents[idx].record_ordinal}) could not be read back."
+                    )
+                if persisted.economic_fingerprint() != cand_tx.economic_fingerprint():
+                    raise RuntimeError(
+                        f"Transaction {tx_id} for intent {idx} economic fingerprint mismatch: "
+                        f"persisted={persisted.economic_fingerprint()} vs candidate={cand_tx.economic_fingerprint()}"
+                    )
+
+            return ImportBatchCommitResult(
+                status=final_batch_status,
+                transaction_ids=tuple(parsed_tx_ids),
+                item_statuses=tuple(parsed_item_statuses),
+                diagnostics=(diagnostic,) if diagnostic else (),
+            )
+
+        else:
+            raise RuntimeError(f"Unknown batch_status '{batch_status_raw}' returned from commit_portfolio_import_claim_batch RPC.")
+
