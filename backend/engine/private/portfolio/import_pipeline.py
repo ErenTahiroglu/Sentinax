@@ -196,7 +196,6 @@ def build_import_staging_result(
     if parser is None:
         raise PortfolioImportPipelineError("parser must not be None")
 
-    # Capture parser metadata in a single snapshot read
     try:
         captured_source_key: Any = getattr(parser, "source_key")
     except AttributeError:
@@ -211,8 +210,14 @@ def build_import_staging_result(
     except Exception as e:
         raise PortfolioImportPipelineError(f"Failed to read parser.parser_revision: {e}") from e
 
-    extract_fn = getattr(parser, "extract_records", None)
-    if extract_fn is None or not callable(extract_fn):
+    try:
+        captured_extract_records: Any = getattr(parser, "extract_records")
+    except AttributeError:
+        raise PortfolioImportPipelineError("parser must provide callable 'extract_records' method")
+    except Exception as e:
+        raise PortfolioImportPipelineError(f"Failed to read parser.extract_records: {e}") from e
+
+    if not callable(captured_extract_records):
         raise PortfolioImportPipelineError("parser must provide callable 'extract_records' method")
 
     # Validate parser metadata contracts
@@ -236,8 +241,8 @@ def build_import_staging_result(
         imported_at=imported_at,
     )
 
-    # 2. Invoke parser exactly once with exact original content
-    extracted_records = parser.extract_records(content)
+    # 2. Invoke captured parser executable exactly once with exact original content
+    extracted_records = captured_extract_records(content)
 
     # 3. Validate parser output collection
     if not isinstance(extracted_records, (list, tuple)) or isinstance(extracted_records, (str, bytes, bytearray, dict)):

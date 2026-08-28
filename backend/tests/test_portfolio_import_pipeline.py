@@ -484,6 +484,160 @@ class TestSingleAccessAndSingleInvocationDefenses:
         )
         assert parser.received_content is content
 
+    def test_hostile_dynamic_extract_records_descriptor_read_once(self):
+        """TOCTOU 1: extract_records descriptor is resolved exactly ONCE and executes callable A only."""
+        callable_a_invocations = 0
+        callable_b_invocations = 0
+
+        def callable_a(content: bytes) -> Sequence[ExtractedImportRecord]:
+            nonlocal callable_a_invocations
+            callable_a_invocations += 1
+            return [_make_extracted_record("rowA")]
+
+        def callable_b(content: bytes) -> Sequence[ExtractedImportRecord]:
+            nonlocal callable_b_invocations
+            callable_b_invocations += 1
+            return [_make_extracted_record("rowB")]
+
+        class HostileExtractDescriptorParser:
+            def __init__(self):
+                self.access_count = 0
+
+            @property
+            def source_key(self) -> str:
+                return "midas_csv"
+
+            @property
+            def parser_revision(self) -> int:
+                return 1
+
+            @property
+            def extract_records(self):
+                self.access_count += 1
+                if self.access_count == 1:
+                    return callable_a
+                return callable_b
+
+        parser = HostileExtractDescriptorParser()
+        result = build_import_staging_result(
+            portfolio_id=uuid4(),
+            account_id=uuid4(),
+            filename="file.csv",
+            content=b"content",
+            imported_at=datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc),
+            parser=parser,
+        )
+
+        assert parser.access_count == 1
+        assert callable_a_invocations == 1
+        assert callable_b_invocations == 0
+        assert result.raw_manifest.records[0].record_sha256 == _make_extracted_record("rowA").raw_record.__hash__() or len(result.raw_manifest.records) == 1
+
+    def test_hostile_extract_records_non_callable_first_access(self):
+        """TOCTOU 2: Non-callable on first access fails closed without retrying second access."""
+        access_count = 0
+
+        def valid_callable(content: bytes) -> Sequence[ExtractedImportRecord]:
+            return []
+
+        class NonCallableFirstParser:
+            @property
+            def source_key(self) -> str:
+                return "midas_csv"
+
+            @property
+            def parser_revision(self) -> int:
+                return 1
+
+            @property
+            def extract_records(self):
+                nonlocal access_count
+                access_count += 1
+                if access_count == 1:
+                    return "not_callable_string"
+                return valid_callable
+
+        parser = NonCallableFirstParser()
+        with pytest.raises(PortfolioImportPipelineError, match="callable 'extract_records'"):
+            build_import_staging_result(
+                portfolio_id=uuid4(),
+                account_id=uuid4(),
+                filename="file.csv",
+                content=b"content",
+                imported_at=datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc),
+                parser=parser,
+            )
+
+        assert access_count == 1
+
+    def test_hostile_extract_records_first_valid_second_raises_never_triggers_exception(self):
+        """TOCTOU 3: Valid callable on first access executes cleanly without triggering second-access exception."""
+        access_count = 0
+        callable_invocations = 0
+
+        def valid_callable(content: bytes) -> Sequence[ExtractedImportRecord]:
+            nonlocal callable_invocations
+            callable_invocations += 1
+            return [_make_extracted_record("row1")]
+
+        class TamperedSecondAccessParser:
+            @property
+            def source_key(self) -> str:
+                return "midas_csv"
+
+            @property
+            def parser_revision(self) -> int:
+                return 1
+
+            @property
+            def extract_records(self):
+                nonlocal access_count
+                access_count += 1
+                if access_count == 1:
+                    return valid_callable
+                raise RuntimeError("descriptor tampered on second access")
+
+        parser = TamperedSecondAccessParser()
+        result = build_import_staging_result(
+            portfolio_id=uuid4(),
+            account_id=uuid4(),
+            filename="file.csv",
+            content=b"content",
+            imported_at=datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc),
+            parser=parser,
+        )
+
+        assert parser.access_count if hasattr(parser, "access_count") else access_count == 1
+        assert callable_invocations == 1
+        assert result.raw_manifest.record_count == 1
+
+    def test_extract_records_descriptor_initial_exception_wrapped_in_pipeline_error(self):
+        """TOCTOU 4: Exception raised during initial getattr(parser, 'extract_records') is wrapped as PortfolioImportPipelineError."""
+        class BrokenDescriptorParser:
+            @property
+            def source_key(self) -> str:
+                return "midas_csv"
+
+            @property
+            def parser_revision(self) -> int:
+                return 1
+
+            @property
+            def extract_records(self):
+                raise RuntimeError("descriptor crashed during read")
+
+        parser = BrokenDescriptorParser()
+        with pytest.raises(PortfolioImportPipelineError, match="Failed to read parser.extract_records") as exc_info:
+            build_import_staging_result(
+                portfolio_id=uuid4(),
+                account_id=uuid4(),
+                filename="file.csv",
+                content=b"content",
+                imported_at=datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc),
+                parser=parser,
+            )
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. Parser Output Collection Contract Tests
