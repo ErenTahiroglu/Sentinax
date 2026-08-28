@@ -1,6 +1,6 @@
 -- 011_portfolio_ledger_persistence.sql
 -- Sentinax Private Personal Investment Decision Engine
--- Phase 12B.1 & Phase 12B.1A: Portfolio Ledger Supabase Persistence Schema & DB Invariants
+-- Phase 12B.1, 12B.1A & 12B.1B: Portfolio Ledger Supabase Persistence Schema & DB Invariants
 --
 -- Persistent Tables:
 --   1. public.portfolios (Root portfolio aggregate, MY_PORTFOLIO vs SANDBOX boundary)
@@ -12,7 +12,8 @@
 --
 -- Core Invariants Enforced at DB Level:
 --   - Strict owner isolation referencing auth.users(id)
---   - Exact NUMERIC precision for all financial quantities (NO REAL / FLOAT / DOUBLE)
+--   - Exact unconstrained NUMERIC precision for all financial quantities (NO REAL / FLOAT / DOUBLE)
+--   - Strict rejection of PostgreSQL NUMERIC non-finite special values ('NaN', 'Infinity', '-Infinity')
 --   - Strict canonical Currency domain universe ('TRY', 'USD', 'EUR', 'GBP', 'XAU', 'XAG')
 --   - Parity with ContributionStatus ('planned', 'confirmed', 'cancelled', 'received')
 --   - Mutually exclusive transaction field families (fail-closed CHECK constraints)
@@ -160,7 +161,10 @@ CREATE TABLE IF NOT EXISTS public.investment_goals (
     portfolio_id UUID NOT NULL,
     owner_id UUID NOT NULL,
     name VARCHAR(255) NOT NULL CHECK (length(trim(name)) > 0),
-    target_amount NUMERIC NOT NULL CHECK (target_amount > 0),
+    target_amount NUMERIC NOT NULL CHECK (
+        target_amount NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+        AND target_amount > 0
+    ),
     target_currency VARCHAR(10) NOT NULL CHECK (
         target_currency IN ('TRY', 'USD', 'EUR', 'GBP', 'XAU', 'XAG')
     ),
@@ -198,7 +202,10 @@ CREATE TABLE IF NOT EXISTS public.planned_contributions (
     goal_id UUID,
     cash_bucket_id UUID,
     expected_date DATE NOT NULL,
-    amount NUMERIC NOT NULL CHECK (amount > 0),
+    amount NUMERIC NOT NULL CHECK (
+        amount NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+        AND amount > 0
+    ),
     currency VARCHAR(10) NOT NULL CHECK (
         currency IN ('TRY', 'USD', 'EUR', 'GBP', 'XAU', 'XAG')
     ),
@@ -254,14 +261,32 @@ CREATE TABLE IF NOT EXISTS public.portfolio_transactions (
 
     -- Trade Security Fields (BUY, SELL)
     instrument_id UUID REFERENCES public.instruments(id) ON DELETE RESTRICT,
-    quantity NUMERIC CHECK (quantity IS NULL OR quantity > 0),
-    unit_price NUMERIC CHECK (unit_price IS NULL OR unit_price > 0),
+    quantity NUMERIC CHECK (
+        quantity IS NULL
+        OR (
+            quantity NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+            AND quantity > 0
+        )
+    ),
+    unit_price NUMERIC CHECK (
+        unit_price IS NULL
+        OR (
+            unit_price NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+            AND unit_price > 0
+        )
+    ),
     trade_currency VARCHAR(10) CHECK (
         trade_currency IS NULL OR trade_currency IN ('TRY', 'USD', 'EUR', 'GBP', 'XAU', 'XAG')
     ),
 
     -- Cash Movement Fields (CASH_DEPOSIT, CASH_WITHDRAWAL, DIVIDEND, INTEREST, FEE, TAX_WITHHOLDING)
-    cash_amount NUMERIC CHECK (cash_amount IS NULL OR cash_amount > 0),
+    cash_amount NUMERIC CHECK (
+        cash_amount IS NULL
+        OR (
+            cash_amount NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+            AND cash_amount > 0
+        )
+    ),
     cash_currency VARCHAR(10) CHECK (
         cash_currency IS NULL OR cash_currency IN ('TRY', 'USD', 'EUR', 'GBP', 'XAU', 'XAG')
     ),
@@ -271,11 +296,23 @@ CREATE TABLE IF NOT EXISTS public.portfolio_transactions (
     from_currency VARCHAR(10) CHECK (
         from_currency IS NULL OR from_currency IN ('TRY', 'USD', 'EUR', 'GBP', 'XAU', 'XAG')
     ),
-    from_amount NUMERIC CHECK (from_amount IS NULL OR from_amount > 0),
+    from_amount NUMERIC CHECK (
+        from_amount IS NULL
+        OR (
+            from_amount NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+            AND from_amount > 0
+        )
+    ),
     to_currency VARCHAR(10) CHECK (
         to_currency IS NULL OR to_currency IN ('TRY', 'USD', 'EUR', 'GBP', 'XAU', 'XAG')
     ),
-    to_amount NUMERIC CHECK (to_amount IS NULL OR to_amount > 0),
+    to_amount NUMERIC CHECK (
+        to_amount IS NULL
+        OR (
+            to_amount NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+            AND to_amount > 0
+        )
+    ),
 
     -- External Source & Idempotency Metadata
     external_source VARCHAR(64),
@@ -322,15 +359,19 @@ CREATE TABLE IF NOT EXISTS public.portfolio_transactions (
     ),
 
     -- ─────────────────────────────────────────────────────────────────────────
-    -- Mutually Exclusive Field-Family CHECK Constraints (Phase 12A.5 & 12A.6)
+    -- Mutually Exclusive Field-Family CHECK Constraints (Phase 12A.5, 12A.6 & 12B.1B)
     -- ─────────────────────────────────────────────────────────────────────────
     CONSTRAINT chk_tx_field_families CHECK (
         -- BUY / SELL: Requires security fields, rejects cash amounts/currencies, FX legs, and reversal ID
         (
             transaction_type IN ('buy', 'sell')
             AND instrument_id IS NOT NULL
-            AND quantity IS NOT NULL AND quantity > 0
-            AND unit_price IS NOT NULL AND unit_price > 0
+            AND quantity IS NOT NULL
+            AND quantity NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+            AND quantity > 0
+            AND unit_price IS NOT NULL
+            AND unit_price NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+            AND unit_price > 0
             AND trade_currency IS NOT NULL
             AND cash_amount IS NULL
             AND cash_currency IS NULL
@@ -342,7 +383,9 @@ CREATE TABLE IF NOT EXISTS public.portfolio_transactions (
         -- CASH_DEPOSIT / CASH_WITHDRAWAL: Requires cash_amount > 0 and cash_currency, rejects security and FX fields
         (
             transaction_type IN ('cash_deposit', 'cash_withdrawal')
-            AND cash_amount IS NOT NULL AND cash_amount > 0
+            AND cash_amount IS NOT NULL
+            AND cash_amount NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+            AND cash_amount > 0
             AND cash_currency IS NOT NULL
             AND instrument_id IS NULL
             AND quantity IS NULL AND unit_price IS NULL AND trade_currency IS NULL
@@ -354,7 +397,9 @@ CREATE TABLE IF NOT EXISTS public.portfolio_transactions (
         -- DIVIDEND / INTEREST / FEE / TAX_WITHHOLDING: Requires cash_amount > 0 and cash_currency, optional instrument_id
         (
             transaction_type IN ('dividend', 'interest', 'fee', 'tax_withholding')
-            AND cash_amount IS NOT NULL AND cash_amount > 0
+            AND cash_amount IS NOT NULL
+            AND cash_amount NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+            AND cash_amount > 0
             AND cash_currency IS NOT NULL
             AND quantity IS NULL AND unit_price IS NULL AND trade_currency IS NULL
             AND from_currency IS NULL AND from_amount IS NULL
@@ -366,9 +411,13 @@ CREATE TABLE IF NOT EXISTS public.portfolio_transactions (
         (
             transaction_type = 'fx_conversion'
             AND from_currency IS NOT NULL
-            AND from_amount IS NOT NULL AND from_amount > 0
+            AND from_amount IS NOT NULL
+            AND from_amount NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+            AND from_amount > 0
             AND to_currency IS NOT NULL
-            AND to_amount IS NOT NULL AND to_amount > 0
+            AND to_amount IS NOT NULL
+            AND to_amount NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+            AND to_amount > 0
             AND from_currency != to_currency
             AND instrument_id IS NULL
             AND quantity IS NULL AND unit_price IS NULL AND trade_currency IS NULL

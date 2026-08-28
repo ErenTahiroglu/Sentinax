@@ -1,11 +1,12 @@
 """
 backend/tests/test_portfolio_persistence_schema.py
 ==================================================
-Comprehensive Schema & DB Invariant Verification for Supabase Migration 011 (Phase 12B.1 & 12B.1A).
+Comprehensive Schema & DB Invariant Verification for Supabase Migration 011 (Phase 12B.1, 12B.1A & 12B.1B).
 
 Verifies that the Supabase SQL migration `011_portfolio_ledger_persistence.sql`:
     - Creates exactly the 6 authoritative domain tables (and no derived projection tables).
-    - Preserves exact NUMERIC precision for all monetary/quantity values (NO float/real/double).
+    - Preserves exact unconstrained NUMERIC precision for all monetary/quantity values (NO float/real/double, NO numeric(p,s) narrowing).
+    - Enforces explicit non-finite rejection ('NaN', 'Infinity', '-Infinity') on all 7 financial NUMERIC fields.
     - Enforces exact parity with canonical `ContributionStatus` enum (rejects 'deferred').
     - Enforces exact parity with canonical `Currency` enum across all currency-bearing columns.
     - Enforces CashBucket identity/reference immutability via BEFORE UPDATE trigger.
@@ -84,8 +85,8 @@ class TestPortfolioPersistenceSchema:
             assert f"CREATE TABLE IF NOT EXISTS public.{tbl}" not in migration_sql
 
     def test_exact_numeric_precision_used_no_floating_point(self, sql_without_comments: str):
-        """All financial fields must use NUMERIC; REAL, FLOAT, and DOUBLE PRECISION are strictly forbidden."""
-        forbidden_types = [r"\bREAL\b", r"\bFLOAT\b", r"\bDOUBLE\s+PRECISION\b"]
+        """All financial fields must use unconstrained NUMERIC; REAL, FLOAT, DOUBLE PRECISION, and NUMERIC(p,s) are strictly forbidden."""
+        forbidden_types = [r"\bREAL\b", r"\bFLOAT\b", r"\bDOUBLE\s+PRECISION\b", r"\bNUMERIC\s*\(\s*\d+\s*(?:,\s*\d+\s*)?\)"]
         for pattern in forbidden_types:
             assert not re.search(pattern, sql_without_comments, re.IGNORECASE), f"Forbidden type found matching {pattern}"
 
@@ -97,6 +98,44 @@ class TestPortfolioPersistenceSchema:
         assert re.search(r"to_amount\s+NUMERIC", sql_without_comments)
         assert re.search(r"target_amount\s+NUMERIC", sql_without_comments)
         assert re.search(r"amount\s+NUMERIC", sql_without_comments)
+
+    def test_all_seven_numeric_fields_reject_non_finite_values(self, sql_without_comments: str):
+        """Phase 12B.1B: All 7 financial NUMERIC fields must explicitly reject 'NaN', 'Infinity', and '-Infinity'."""
+        required_numeric_fields = [
+            ("investment_goals", "target_amount", False),
+            ("planned_contributions", "amount", False),
+            ("portfolio_transactions", "quantity", True),
+            ("portfolio_transactions", "unit_price", True),
+            ("portfolio_transactions", "cash_amount", True),
+            ("portfolio_transactions", "from_amount", True),
+            ("portfolio_transactions", "to_amount", True),
+        ]
+
+        for table_name, col_name, is_nullable in required_numeric_fields:
+            table_match = re.search(
+                rf"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?public\.{table_name}\s*\((.*?)\);",
+                sql_without_comments,
+                re.DOTALL | re.IGNORECASE,
+            )
+            assert table_match is not None, f"Table {table_name} definition not found"
+            t_def = table_match.group(1)
+
+            col_match = re.search(
+                rf"{col_name}\s+NUMERIC\s+(?:NOT\s+NULL\s+)?CHECK\s*\((.*?)\)(?:,|$)",
+                t_def,
+                re.DOTALL | re.IGNORECASE,
+            )
+            assert col_match is not None, f"CHECK constraint for {table_name}.{col_name} not found"
+            check_clause = col_match.group(1)
+
+            # Must contain explicit rejection of 'NaN', 'Infinity', '-Infinity'
+            assert "'NaN'::numeric" in check_clause, f"Missing 'NaN'::numeric in {table_name}.{col_name}"
+            assert "'Infinity'::numeric" in check_clause, f"Missing 'Infinity'::numeric in {table_name}.{col_name}"
+            assert "'-Infinity'::numeric" in check_clause, f"Missing '-Infinity'::numeric in {table_name}.{col_name}"
+            assert f"{col_name} > 0" in check_clause, f"Missing positive check ({col_name} > 0) in {table_name}.{col_name}"
+
+            if is_nullable:
+                assert f"{col_name} IS NULL" in check_clause, f"Nullable field {table_name}.{col_name} missing IS NULL check"
 
     def test_all_ten_transaction_types_represented(self, sql_without_comments: str):
         """All 10 canonical TransactionType enum values must be in the transaction_type check."""
