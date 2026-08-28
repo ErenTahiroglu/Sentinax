@@ -76,6 +76,11 @@ from backend.engine.private.portfolio.import_parsing import (
     PortfolioImportParsingError,
     build_parsed_import_record,
 )
+from backend.engine.private.portfolio.import_parsed_batch import (
+    ParsedImportBatchManifest,
+    PortfolioParsedImportBatchError,
+    build_parsed_import_batch_manifest,
+)
 from backend.engine.private.portfolio.cash import (
     CashBalanceProjection,
     CashBalanceState,
@@ -140,6 +145,9 @@ __all__ = [
     "ImportParsedField",
     "ParsedImportRecord",
     "build_parsed_import_record",
+    "PortfolioParsedImportBatchError",
+    "ParsedImportBatchManifest",
+    "build_parsed_import_batch_manifest",
     "serialize_portfolio",
     "hydrate_portfolio",
     "serialize_portfolio_account",

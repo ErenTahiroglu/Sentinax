@@ -207,4 +207,13 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **String-Only Field Model:** `ImportParsedField` retains exact textual representations without semantic coercion, stripping, or Unicode normalization. Blank fields (`""`) remain distinct from absent fields.
 - **Canonical Field Ordering:** Fields are stored sorted by `field_key` ascending; duplicate keys fail closed.
 - **Parsed Identity Tuple:** `(portfolio_id, account_id, source_key, file_content_sha256, record_ordinal, record_sha256, parser_revision, parsed_sha256)`.
-- **Deferred Scope:** Broker parsers (Midas, IBKR, banks, TEFAS), transaction inference, instrument mapping, staging persistence, and validation remain deferred to Phase 13D+.
+
+---
+
+## 13d. Immutable Parsed-Batch Manifest & Full Record-Coverage Integrity (Phase 13D)
+- **Parsed Batch Authority:** One `ParsedImportBatchManifest` binds one raw `ImportBatchManifest` to complete, verified `ParsedImportRecord` instances under a single explicit `parser_revision`.
+- **Full Coverage & Exact Provenance:** For a raw manifest with N records, exactly N parsed records must correspond 1:1 to `raw_manifest.records` with identical `ImportRecordProvenance`. No omissions, extras, or duplicates.
+- **Deterministic Preimage:** `parsed_manifest_sha256` is computed from compact JSON `[portfolio_id, account_id, source_key, file_content_sha256, raw_manifest_sha256, parser_revision, [[ord, rec_sha, parsed_sha], ...]]`. Display filenames and timestamps are excluded.
+- **Staging Identity Separation:** `parsed_manifest_identity` is `(portfolio_id, account_id, source_key, file_content_sha256, raw_manifest_sha256, parser_revision, parsed_manifest_sha256)`.
+- **Zero-Field Records Count as Coverage:** A parsed record with `fields == ()` satisfies full coverage.
+- **Deferred Scope:** Broker parsers (Midas, IBKR, banks, TEFAS), transaction inference, instrument mapping, staging persistence, and validation remain deferred to Phase 13E+.
