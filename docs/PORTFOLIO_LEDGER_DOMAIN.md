@@ -291,3 +291,18 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Pre-Ledger Boundary:** Pure Python domain outcome model. Zero `PortfolioTransaction` construction, zero `InstrumentResolverService` execution, zero external identity derivation, zero persistence, and zero ledger mutation.
 - **Deferred Scope:** Resolver service execution adapter, ledger materialization, external identity assignment, cash-bucket attribution, and persistence remain deferred to Phase 13K+.
 
+---
+
+## 13k. PIT-Safe Instrument Resolver Execution Port & Complete Batch Harness (Phase 13K)
+- **Source-Neutral Resolver Execution:** The instrument resolver execution harness takes a Phase 13I `ImportDraftBatchManifest` and an adapter implementing `PortfolioImportInstrumentResolver`. The resolver receives strictly `(instrument_reference, effective_date)` with zero broker, filename, currency, or environmental metadata.
+- **Snapshot & TOCTOU Hardening:** `resolver_key`, `resolver_revision`, and `resolve_candidates` callable are snapshotted exactly ONCE at the start of execution. Property descriptors are resolved once and reused across all drafts, preventing dynamic TOCTOU drift.
+- **Strict Execution Exceptions:** Adapter-level exceptions raised by `resolve_candidates` propagate unchanged (not wrapped into domain errors), while adapter contract violations raise `PortfolioImportInstrumentResolverError`.
+- **Zero-Cache Invariant:** Every instrument-bearing draft invokes the resolver separately, ensuring explicit execution tracing and accounting.
+- **Candidate Cardinality Mapping:**
+  - 0 candidates -> `UNRESOLVED` with diagnostic code `instrument_not_found`
+  - 1 candidate -> `RESOLVED` with exact `instrument_id: UUID`
+  - >= 2 candidates -> `AMBIGUOUS` with canonical ascending candidate UUID tuple and diagnostic code `ambiguous_reference`
+  - Drafts without instrument reference (cash, FX, unreferenced dividend/fee) become `NOT_REQUIRED` without invoking the resolver.
+- **Pre-Ledger Domain Boundary:** Pure domain execution harness. Zero `InstrumentResolverService` legacy execution, zero `PortfolioTransaction` construction, zero external identity derivation, zero persistence, and zero ledger mutation.
+- **Deferred Scope:** Ledger transaction materialization, idempotency derivation, cash bucket assignment, and ledger persistence remain deferred to Phase 13L+.
+

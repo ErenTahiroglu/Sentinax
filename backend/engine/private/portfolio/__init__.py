@@ -120,6 +120,11 @@ from backend.engine.private.portfolio.import_instrument_resolution import (
     build_import_instrument_resolution,
     build_import_instrument_resolution_batch,
 )
+from backend.engine.private.portfolio.import_instrument_resolver import (
+    PortfolioImportInstrumentResolver,
+    PortfolioImportInstrumentResolverError,
+    resolve_import_draft_batch_instruments,
+)
 from backend.engine.private.portfolio.cash import (
     CashBalanceProjection,
     CashBalanceState,
@@ -214,6 +219,9 @@ __all__ = [
     "ImportInstrumentResolutionBatch",
     "build_import_instrument_resolution",
     "build_import_instrument_resolution_batch",
+    "PortfolioImportInstrumentResolverError",
+    "PortfolioImportInstrumentResolver",
+    "resolve_import_draft_batch_instruments",
     "serialize_portfolio",
     "hydrate_portfolio",
     "serialize_portfolio_account",
