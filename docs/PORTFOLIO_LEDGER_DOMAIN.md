@@ -227,4 +227,16 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Exact Object Binding:** `ImportStagingResult` binds verified `file_provenance`, `raw_manifest`, and `parsed_manifest` with exact object identity.
 - **Raw-Byte Non-Retention:** `ExtractedImportRecord` is an ephemeral DTO; `ImportStagingResult` retains no raw bytes, no raw record strings, and no parser references.
 - **Fail-Closed Error Propagation:** Lower-layer integrity errors (`PortfolioImportProvenanceError`, `PortfolioImportBatchError`, `PortfolioImportParsingError`, `PortfolioParsedImportBatchError`) and parser runtime exceptions propagate unchanged without partial returns.
-- **Deferred Scope:** Broker parsers (Midas, IBKR, banks, TEFAS), transaction inference, instrument mapping, staging persistence, and validation remain deferred to Phase 13F+.
+
+---
+
+## 13f. Sentinax Canonical CSV v1 — Reference Source Parser Adapter (Phase 13F)
+- **First Real Parser:** `SentinaxCanonicalCsvParserV1` is the authoritative reference source parser adapter implementing `PortfolioImportSourceParser`.
+- **Fixed Metadata:** Fixed `source_key = "sentinax_csv"` and fixed `parser_revision = 1`.
+- **Strict Line-Oriented Subset:** Strict UTF-8 without BOM; NUL bytes forbidden; each logical record is exactly one physical line. Multiline quoted fields containing physical newlines are rejected.
+- **Delimiter & Quotes:** Comma (`,`) delimiter, double-quote (`"`) quoting with `""` escape semantics.
+- **Newline Policy:** Uniform LF or CRLF supported; mixed newline styles in a single file and bare CR (`\r`) fail closed. Blank physical lines fail closed.
+- **Header Contract:** First physical row is the header; header keys must strictly match Phase 13C field-key grammar (`^[a-z][a-z0-9_]{0,63}$`) and be unique.
+- **Exact Raw Byte Slice Authority:** `ExtractedImportRecord.raw_record` is the exact byte slice of original content excluding only line terminators. Never reconstructed via text encoding.
+- **Textual Fidelity:** Values remain exact strings without stripping, trimming, null-coercion, or date/numeric interpretation.
+- **Deferred Scope:** Broker parsers (Midas, IBKR, banks, TEFAS), transaction inference, instrument mapping, staging persistence, and validation remain deferred to Phase 13G+.

@@ -88,6 +88,10 @@ from backend.engine.private.portfolio.import_pipeline import (
     PortfolioImportSourceParser,
     build_import_staging_result,
 )
+from backend.engine.private.portfolio.parsers import (
+    SentinaxCanonicalCsvError,
+    SentinaxCanonicalCsvParserV1,
+)
 from backend.engine.private.portfolio.cash import (
     CashBalanceProjection,
     CashBalanceState,
@@ -160,6 +164,8 @@ __all__ = [
     "ExtractedImportRecord",
     "ImportStagingResult",
     "build_import_staging_result",
+    "SentinaxCanonicalCsvError",
+    "SentinaxCanonicalCsvParserV1",
     "serialize_portfolio",
     "hydrate_portfolio",
     "serialize_portfolio_account",
