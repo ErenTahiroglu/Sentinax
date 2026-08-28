@@ -513,7 +513,19 @@ def build_import_instrument_resolution(
         sorted(diag_list, key=lambda d: (d.code, d.message))
     )
 
-    # Compute resolution digest
+    # 5. Authoritative validation before any digest computation
+    _validate_resolution_record_fields(
+        draft=draft,
+        status=status,
+        resolution_as_of_date=resolution_as_of_date,
+        resolver_key=resolver_key,
+        resolver_revision=resolver_revision,
+        instrument_id=instrument_id,
+        candidate_instrument_ids=sorted_candidates,
+        diagnostics=sorted_diagnostics,
+    )
+
+    # 6. Compute canonical resolution digest
     resolution_sha = _compute_resolution_sha256(
         draft=draft,
         status=status,

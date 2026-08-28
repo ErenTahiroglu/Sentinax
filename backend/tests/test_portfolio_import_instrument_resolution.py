@@ -2196,3 +2196,262 @@ class TestFinalRedTeam:
                 resolver_revision=None,
                 instrument_id=uuid4(),
             )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 19. Phase 13J.1 Builder Prevalidation & Error Domain Hardening
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestBuilderPrevalidationHardening:
+    """Tests for Phase 13J.1 builder prevalidation and fail-closed error domain."""
+
+    def test_malformed_draft_raises_domain_error_not_attribute_error(self):
+        """Malformed draft object raises PortfolioImportInstrumentResolutionError, not AttributeError."""
+        with pytest.raises(PortfolioImportInstrumentResolutionError, match="draft must be an ImportTransactionDraft instance"):
+            build_import_instrument_resolution(
+                draft="not-a-draft",  # type: ignore
+                status=ImportInstrumentResolutionStatus.RESOLVED,
+                resolution_as_of_date=date(2026, 8, 28),
+                resolver_key="sentinax_id",
+                resolver_revision=1,
+                instrument_id=uuid4(),
+            )
+
+    def test_none_draft_raises_domain_error(self):
+        """None draft object raises PortfolioImportInstrumentResolutionError."""
+        with pytest.raises(PortfolioImportInstrumentResolutionError, match="draft must be an ImportTransactionDraft instance"):
+            build_import_instrument_resolution(
+                draft=None,  # type: ignore
+                status=ImportInstrumentResolutionStatus.RESOLVED,
+                resolution_as_of_date=date(2026, 8, 28),
+                resolver_key="sentinax_id",
+                resolver_revision=1,
+                instrument_id=uuid4(),
+            )
+
+    def test_malformed_status_raises_domain_error_not_attribute_error(self):
+        """String status raises PortfolioImportInstrumentResolutionError, not AttributeError."""
+        batch = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        draft = _make_buy_draft(batch, 1)
+        with pytest.raises(PortfolioImportInstrumentResolutionError, match="status must be an ImportInstrumentResolutionStatus enum member"):
+            build_import_instrument_resolution(
+                draft=draft,
+                status="resolved",  # type: ignore
+                resolution_as_of_date=draft.effective_date,
+                resolver_key="sentinax_id",
+                resolver_revision=1,
+                instrument_id=uuid4(),
+            )
+
+    def test_none_status_raises_domain_error(self):
+        """None status raises PortfolioImportInstrumentResolutionError."""
+        batch = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        draft = _make_buy_draft(batch, 1)
+        with pytest.raises(PortfolioImportInstrumentResolutionError, match="status must be an ImportInstrumentResolutionStatus enum member"):
+            build_import_instrument_resolution(
+                draft=draft,
+                status=None,  # type: ignore
+                resolution_as_of_date=draft.effective_date,
+                resolver_key="sentinax_id",
+                resolver_revision=1,
+                instrument_id=uuid4(),
+            )
+
+    def test_datetime_as_date_raises_domain_error(self):
+        """datetime instance as resolution_as_of_date raises PortfolioImportInstrumentResolutionError."""
+        batch = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        draft = _make_buy_draft(batch, 1)
+        dt = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+        with pytest.raises(PortfolioImportInstrumentResolutionError, match="strictly a datetime.date instance"):
+            build_import_instrument_resolution(
+                draft=draft,
+                status=ImportInstrumentResolutionStatus.RESOLVED,
+                resolution_as_of_date=dt,  # type: ignore
+                resolver_key="sentinax_id",
+                resolver_revision=1,
+                instrument_id=uuid4(),
+            )
+
+    def test_string_date_raises_domain_error_not_attribute_error(self):
+        """String as resolution_as_of_date raises PortfolioImportInstrumentResolutionError, not AttributeError."""
+        batch = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        draft = _make_buy_draft(batch, 1)
+        with pytest.raises(PortfolioImportInstrumentResolutionError, match="strictly a datetime.date instance"):
+            build_import_instrument_resolution(
+                draft=draft,
+                status=ImportInstrumentResolutionStatus.RESOLVED,
+                resolution_as_of_date="2026-08-28",  # type: ignore
+                resolver_key="sentinax_id",
+                resolver_revision=1,
+                instrument_id=uuid4(),
+            )
+
+    def test_none_date_raises_domain_error(self):
+        """None as resolution_as_of_date raises PortfolioImportInstrumentResolutionError."""
+        batch = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        draft = _make_buy_draft(batch, 1)
+        with pytest.raises(PortfolioImportInstrumentResolutionError, match="strictly a datetime.date instance"):
+            build_import_instrument_resolution(
+                draft=draft,
+                status=ImportInstrumentResolutionStatus.RESOLVED,
+                resolution_as_of_date=None,  # type: ignore
+                resolver_key="sentinax_id",
+                resolver_revision=1,
+                instrument_id=uuid4(),
+            )
+
+    def test_resolver_metadata_pairing_in_builder(self):
+        """Resolver key/revision half-presence raises PortfolioImportInstrumentResolutionError in builder."""
+        batch = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        draft = _make_buy_draft(batch, 1)
+        with pytest.raises(PortfolioImportInstrumentResolutionError, match="Resolver metadata must be all-or-none"):
+            build_import_instrument_resolution(
+                draft=draft,
+                status=ImportInstrumentResolutionStatus.RESOLVED,
+                resolution_as_of_date=draft.effective_date,
+                resolver_key="sentinax_id",
+                resolver_revision=None,
+                instrument_id=uuid4(),
+            )
+        with pytest.raises(PortfolioImportInstrumentResolutionError, match="Resolver metadata must be all-or-none"):
+            build_import_instrument_resolution(
+                draft=draft,
+                status=ImportInstrumentResolutionStatus.RESOLVED,
+                resolution_as_of_date=draft.effective_date,
+                resolver_key=None,
+                resolver_revision=1,
+                instrument_id=uuid4(),
+            )
+
+    def test_malformed_instrument_uuid_in_builder(self):
+        """String passed as instrument_id raises PortfolioImportInstrumentResolutionError."""
+        batch = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        draft = _make_buy_draft(batch, 1)
+        with pytest.raises(PortfolioImportInstrumentResolutionError, match="requires an authoritative UUID"):
+            build_import_instrument_resolution(
+                draft=draft,
+                status=ImportInstrumentResolutionStatus.RESOLVED,
+                resolution_as_of_date=draft.effective_date,
+                resolver_key="sentinax_id",
+                resolver_revision=1,
+                instrument_id="not-a-uuid",  # type: ignore
+            )
+
+    def test_status_contract_matrix_in_builder(self):
+        """Verify invalid status combinations fail in Phase 13J error domain."""
+        batch = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        buy_draft = _make_buy_draft(batch, 1)
+        cash_draft = _make_cash_deposit_draft(batch, 1)
+
+        # A. NOT_REQUIRED with resolver metadata
+        with pytest.raises(PortfolioImportInstrumentResolutionError, match="resolver_key and resolver_revision must be None for NOT_REQUIRED"):
+            build_import_instrument_resolution(
+                draft=cash_draft,
+                status=ImportInstrumentResolutionStatus.NOT_REQUIRED,
+                resolution_as_of_date=cash_draft.effective_date,
+                resolver_key="sentinax_id",
+                resolver_revision=1,
+            )
+
+        # B. RESOLVED without instrument UUID
+        with pytest.raises(PortfolioImportInstrumentResolutionError, match="requires an authoritative UUID"):
+            build_import_instrument_resolution(
+                draft=buy_draft,
+                status=ImportInstrumentResolutionStatus.RESOLVED,
+                resolution_as_of_date=buy_draft.effective_date,
+                resolver_key="sentinax_id",
+                resolver_revision=1,
+                instrument_id=None,
+            )
+
+        # C. UNRESOLVED without diagnostic
+        with pytest.raises(PortfolioImportInstrumentResolutionError, match="UNRESOLVED status requires at least one diagnostic"):
+            build_import_instrument_resolution(
+                draft=buy_draft,
+                status=ImportInstrumentResolutionStatus.UNRESOLVED,
+                resolution_as_of_date=buy_draft.effective_date,
+                resolver_key="sentinax_id",
+                resolver_revision=1,
+                diagnostics=[],
+            )
+
+        # D. AMBIGUOUS with only one candidate
+        diag = ImportInstrumentResolutionDiagnostic("ambig", "msg")
+        with pytest.raises(PortfolioImportInstrumentResolutionError, match="at least two candidate_instrument_ids"):
+            build_import_instrument_resolution(
+                draft=buy_draft,
+                status=ImportInstrumentResolutionStatus.AMBIGUOUS,
+                resolution_as_of_date=buy_draft.effective_date,
+                resolver_key="sentinax_id",
+                resolver_revision=1,
+                candidate_instrument_ids=[uuid4()],
+                diagnostics=[diag],
+            )
+
+        # E. Cash draft marked RESOLVED
+        with pytest.raises(PortfolioImportInstrumentResolutionError, match="RESOLVED status requires draft to have an instrument_reference"):
+            build_import_instrument_resolution(
+                draft=cash_draft,
+                status=ImportInstrumentResolutionStatus.RESOLVED,
+                resolution_as_of_date=cash_draft.effective_date,
+                resolver_key="sentinax_id",
+                resolver_revision=1,
+                instrument_id=uuid4(),
+            )
+
+        # F. BUY marked NOT_REQUIRED
+        with pytest.raises(PortfolioImportInstrumentResolutionError, match="NOT_REQUIRED status is invalid"):
+            build_import_instrument_resolution(
+                draft=buy_draft,
+                status=ImportInstrumentResolutionStatus.NOT_REQUIRED,
+                resolution_as_of_date=buy_draft.effective_date,
+            )
+
+    def test_hash_helper_not_reached_on_malformed_input(self, monkeypatch):
+        """Monkeypatch _compute_resolution_sha256 to prove it is not called when validation fails."""
+        import backend.engine.private.portfolio.import_instrument_resolution as module
+
+        class SentinelHashException(Exception):
+            pass
+
+        def exploding_hash(*args, **kwargs):
+            raise SentinelHashException("Hash function should not have been reached!")
+
+        monkeypatch.setattr(module, "_compute_resolution_sha256", exploding_hash)
+
+        batch = _make_test_assessment_batch([ImportAssessmentStatus.READY])
+        draft = _make_buy_draft(batch, 1)
+
+        # Test 1: Malformed draft
+        with pytest.raises(PortfolioImportInstrumentResolutionError):
+            build_import_instrument_resolution(
+                draft="bad-draft",  # type: ignore
+                status=ImportInstrumentResolutionStatus.RESOLVED,
+                resolution_as_of_date=date(2026, 8, 28),
+                resolver_key="sentinax_id",
+                resolver_revision=1,
+                instrument_id=uuid4(),
+            )
+
+        # Test 2: Malformed status
+        with pytest.raises(PortfolioImportInstrumentResolutionError):
+            build_import_instrument_resolution(
+                draft=draft,
+                status="invalid_status",  # type: ignore
+                resolution_as_of_date=draft.effective_date,
+                resolver_key="sentinax_id",
+                resolver_revision=1,
+                instrument_id=uuid4(),
+            )
+
+        # Test 3: Malformed date
+        with pytest.raises(PortfolioImportInstrumentResolutionError):
+            build_import_instrument_resolution(
+                draft=draft,
+                status=ImportInstrumentResolutionStatus.RESOLVED,
+                resolution_as_of_date="2026-08-28",  # type: ignore
+                resolver_key="sentinax_id",
+                resolver_revision=1,
+                instrument_id=uuid4(),
+            )
+
