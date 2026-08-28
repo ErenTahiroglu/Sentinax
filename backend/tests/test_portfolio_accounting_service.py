@@ -490,8 +490,8 @@ class TestPITRepresentationAndInputValidation:
                 service.get_snapshot_as_of(invalid, datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc))  # type: ignore
 
     def test_none_repository_in_constructor_rejected(self):
-        """None repository in constructor raises TypeError."""
-        with pytest.raises(TypeError, match="repository must not be None"):
+        """None repository in constructor raises PortfolioAccountingQueryError."""
+        with pytest.raises(PortfolioAccountingQueryError, match="repository must not be None"):
             PortfolioAccountingQueryService(None)  # type: ignore
 
 
@@ -848,3 +848,156 @@ class TestPublicSignatureInspection:
         assert not (pit_params & forbidden_params), f"Forbidden params in get_snapshot_as_of: {pit_params & forbidden_params}"
         assert "portfolio_id" in pit_params
         assert "as_of_recorded_at" in pit_params
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. Phase 12C.5.1: Dependency Contract & Response Identity Hardening
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestDependencyContractAndResponseIdentity:
+    """Verifies repository/clock dependency validation and repository response identity hardening."""
+
+    def test_arbitrary_object_repository_fails_closed(self):
+        """Repository must provide callable get_portfolio and list_transactions."""
+        with pytest.raises(PortfolioAccountingQueryError, match="repository must provide a callable get_portfolio"):
+            PortfolioAccountingQueryService(object())  # type: ignore
+
+        with pytest.raises(PortfolioAccountingQueryError, match="repository must provide a callable get_portfolio"):
+            PortfolioAccountingQueryService("not-a-repo")  # type: ignore
+
+        with pytest.raises(PortfolioAccountingQueryError, match="repository must provide a callable get_portfolio"):
+            PortfolioAccountingQueryService(123)  # type: ignore
+
+    def test_repository_missing_get_portfolio_fails_closed(self):
+        """Repository missing get_portfolio fails closed at constructor."""
+        class RepoMissingGet:
+            def list_transactions(self, pid):
+                return []
+
+        with pytest.raises(PortfolioAccountingQueryError, match="repository must provide a callable get_portfolio"):
+            PortfolioAccountingQueryService(RepoMissingGet())  # type: ignore
+
+    def test_repository_missing_list_transactions_fails_closed(self):
+        """Repository missing list_transactions fails closed at constructor."""
+        class RepoMissingList:
+            def get_portfolio(self, pid):
+                return None
+
+        with pytest.raises(PortfolioAccountingQueryError, match="repository must provide a callable list_transactions"):
+            PortfolioAccountingQueryService(RepoMissingList())  # type: ignore
+
+    def test_repository_get_portfolio_non_callable_fails_closed(self):
+        """Repository with non-callable get_portfolio fails closed at constructor."""
+        class RepoBadGet:
+            get_portfolio = "not-callable"
+            def list_transactions(self, pid):
+                return []
+
+        with pytest.raises(PortfolioAccountingQueryError, match="repository must provide a callable get_portfolio"):
+            PortfolioAccountingQueryService(RepoBadGet())  # type: ignore
+
+    def test_repository_list_transactions_non_callable_fails_closed(self):
+        """Repository with non-callable list_transactions fails closed at constructor."""
+        class RepoBadList:
+            def get_portfolio(self, pid):
+                return None
+            list_transactions = 12345
+
+        with pytest.raises(PortfolioAccountingQueryError, match="repository must provide a callable list_transactions"):
+            PortfolioAccountingQueryService(RepoBadList())  # type: ignore
+
+    def test_non_callable_clock_in_constructor_fails_closed(self):
+        """Non-callable clock in constructor fails closed immediately."""
+        repo = StrictTestPortfolioRepository()
+
+        for invalid_clock in (123, "not-a-clock", datetime.now(timezone.utc), True, False, object()):
+            with pytest.raises(PortfolioAccountingQueryError, match="clock must be a callable"):
+                PortfolioAccountingQueryService(repo, clock=invalid_clock)  # type: ignore
+
+    def test_valid_callable_clock_in_constructor_accepted(self):
+        """Valid callable clock in constructor is accepted."""
+        repo = StrictTestPortfolioRepository()
+        svc = PortfolioAccountingQueryService(repo, clock=lambda: datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc))
+        assert svc is not None
+
+    def test_repository_returns_wrong_portfolio_id_fails_closed(self):
+        """Repository returning a different portfolio than requested fails closed; list_transactions NOT called."""
+        port_a_id = uuid4()
+        port_b = _make_portfolio()  # port_b.id != port_a_id
+
+        repo = StrictTestPortfolioRepository(
+            portfolios={port_a_id: port_b},  # Deliberately mismatched return
+            transactions={port_a_id: []},
+        )
+        service = PortfolioAccountingQueryService(repo)
+
+        with pytest.raises(PortfolioAccountingQueryError, match=f"Repository returned portfolio {port_b.id} for requested portfolio {port_a_id}"):
+            service.get_current_snapshot(port_a_id)
+
+        # list_transactions MUST NOT be called when portfolio identity check fails
+        assert len(repo.list_transactions_calls) == 0
+
+    def test_repository_returns_invalid_portfolio_type_fails_closed(self):
+        """Repository returning non-Portfolio object fails closed; list_transactions NOT called."""
+        port_id = uuid4()
+
+        class MalformedRepo:
+            def __init__(self):
+                self.list_called = False
+            def get_portfolio(self, pid):
+                return "fake-portfolio-string"
+            def list_transactions(self, pid):
+                self.list_called = True
+                return []
+
+        repo = MalformedRepo()
+        service = PortfolioAccountingQueryService(repo)  # type: ignore
+
+        with pytest.raises(PortfolioAccountingQueryError, match="Repository returned invalid portfolio object"):
+            service.get_current_snapshot(port_id)
+
+        assert repo.list_called is False
+
+    def test_repository_list_transactions_returns_none_fails_closed(self):
+        """Repository returning None for list_transactions fails closed with query error."""
+        port = _make_portfolio()
+
+        class NoneTxRepo:
+            def get_portfolio(self, pid):
+                return port
+            def list_transactions(self, pid):
+                return None
+
+        repo = NoneTxRepo()
+        service = PortfolioAccountingQueryService(repo)  # type: ignore
+
+        with pytest.raises(PortfolioAccountingQueryError, match="Repository returned invalid transaction collection"):
+            service.get_current_snapshot(port.id)
+
+    def test_repository_list_transactions_returns_invalid_types_fails_closed(self):
+        """Repository returning non-sequence/scalar/dict for list_transactions fails closed."""
+        port = _make_portfolio()
+
+        for invalid_txs in ("not-a-list", b"bytes-txs", {"tx1": 1}, 12345):
+            class BadTxRepo:
+                def get_portfolio(self, pid):
+                    return port
+                def list_transactions(self, pid):
+                    return invalid_txs
+
+            repo = BadTxRepo()
+            service = PortfolioAccountingQueryService(repo)  # type: ignore
+
+            with pytest.raises(PortfolioAccountingQueryError, match="Repository returned invalid transaction collection"):
+                service.get_current_snapshot(port.id)
+
+    def test_valid_empty_list_returns_empty_snapshot(self):
+        """Valid empty list from list_transactions returns valid empty snapshot."""
+        port = _make_portfolio()
+        repo = StrictTestPortfolioRepository(portfolios={port.id: port}, transactions={port.id: []})
+        service = PortfolioAccountingQueryService(repo)
+
+        snap = service.get_current_snapshot(port.id)
+        assert snap.portfolio_id == port.id
+        assert snap.positions.positions == ()
+        assert snap.cash.balances == ()
