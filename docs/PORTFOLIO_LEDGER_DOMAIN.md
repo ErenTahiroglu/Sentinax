@@ -275,3 +275,19 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Still Pre-Ledger:** Zero `PortfolioTransaction`. Zero canonical `instrument_id` UUIDs. Zero `external_source` / `external_reference` derivations. Zero `cash_bucket_id` attribution. Zero persistence. Zero ledger mutations.
 - **Deferred Scope:** Canonical instrument resolution, ledger materialization, external identity assignment, cash-bucket attribution, and persistence remain deferred to Phase 13J+.
 
+---
+
+## 13j. Immutable PIT-Safe Instrument Resolution Outcome & Complete Draft-Coverage Manifest (Phase 13J)
+- **Authoritative Four-State Outcome:** Every Phase 13I economic draft explicitly terminates in exactly one resolution state: `NOT_REQUIRED`, `RESOLVED`, `UNRESOLVED`, or `AMBIGUOUS`. Missing or ambiguous instruments never silently default or pick an arbitrary candidate.
+- **Strict Eligibility Matrix:**
+  - `NOT_REQUIRED`: Valid only when `draft.instrument_reference is None` (e.g. CASH_DEPOSIT, CASH_WITHDRAWAL, FX_CONVERSION, or unreferenced DIVIDEND/INTEREST/FEE/TAX_WITHHOLDING). BUY/SELL are strictly forbidden from NOT_REQUIRED.
+  - `RESOLVED`: Requires non-None `instrument_reference`, resolver metadata (`resolver_key`, `resolver_revision >= 1`), exactly one canonical `instrument_id: UUID`, zero candidates, and zero diagnostics.
+  - `UNRESOLVED`: Requires non-None `instrument_reference`, resolver metadata, `instrument_id is None`, zero candidates, and at least one diagnostic (`code`, `message`).
+  - `AMBIGUOUS`: Requires non-None `instrument_reference`, resolver metadata, `instrument_id is None`, at least TWO distinct `candidate_instrument_ids` (sorted canonically by `str(uuid)` ascending), and at least one diagnostic.
+- **Point-in-Time (PIT) Date Invariant:** `resolution_as_of_date` is strictly an exact `datetime.date` equal to `draft.effective_date`. Zero runtime date lookups (`date.today()`, `datetime.now()`, `utcnow()` forbidden).
+- **Immutable Diagnostic Grammar:** `code` must match `^[a-z][a-z0-9_]{0,63}$` without normalization; `message` is 1..2048 non-whitespace characters.
+- **Complete Batch Coverage:** An `ImportInstrumentResolutionBatch` requires 1:1 correspondence for all drafts in the underlying `ImportDraftBatchManifest` in ascending `record_ordinal` order. Semantic draft equality is required (reconstructed immutable drafts accepted).
+- **Derived Readiness & Counts:** Derived properties `resolution_count`, `not_required_count`, `resolved_count`, `unresolved_count`, and `ambiguous_count` sum to total drafts. `is_fully_resolved` is True iff `unresolved_count == 0 and ambiguous_count == 0`.
+- **Pre-Ledger Boundary:** Pure Python domain outcome model. Zero `PortfolioTransaction` construction, zero `InstrumentResolverService` execution, zero external identity derivation, zero persistence, and zero ledger mutation.
+- **Deferred Scope:** Resolver service execution adapter, ledger materialization, external identity assignment, cash-bucket attribution, and persistence remain deferred to Phase 13K+.
+

@@ -111,6 +111,15 @@ from backend.engine.private.portfolio.import_draft_batch import (
     PortfolioImportDraftBatchError,
     build_import_draft_batch_manifest,
 )
+from backend.engine.private.portfolio.import_instrument_resolution import (
+    ImportInstrumentResolution,
+    ImportInstrumentResolutionBatch,
+    ImportInstrumentResolutionDiagnostic,
+    ImportInstrumentResolutionStatus,
+    PortfolioImportInstrumentResolutionError,
+    build_import_instrument_resolution,
+    build_import_instrument_resolution_batch,
+)
 from backend.engine.private.portfolio.cash import (
     CashBalanceProjection,
     CashBalanceState,
@@ -198,6 +207,13 @@ __all__ = [
     "PortfolioImportDraftBatchError",
     "ImportDraftBatchManifest",
     "build_import_draft_batch_manifest",
+    "PortfolioImportInstrumentResolutionError",
+    "ImportInstrumentResolutionStatus",
+    "ImportInstrumentResolutionDiagnostic",
+    "ImportInstrumentResolution",
+    "ImportInstrumentResolutionBatch",
+    "build_import_instrument_resolution",
+    "build_import_instrument_resolution_batch",
     "serialize_portfolio",
     "hydrate_portfolio",
     "serialize_portfolio_account",
