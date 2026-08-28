@@ -49,6 +49,12 @@ from backend.engine.private.portfolio.normalization import (
     normalize_external_reference,
     normalize_external_source,
 )
+from backend.engine.private.portfolio.projection import (
+    LedgerProjectionView,
+    PortfolioProjectionError,
+    ProjectedTransactionState,
+    build_ledger_projection_view,
+)
 from backend.engine.private.portfolio.repository import PortfolioRepository
 
 __all__ = [
@@ -66,6 +72,10 @@ __all__ = [
     "normalize_external_reference",
     "AppendResult",
     "AppendStatus",
+    "LedgerProjectionView",
+    "ProjectedTransactionState",
+    "PortfolioProjectionError",
+    "build_ledger_projection_view",
     "serialize_portfolio",
     "hydrate_portfolio",
     "serialize_portfolio_account",

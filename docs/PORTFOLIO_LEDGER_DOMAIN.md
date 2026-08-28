@@ -109,13 +109,29 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 
 ---
 
+## 10b. Point-in-Time Ledger View Foundation (Phase 12C.1)
+- **System-Knowledge Point-in-Time Cutoff:**
+  - System PIT cutoff uses `recorded_at` physical UTC instants only (`as_of_recorded_at`).
+  - `effective_date` and `executed_at` are economic-time fields and do NOT gate system knowledge.
+  - Events recorded strictly after `as_of_recorded_at` are completely excluded from the system knowledge snapshot.
+- **PIT Reversal Semantics:**
+  - A reversal recorded in the future does NOT retroactively affect an earlier system snapshot.
+  - Prior to a reversal's `recorded_at`, the targeted base transaction remains fully active.
+  - On or after a reversal's `recorded_at`, the targeted base transaction transitions to `is_reversed = True` with `reversal_transaction_id` populated, and is excluded from `active_transactions`.
+- **REVERSAL Audit Retention:**
+  - `REVERSAL` events remain visible in `known_transactions` audit history (ordered by `(recorded_at, id)`).
+  - `REVERSAL` events carry no independent active economics and NEVER appear in `active_transactions`.
+- **Derived Authority:**
+  - Projections (`LedgerProjectionView`, `ProjectedTransactionState`) are pure derived in-memory views and are never persistence authority.
+
+---
+
 ## 11. Multi-Currency Rules
 - **No Implicit Conversion:** Portfolio `base_currency` defines user reporting preference, but individual transactions strictly retain their native `trade_currency`, `cash_currency`, and FX conversion currencies.
 - **Exact Decimal Precision:** Floating-point representations, strings, integers (for monetary amounts), `NaN`, and `Infinity` are rejected.
 
 ---
 
-## 12. Deferred Scope (Phase 12B, 12C & Phase 14)
-- **Phase 12B:** Supabase SQL persistence, repository adapters, PIT ledger hydration.
-- **Phase 12C:** Portfolio state projections, lot matching engines (FIFO/LIFO/Average Cost), cash balance calculations.
+## 12. Deferred Scope (Phase 12C.2+ & Phase 14)
+- **Phase 12C.2+:** Lot matching engines (FIFO/LIFO/Average Cost), cash balance and position calculations.
 - **Phase 14:** Turkish and international tax rules, withholding calculations, and fee optimization.
