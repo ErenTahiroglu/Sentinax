@@ -3,7 +3,7 @@ backend/engine/private/portfolio/__init__.py
 =============================================
 Private Portfolio Accounting & Immutable Ledger Package.
 
-Pure domain models and in-memory ledger services for the Personal Investment Decision Engine.
+Pure domain models, in-memory ledger services, and strict persistence codecs for the Personal Investment Decision Engine.
 """
 
 from backend.engine.private.portfolio.ledger import (
@@ -21,6 +21,20 @@ from backend.engine.private.portfolio.models import (
     PortfolioTransaction,
     PositionLot,
 )
+from backend.engine.private.portfolio.persistence import (
+    hydrate_cash_bucket,
+    hydrate_investment_goal,
+    hydrate_planned_contribution,
+    hydrate_portfolio,
+    hydrate_portfolio_account,
+    hydrate_portfolio_transaction,
+    serialize_cash_bucket,
+    serialize_investment_goal,
+    serialize_planned_contribution,
+    serialize_portfolio,
+    serialize_portfolio_account,
+    serialize_portfolio_transaction,
+)
 
 __all__ = [
     "Portfolio",
@@ -34,4 +48,16 @@ __all__ = [
     "PortfolioLedgerValidator",
     "AppendResult",
     "AppendStatus",
+    "serialize_portfolio",
+    "hydrate_portfolio",
+    "serialize_portfolio_account",
+    "hydrate_portfolio_account",
+    "serialize_cash_bucket",
+    "hydrate_cash_bucket",
+    "serialize_investment_goal",
+    "hydrate_investment_goal",
+    "serialize_planned_contribution",
+    "hydrate_planned_contribution",
+    "serialize_portfolio_transaction",
+    "hydrate_portfolio_transaction",
 ]
