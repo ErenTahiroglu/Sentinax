@@ -78,6 +78,7 @@ DECLARE
     v_tx_recorded_at_raw TEXT;
     v_tx_executed_at_raw TEXT;
     v_tx_fp TEXT;
+    v_constraint_name TEXT;
 BEGIN
     -- ─────────────────────────────────────────────────────────────────────────
     -- 1. Input Shape & Key Validation (Fail-Closed on extra or missing keys)
@@ -209,40 +210,12 @@ BEGIN
     END IF;
 
     -- ─────────────────────────────────────────────────────────────────────────
-    -- 4. Authoritative Claim Pre-Check (Idempotent replay vs. Conflict)
+    -- 4. Atomic Transaction Construction & Claim Binding Path
     -- ─────────────────────────────────────────────────────────────────────────
-    SELECT b.expected_plan_sha256, b.transaction_id, pt.economic_fingerprint
-    INTO v_existing_plan_sha, v_existing_tx_id, v_existing_tx_fp
-    FROM public.portfolio_import_claim_bindings b
-    JOIN public.portfolio_transactions pt
-      ON pt.id = b.transaction_id AND pt.portfolio_id = b.portfolio_id AND pt.account_id = b.account_id
-    WHERE b.owner_id = v_binding_owner_id
-      AND b.portfolio_id = v_binding_portfolio_id
-      AND b.account_id = v_binding_account_id
-      AND b.source_key = v_binding_source_key
-      AND b.file_content_sha256 = v_binding_file_sha
-      AND b.record_ordinal = v_binding_ordinal
-      AND b.record_sha256 = v_binding_rec_sha;
-
-    IF FOUND THEN
-        IF v_existing_plan_sha = v_binding_plan_sha AND v_existing_tx_fp = v_tx_fp THEN
-            RETURN QUERY SELECT
-                'idempotent_duplicate'::TEXT,
-                v_existing_tx_id,
-                'Existing claim matches plan SHA and economic fingerprint.'::TEXT;
-            RETURN;
-        ELSE
-            RETURN QUERY SELECT
-                'conflict'::TEXT,
-                v_existing_tx_id,
-                'Existing claim has different plan SHA or economic fingerprint.'::TEXT;
-            RETURN;
-        END IF;
-    END IF;
-
-    -- ─────────────────────────────────────────────────────────────────────────
-    -- 5. New Claim Atomic Insert Path (with race-safe 23505 resolution)
-    -- ─────────────────────────────────────────────────────────────────────────
+    -- The candidate transaction is inserted FIRST inside an atomic subtransaction.
+    -- This enforces all authoritative portfolio_transactions database constraints
+    -- (NOT NULL, transaction_type universe, family CHECK constraints, positive
+    -- numeric checks, FKs) before any duplicate/conflict replay status can be resolved.
     BEGIN
         -- Insert canonical transaction
         INSERT INTO public.portfolio_transactions (
@@ -327,7 +300,16 @@ BEGIN
         RETURN;
 
     EXCEPTION WHEN unique_violation THEN
-        -- Re-read authoritative claim in case a concurrent call won the race
+        -- Verify unique violation origin: ONLY pk_portfolio_import_claim_bindings can enter replay/conflict path.
+        -- Any other uniqueness violation (e.g. portfolio_transactions_pkey collision) must re-raise.
+        GET STACKED DIAGNOSTICS v_constraint_name = CONSTRAINT_NAME;
+
+        IF v_constraint_name IS DISTINCT FROM 'pk_portfolio_import_claim_bindings' THEN
+            RAISE;
+        END IF;
+
+        -- Subtransaction rollback has discarded tentative transaction insert.
+        -- Re-read authoritative claim to evaluate idempotent replay vs. conflict.
         SELECT b.expected_plan_sha256, b.transaction_id, pt.economic_fingerprint
         INTO v_existing_plan_sha, v_existing_tx_id, v_existing_tx_fp
         FROM public.portfolio_import_claim_bindings b
@@ -346,17 +328,17 @@ BEGIN
                 RETURN QUERY SELECT
                     'idempotent_duplicate'::TEXT,
                     v_existing_tx_id,
-                    'Concurrently bound claim matches plan SHA and economic fingerprint.'::TEXT;
+                    'Existing claim matches plan SHA and economic fingerprint.'::TEXT;
                 RETURN;
             ELSE
                 RETURN QUERY SELECT
                     'conflict'::TEXT,
                     v_existing_tx_id,
-                    'Concurrently bound claim has different plan SHA or economic fingerprint.'::TEXT;
+                    'Existing claim has different plan SHA or economic fingerprint.'::TEXT;
                 RETURN;
             END IF;
         ELSE
-            -- Unexplained 23505 (e.g. transaction UUID collision) -> re-raise original exception
+            -- Unexplained missing claim after claim PK collision -> re-raise original exception
             RAISE;
         END IF;
     END;
@@ -364,7 +346,7 @@ END;
 $$;
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- 6. Permissions & Security
+-- 5. Permissions & Security
 -- ─────────────────────────────────────────────────────────────────────────────
 REVOKE EXECUTE ON FUNCTION public.commit_portfolio_import_claim(JSONB, JSONB) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.commit_portfolio_import_claim(JSONB, JSONB) TO authenticated, service_role;

@@ -142,6 +142,32 @@ class TestPortfolioImportAtomicCommitSchema:
         """Matrix L: Timestamp timezone safety."""
         assert "recorded_at must be an explicit timezone-aware timestamp string" in sql_without_comments
 
+    def test_no_early_precheck_before_transaction_insert(self, sql_without_comments: str):
+        """Phase 13Q.2 Section 4/25: No early claim pre-check before transaction insertion."""
+        tx_insert_idx = sql_without_comments.find("INSERT INTO public.portfolio_transactions")
+        assert tx_insert_idx != -1
+
+        prefix_sql = sql_without_comments[:tx_insert_idx]
+        # Ensure no SELECT from portfolio_import_claim_bindings occurs before transaction INSERT
+        assert "portfolio_import_claim_bindings" not in prefix_sql
+        assert "idempotent_duplicate" not in prefix_sql
+        assert "conflict" not in prefix_sql
+
+    def test_transaction_insert_precedes_claim_insert_in_subtransaction(self, sql_without_comments: str):
+        """Phase 13Q.2 Section 24: Transaction INSERT and Claim INSERT are inside the same atomic subtransaction."""
+        tx_insert_idx = sql_without_comments.find("INSERT INTO public.portfolio_transactions")
+        claim_insert_idx = sql_without_comments.find("INSERT INTO public.portfolio_import_claim_bindings")
+        assert tx_insert_idx != -1
+        assert claim_insert_idx != -1
+        assert tx_insert_idx < claim_insert_idx
+
+    def test_unique_violation_diagnostics_and_constraint_name(self, sql_without_comments: str):
+        """Phase 13Q.2 Section 9/10/21: GET STACKED DIAGNOSTICS verifies pk_portfolio_import_claim_bindings."""
+        assert "GET STACKED DIAGNOSTICS" in sql_without_comments
+        assert "CONSTRAINT_NAME" in sql_without_comments
+        assert "pk_portfolio_import_claim_bindings" in sql_without_comments
+        assert "v_constraint_name IS DISTINCT FROM 'pk_portfolio_import_claim_bindings'" in sql_without_comments
+
     def test_atomic_dual_insert_and_race_handling(self, sql_without_comments: str):
         """Matrix M: Inserts into both tables and handles unique_violation race."""
         assert "INSERT INTO public.portfolio_transactions" in sql_without_comments
