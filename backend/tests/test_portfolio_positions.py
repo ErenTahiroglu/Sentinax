@@ -768,3 +768,469 @@ class TestImmutabilityAndMutationDefense:
         pos = proj.positions[0]
         with pytest.raises(FrozenInstanceError):
             pos.quantity = Decimal("100")  # type: ignore
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. Phase 12C.2.1 Runtime Type Hardening & Boundary Defense
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestRuntimeTypeHardening:
+    """Verifies runtime type enforcement and explicit enum matching against forged views."""
+
+    def test_forged_string_buy_transaction_type_fails_closed(self):
+        """A: Forged string transaction_type 'BUY' fails closed with PositionProjectionError."""
+        port = _make_portfolio()
+        acc_id = uuid4()
+        inst_id = uuid4()
+
+        tx = _make_tx(port.id, acc_id, tx_type=TransactionType.BUY, instrument_id=inst_id)
+        # Force string transaction_type bypassing annotations
+        object.__setattr__(tx, "transaction_type", "BUY")
+
+        forged_view = LedgerProjectionView(
+            portfolio_id=port.id,
+            mode=port.mode,
+            as_of_recorded_at=None,
+            known_transactions=(tx,),
+            transaction_states=(),
+            active_transactions=(tx,),
+        )
+
+        with pytest.raises(PositionProjectionError, match="Active transaction transaction_type must be a TransactionType enum"):
+            build_position_quantity_projection(forged_view)
+
+    def test_forged_string_cash_deposit_transaction_type_fails_closed(self):
+        """B: Forged string transaction_type 'cash_deposit' fails closed with PositionProjectionError."""
+        port = _make_portfolio()
+        acc_id = uuid4()
+
+        tx = _make_tx(port.id, acc_id, tx_type=TransactionType.CASH_DEPOSIT)
+        object.__setattr__(tx, "transaction_type", "cash_deposit")
+
+        forged_view = LedgerProjectionView(
+            portfolio_id=port.id,
+            mode=port.mode,
+            as_of_recorded_at=None,
+            known_transactions=(tx,),
+            transaction_states=(),
+            active_transactions=(tx,),
+        )
+
+        with pytest.raises(PositionProjectionError, match="Active transaction transaction_type must be a TransactionType enum"):
+            build_position_quantity_projection(forged_view)
+
+    def test_forged_arbitrary_transaction_type_fails_closed(self):
+        """C: Forged arbitrary transaction_type fails closed with PositionProjectionError."""
+        port = _make_portfolio()
+        acc_id = uuid4()
+
+        tx = _make_tx(port.id, acc_id, tx_type=TransactionType.BUY)
+        object.__setattr__(tx, "transaction_type", 12345)
+
+        forged_view = LedgerProjectionView(
+            portfolio_id=port.id,
+            mode=port.mode,
+            as_of_recorded_at=None,
+            known_transactions=(tx,),
+            transaction_states=(),
+            active_transactions=(tx,),
+        )
+
+        with pytest.raises(PositionProjectionError, match="Active transaction transaction_type must be a TransactionType enum"):
+            build_position_quantity_projection(forged_view)
+
+    def test_malformed_tx_id_string_fails_closed(self):
+        """D: String tx.id fails closed with PositionProjectionError."""
+        port = _make_portfolio()
+        acc_id = uuid4()
+
+        tx = _make_tx(port.id, acc_id, tx_type=TransactionType.BUY)
+        object.__setattr__(tx, "id", "not-a-uuid")
+
+        forged_view = LedgerProjectionView(
+            portfolio_id=port.id,
+            mode=port.mode,
+            as_of_recorded_at=None,
+            known_transactions=(tx,),
+            transaction_states=(),
+            active_transactions=(tx,),
+        )
+
+        with pytest.raises(PositionProjectionError, match="Active transaction id must be a UUID"):
+            build_position_quantity_projection(forged_view)
+
+    def test_malformed_tx_account_id_string_fails_closed(self):
+        """E: String tx.account_id fails closed with PositionProjectionError."""
+        port = _make_portfolio()
+        acc_id = uuid4()
+
+        tx = _make_tx(port.id, acc_id, tx_type=TransactionType.BUY)
+        object.__setattr__(tx, "account_id", "not-a-uuid")
+
+        forged_view = LedgerProjectionView(
+            portfolio_id=port.id,
+            mode=port.mode,
+            as_of_recorded_at=None,
+            known_transactions=(tx,),
+            transaction_states=(),
+            active_transactions=(tx,),
+        )
+
+        with pytest.raises(PositionProjectionError, match="Active transaction account_id must be a UUID"):
+            build_position_quantity_projection(forged_view)
+
+    def test_malformed_tx_portfolio_id_type_fails_closed(self):
+        """F: String tx.portfolio_id fails closed with PositionProjectionError."""
+        port = _make_portfolio()
+        acc_id = uuid4()
+
+        tx = _make_tx(port.id, acc_id, tx_type=TransactionType.BUY)
+        object.__setattr__(tx, "portfolio_id", str(port.id))
+
+        forged_view = LedgerProjectionView(
+            portfolio_id=port.id,
+            mode=port.mode,
+            as_of_recorded_at=None,
+            known_transactions=(tx,),
+            transaction_states=(),
+            active_transactions=(tx,),
+        )
+
+        with pytest.raises(PositionProjectionError, match="Active transaction portfolio_id must be a UUID"):
+            build_position_quantity_projection(forged_view)
+
+    def test_malformed_view_portfolio_id_fails_closed(self):
+        """G: String view.portfolio_id fails closed with PositionProjectionError."""
+        port = _make_portfolio()
+
+        forged_view = LedgerProjectionView(
+            portfolio_id=str(port.id),  # type: ignore
+            mode=port.mode,
+            as_of_recorded_at=None,
+            known_transactions=(),
+            transaction_states=(),
+            active_transactions=(),
+        )
+
+        with pytest.raises(PositionProjectionError, match="view.portfolio_id must be a UUID"):
+            build_position_quantity_projection(forged_view)
+
+    def test_malformed_view_mode_fails_closed(self):
+        """H: String view.mode fails closed with PositionProjectionError."""
+        port = _make_portfolio()
+
+        forged_view = LedgerProjectionView(
+            portfolio_id=port.id,
+            mode="MY_PORTFOLIO",  # type: ignore
+            as_of_recorded_at=None,
+            known_transactions=(),
+            transaction_states=(),
+            active_transactions=(),
+        )
+
+        with pytest.raises(PositionProjectionError, match="view.mode must be a PortfolioMode"):
+            build_position_quantity_projection(forged_view)
+
+    def test_naive_view_as_of_recorded_at_fails_closed(self):
+        """I: Naive datetime view.as_of_recorded_at fails closed with PositionProjectionError."""
+        port = _make_portfolio()
+
+        forged_view = LedgerProjectionView(
+            portfolio_id=port.id,
+            mode=port.mode,
+            as_of_recorded_at=datetime(2026, 8, 10, 12, 0, 0),  # Naive
+            known_transactions=(),
+            transaction_states=(),
+            active_transactions=(),
+        )
+
+        with pytest.raises(PositionProjectionError, match="view.as_of_recorded_at must be timezone-aware"):
+            build_position_quantity_projection(forged_view)
+
+    def test_valid_timezone_aware_non_utc_timestamp_accepted(self):
+        """J: Timezone-aware non-UTC timestamp in view is accepted unchanged."""
+        port = _make_portfolio()
+        acc_id = uuid4()
+        inst_id = uuid4()
+        from datetime import timezone as tz, timedelta
+        tz_plus3 = tz(timedelta(hours=3))
+        non_utc_dt = datetime(2026, 8, 10, 15, 0, 0, tzinfo=tz_plus3)
+
+        tx = _make_tx(port.id, acc_id, tx_type=TransactionType.BUY, instrument_id=inst_id, quantity=Decimal("10"))
+        view = build_ledger_projection_view(port, [tx], as_of_recorded_at=non_utc_dt)
+        proj = build_position_quantity_projection(view)
+
+        assert proj.as_of_recorded_at == non_utc_dt
+        assert len(proj.positions) == 1
+        assert proj.positions[0].quantity == Decimal("10")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. State & Projection Constructor Invariant Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestStateConstructorInvariants:
+    """Verifies direct PositionQuantityState constructor invariants."""
+
+    def test_valid_state_accepted(self):
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+
+        state = PositionQuantityState(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            instrument_id=inst_id,
+            quantity=Decimal("100.5"),
+        )
+        assert state.portfolio_id == port_id
+        assert state.account_id == acc_id
+        assert state.instrument_id == inst_id
+        assert state.quantity == Decimal("100.5")
+        assert state.is_open is True
+
+    def test_exact_zero_quantity_accepted(self):
+        state = PositionQuantityState(
+            portfolio_id=uuid4(),
+            account_id=uuid4(),
+            instrument_id=uuid4(),
+            quantity=Decimal("0"),
+        )
+        assert state.quantity == Decimal("0")
+        assert state.is_open is False
+
+    def test_string_portfolio_id_rejected(self):
+        with pytest.raises(PositionProjectionError, match="portfolio_id must be a UUID"):
+            PositionQuantityState(
+                portfolio_id="not-a-uuid",  # type: ignore
+                account_id=uuid4(),
+                instrument_id=uuid4(),
+                quantity=Decimal("10"),
+            )
+
+    def test_string_account_id_rejected(self):
+        with pytest.raises(PositionProjectionError, match="account_id must be a UUID"):
+            PositionQuantityState(
+                portfolio_id=uuid4(),
+                account_id="not-a-uuid",  # type: ignore
+                instrument_id=uuid4(),
+                quantity=Decimal("10"),
+            )
+
+    def test_string_instrument_id_rejected(self):
+        with pytest.raises(PositionProjectionError, match="instrument_id must be a UUID"):
+            PositionQuantityState(
+                portfolio_id=uuid4(),
+                account_id=uuid4(),
+                instrument_id="not-a-uuid",  # type: ignore
+                quantity=Decimal("10"),
+            )
+
+    def test_float_quantity_rejected(self):
+        with pytest.raises(PositionProjectionError, match="quantity must be a Decimal"):
+            PositionQuantityState(
+                portfolio_id=uuid4(),
+                account_id=uuid4(),
+                instrument_id=uuid4(),
+                quantity=10.5,  # type: ignore
+            )
+
+    def test_int_quantity_rejected(self):
+        with pytest.raises(PositionProjectionError, match="quantity must be a Decimal"):
+            PositionQuantityState(
+                portfolio_id=uuid4(),
+                account_id=uuid4(),
+                instrument_id=uuid4(),
+                quantity=10,  # type: ignore
+            )
+
+    def test_bool_quantity_rejected(self):
+        with pytest.raises(PositionProjectionError, match="quantity must be a Decimal"):
+            PositionQuantityState(
+                portfolio_id=uuid4(),
+                account_id=uuid4(),
+                instrument_id=uuid4(),
+                quantity=True,  # type: ignore
+            )
+
+    def test_nan_quantity_rejected(self):
+        with pytest.raises(PositionProjectionError, match="quantity must be finite"):
+            PositionQuantityState(
+                portfolio_id=uuid4(),
+                account_id=uuid4(),
+                instrument_id=uuid4(),
+                quantity=Decimal("NaN"),
+            )
+
+    def test_infinity_quantity_rejected(self):
+        with pytest.raises(PositionProjectionError, match="quantity must be finite"):
+            PositionQuantityState(
+                portfolio_id=uuid4(),
+                account_id=uuid4(),
+                instrument_id=uuid4(),
+                quantity=Decimal("Infinity"),
+            )
+
+    def test_negative_quantity_rejected(self):
+        with pytest.raises(PositionProjectionError, match="quantity cannot be negative"):
+            PositionQuantityState(
+                portfolio_id=uuid4(),
+                account_id=uuid4(),
+                instrument_id=uuid4(),
+                quantity=Decimal("-0.01"),
+            )
+
+
+class TestProjectionConstructorInvariants:
+    """Verifies direct PositionQuantityProjection constructor invariants."""
+
+    def test_valid_projection_accepted(self):
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+
+        pos = PositionQuantityState(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            instrument_id=inst_id,
+            quantity=Decimal("10"),
+        )
+
+        proj = PositionQuantityProjection(
+            portfolio_id=port_id,
+            mode=PortfolioMode.MY_PORTFOLIO,
+            as_of_recorded_at=None,
+            positions=(pos,),
+            open_positions=(pos,),
+        )
+        assert proj.portfolio_id == port_id
+        assert proj.positions == (pos,)
+        assert proj.open_positions == (pos,)
+
+    def test_list_instead_of_tuple_positions_rejected(self):
+        port_id = uuid4()
+        with pytest.raises(PositionProjectionError, match="positions must be a tuple"):
+            PositionQuantityProjection(
+                portfolio_id=port_id,
+                mode=PortfolioMode.MY_PORTFOLIO,
+                as_of_recorded_at=None,
+                positions=[],  # type: ignore
+                open_positions=(),
+            )
+
+    def test_list_instead_of_tuple_open_positions_rejected(self):
+        port_id = uuid4()
+        with pytest.raises(PositionProjectionError, match="open_positions must be a tuple"):
+            PositionQuantityProjection(
+                portfolio_id=port_id,
+                mode=PortfolioMode.MY_PORTFOLIO,
+                as_of_recorded_at=None,
+                positions=(),
+                open_positions=[],  # type: ignore
+            )
+
+    def test_cross_portfolio_state_rejected(self):
+        port_id = uuid4()
+        other_port_id = uuid4()
+        pos = PositionQuantityState(
+            portfolio_id=other_port_id,
+            account_id=uuid4(),
+            instrument_id=uuid4(),
+            quantity=Decimal("10"),
+        )
+        with pytest.raises(PositionProjectionError, match="does not match projection"):
+            PositionQuantityProjection(
+                portfolio_id=port_id,
+                mode=PortfolioMode.MY_PORTFOLIO,
+                as_of_recorded_at=None,
+                positions=(pos,),
+                open_positions=(pos,),
+            )
+
+    def test_duplicate_identity_in_positions_rejected(self):
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+
+        p1 = PositionQuantityState(portfolio_id=port_id, account_id=acc_id, instrument_id=inst_id, quantity=Decimal("10"))
+        p2 = PositionQuantityState(portfolio_id=port_id, account_id=acc_id, instrument_id=inst_id, quantity=Decimal("20"))
+
+        with pytest.raises(PositionProjectionError, match="Duplicate position identity"):
+            PositionQuantityProjection(
+                portfolio_id=port_id,
+                mode=PortfolioMode.MY_PORTFOLIO,
+                as_of_recorded_at=None,
+                positions=(p1, p2),
+                open_positions=(p1,),
+            )
+
+    def test_zero_state_inside_open_positions_rejected(self):
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+
+        p_zero = PositionQuantityState(portfolio_id=port_id, account_id=acc_id, instrument_id=inst_id, quantity=Decimal("0"))
+
+        with pytest.raises(PositionProjectionError, match="Zero-quantity position .* must not appear in open_positions"):
+            PositionQuantityProjection(
+                portfolio_id=port_id,
+                mode=PortfolioMode.MY_PORTFOLIO,
+                as_of_recorded_at=None,
+                positions=(p_zero,),
+                open_positions=(p_zero,),
+            )
+
+    def test_open_position_absent_from_positions_rejected(self):
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+
+        p1 = PositionQuantityState(portfolio_id=port_id, account_id=acc_id, instrument_id=inst_id, quantity=Decimal("10"))
+
+        with pytest.raises(PositionProjectionError, match="Open position .* not found in positions"):
+            PositionQuantityProjection(
+                portfolio_id=port_id,
+                mode=PortfolioMode.MY_PORTFOLIO,
+                as_of_recorded_at=None,
+                positions=(),
+                open_positions=(p1,),
+            )
+
+    def test_positive_position_missing_from_open_positions_rejected(self):
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+
+        p1 = PositionQuantityState(portfolio_id=port_id, account_id=acc_id, instrument_id=inst_id, quantity=Decimal("10"))
+
+        with pytest.raises(PositionProjectionError, match="Positive position .* is missing from open_positions"):
+            PositionQuantityProjection(
+                portfolio_id=port_id,
+                mode=PortfolioMode.MY_PORTFOLIO,
+                as_of_recorded_at=None,
+                positions=(p1,),
+                open_positions=(),  # Missing p1
+            )
+
+    def test_malformed_mode_rejected(self):
+        port_id = uuid4()
+        with pytest.raises(PositionProjectionError, match="mode must be a PortfolioMode"):
+            PositionQuantityProjection(
+                portfolio_id=port_id,
+                mode="INVALID_MODE",  # type: ignore
+                as_of_recorded_at=None,
+                positions=(),
+                open_positions=(),
+            )
+
+    def test_naive_as_of_recorded_at_rejected(self):
+        port_id = uuid4()
+        with pytest.raises(PositionProjectionError, match="as_of_recorded_at must be timezone-aware"):
+            PositionQuantityProjection(
+                portfolio_id=port_id,
+                mode=PortfolioMode.MY_PORTFOLIO,
+                as_of_recorded_at=datetime(2026, 8, 10, 12, 0, 0),  # Naive
+                positions=(),
+                open_positions=(),
+            )
+

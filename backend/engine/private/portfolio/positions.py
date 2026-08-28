@@ -1,7 +1,7 @@
 """
 backend/engine/private/portfolio/positions.py
 =============================================
-Exact Reversal-Aware Position Quantity Projection (Phase 12C.2).
+Exact Reversal-Aware Position Quantity Projection (Phase 12C.2 & 12C.2.1).
 
 This module provides a pure in-memory projection that consumes a closed
 `LedgerProjectionView` and computes exact instrument unit quantities per account.
@@ -9,13 +9,15 @@ This module provides a pure in-memory projection that consumes a closed
 Invariants:
 - Pure Python domain logic: no network, no Supabase, no SQL, no mutable state.
 - Scoped strictly by (portfolio_id, account_id, instrument_id). No cross-account aggregation.
-- Only active BUY (+quantity) and SELL (-quantity) events alter position quantities.
-- Other event types (cash flow, dividend, fee, tax, FX) do NOT change instrument quantities.
+- Strict runtime type validation on view metadata and all active transactions.
+- Exhaustive transaction type matching: BUY/SELL alter quantity; approved cash/corporate
+  events are quantity-neutral; REVERSAL and any unhandled/string types fail closed.
 - Fully closed positions (quantity == Decimal("0")) are retained in `positions` for audit,
   while `open_positions` includes strictly positive holdings.
 - Final net negative quantity fails closed with `PositionProjectionError`.
 - Context-independent exact Decimal summation using arbitrary-precision integer alignment
   (immune to ambient Decimal context precision).
+- Strict constructor invariants on PositionQuantityState and PositionQuantityProjection.
 """
 
 from __future__ import annotations
@@ -36,6 +38,22 @@ class PositionProjectionError(ValueError):
     pass
 
 
+_ALLOWED_POSITION_CHANGING_TYPES = frozenset({
+    TransactionType.BUY,
+    TransactionType.SELL,
+})
+
+_ALLOWED_QUANTITY_NEUTRAL_TYPES = frozenset({
+    TransactionType.CASH_DEPOSIT,
+    TransactionType.CASH_WITHDRAWAL,
+    TransactionType.DIVIDEND,
+    TransactionType.INTEREST,
+    TransactionType.FX_CONVERSION,
+    TransactionType.FEE,
+    TransactionType.TAX_WITHHOLDING,
+})
+
+
 @dataclass(frozen=True)
 class PositionQuantityState:
     """Exact unit quantity held for an instrument within a specific account."""
@@ -43,6 +61,32 @@ class PositionQuantityState:
     account_id: UUID
     instrument_id: UUID
     quantity: Decimal
+
+    def __post_init__(self) -> None:
+        if isinstance(self.portfolio_id, bool) or not isinstance(self.portfolio_id, UUID):
+            raise PositionProjectionError(
+                f"portfolio_id must be a UUID instance, got {type(self.portfolio_id).__name__}"
+            )
+        if isinstance(self.account_id, bool) or not isinstance(self.account_id, UUID):
+            raise PositionProjectionError(
+                f"account_id must be a UUID instance, got {type(self.account_id).__name__}"
+            )
+        if isinstance(self.instrument_id, bool) or not isinstance(self.instrument_id, UUID):
+            raise PositionProjectionError(
+                f"instrument_id must be a UUID instance, got {type(self.instrument_id).__name__}"
+            )
+        if isinstance(self.quantity, bool) or not isinstance(self.quantity, Decimal):
+            raise PositionProjectionError(
+                f"quantity must be a Decimal instance, got {type(self.quantity).__name__}"
+            )
+        if not self.quantity.is_finite():
+            raise PositionProjectionError(
+                f"quantity must be finite, got {self.quantity}"
+            )
+        if self.quantity < Decimal("0"):
+            raise PositionProjectionError(
+                f"quantity cannot be negative, got {self.quantity}"
+            )
 
     @property
     def is_open(self) -> bool:
@@ -58,6 +102,86 @@ class PositionQuantityProjection:
     as_of_recorded_at: Optional[datetime]
     positions: Tuple[PositionQuantityState, ...]
     open_positions: Tuple[PositionQuantityState, ...]
+
+    def __post_init__(self) -> None:
+        if isinstance(self.portfolio_id, bool) or not isinstance(self.portfolio_id, UUID):
+            raise PositionProjectionError(
+                f"portfolio_id must be a UUID instance, got {type(self.portfolio_id).__name__}"
+            )
+        if isinstance(self.mode, bool) or not isinstance(self.mode, PortfolioMode):
+            raise PositionProjectionError(
+                f"mode must be a PortfolioMode instance, got {type(self.mode).__name__}"
+            )
+        if self.as_of_recorded_at is not None:
+            if isinstance(self.as_of_recorded_at, bool) or not isinstance(self.as_of_recorded_at, datetime):
+                raise PositionProjectionError(
+                    f"as_of_recorded_at must be None or datetime, got {type(self.as_of_recorded_at).__name__}"
+                )
+            if self.as_of_recorded_at.tzinfo is None:
+                raise PositionProjectionError(
+                    f"as_of_recorded_at must be timezone-aware, got naive: {self.as_of_recorded_at}"
+                )
+
+        if not isinstance(self.positions, tuple):
+            raise PositionProjectionError(
+                f"positions must be a tuple, got {type(self.positions).__name__}"
+            )
+        if not isinstance(self.open_positions, tuple):
+            raise PositionProjectionError(
+                f"open_positions must be a tuple, got {type(self.open_positions).__name__}"
+            )
+
+        seen_positions: Dict[Tuple[UUID, UUID], PositionQuantityState] = {}
+        for pos in self.positions:
+            if not isinstance(pos, PositionQuantityState):
+                raise PositionProjectionError(
+                    f"Element in positions must be PositionQuantityState, got {type(pos).__name__}"
+                )
+            if pos.portfolio_id != self.portfolio_id:
+                raise PositionProjectionError(
+                    f"Position portfolio_id {pos.portfolio_id} does not match projection {self.portfolio_id}"
+                )
+            key = (pos.account_id, pos.instrument_id)
+            if key in seen_positions:
+                raise PositionProjectionError(
+                    f"Duplicate position identity {key} detected in positions"
+                )
+            seen_positions[key] = pos
+
+        seen_open: set[Tuple[UUID, UUID]] = set()
+        for pos in self.open_positions:
+            if not isinstance(pos, PositionQuantityState):
+                raise PositionProjectionError(
+                    f"Element in open_positions must be PositionQuantityState, got {type(pos).__name__}"
+                )
+            if pos.portfolio_id != self.portfolio_id:
+                raise PositionProjectionError(
+                    f"Open position portfolio_id {pos.portfolio_id} does not match projection {self.portfolio_id}"
+                )
+            if not pos.is_open:
+                raise PositionProjectionError(
+                    f"Zero-quantity position {pos.instrument_id} in account {pos.account_id} must not appear in open_positions"
+                )
+            key = (pos.account_id, pos.instrument_id)
+            if key in seen_open:
+                raise PositionProjectionError(
+                    f"Duplicate open position identity {key} detected in open_positions"
+                )
+            seen_open.add(key)
+            if key not in seen_positions:
+                raise PositionProjectionError(
+                    f"Open position {key} not found in positions"
+                )
+            if seen_positions[key] != pos:
+                raise PositionProjectionError(
+                    f"Open position {key} does not match corresponding record in positions"
+                )
+
+        for key, pos in seen_positions.items():
+            if pos.is_open and key not in seen_open:
+                raise PositionProjectionError(
+                    f"Positive position {key} is missing from open_positions"
+                )
 
 
 def _exact_decimal_sum(deltas: Iterable[Tuple[Decimal, int]]) -> Decimal:
@@ -129,13 +253,35 @@ def build_position_quantity_projection(
         PositionQuantityProjection containing all touched positions and open positions.
 
     Raises:
-        TypeError: If view is not an instance of LedgerProjectionView.
-        PositionProjectionError: If active transactions contain invalid trade fields,
+        TypeError: If view is not an instance of LedgerProjectionView or tx is not PortfolioTransaction.
+        PositionProjectionError: If view or active transactions contain invalid metadata/types,
                                  forbidden REVERSAL events, cross-portfolio references,
-                                 duplicate physical IDs, or result in negative net quantity.
+                                 duplicate physical IDs, unapproved transaction types,
+                                 or result in negative net quantity.
     """
     if not isinstance(view, LedgerProjectionView):
         raise TypeError(f"view must be an instance of LedgerProjectionView, got {type(view).__name__}")
+
+    # View metadata runtime validation
+    if isinstance(view.portfolio_id, bool) or not isinstance(view.portfolio_id, UUID):
+        raise PositionProjectionError(
+            f"view.portfolio_id must be a UUID instance, got {type(view.portfolio_id).__name__}"
+        )
+
+    if isinstance(view.mode, bool) or not isinstance(view.mode, PortfolioMode):
+        raise PositionProjectionError(
+            f"view.mode must be a PortfolioMode instance, got {type(view.mode).__name__}"
+        )
+
+    if view.as_of_recorded_at is not None:
+        if isinstance(view.as_of_recorded_at, bool) or not isinstance(view.as_of_recorded_at, datetime):
+            raise PositionProjectionError(
+                f"view.as_of_recorded_at must be None or datetime, got {type(view.as_of_recorded_at).__name__}"
+            )
+        if view.as_of_recorded_at.tzinfo is None:
+            raise PositionProjectionError(
+                f"view.as_of_recorded_at must be timezone-aware, got naive: {view.as_of_recorded_at}"
+            )
 
     # Boundary validation of supplied active transactions
     seen_ids: set[UUID] = set()
@@ -145,9 +291,29 @@ def build_position_quantity_projection(
         if not isinstance(tx, PortfolioTransaction):
             raise TypeError(f"Expected PortfolioTransaction in active_transactions, got {type(tx).__name__}")
 
+        if isinstance(tx.id, bool) or not isinstance(tx.id, UUID):
+            raise PositionProjectionError(
+                f"Active transaction id must be a UUID instance, got {type(tx.id).__name__}"
+            )
+
+        if isinstance(tx.portfolio_id, bool) or not isinstance(tx.portfolio_id, UUID):
+            raise PositionProjectionError(
+                f"Active transaction portfolio_id must be a UUID instance, got {type(tx.portfolio_id).__name__}"
+            )
+
         if tx.portfolio_id != view.portfolio_id:
             raise PositionProjectionError(
                 f"Active transaction {tx.id} portfolio_id {tx.portfolio_id} does not match view {view.portfolio_id}"
+            )
+
+        if isinstance(tx.account_id, bool) or not isinstance(tx.account_id, UUID):
+            raise PositionProjectionError(
+                f"Active transaction account_id must be a UUID instance, got {type(tx.account_id).__name__}"
+            )
+
+        if isinstance(tx.transaction_type, bool) or not isinstance(tx.transaction_type, TransactionType):
+            raise PositionProjectionError(
+                f"Active transaction transaction_type must be a TransactionType enum instance, got {type(tx.transaction_type).__name__}: {tx.transaction_type!r}"
             )
 
         if tx.transaction_type == TransactionType.REVERSAL:
@@ -161,14 +327,14 @@ def build_position_quantity_projection(
             )
         seen_ids.add(tx.id)
 
-        # Only BUY and SELL alter security quantity
-        if tx.transaction_type in (TransactionType.BUY, TransactionType.SELL):
-            if tx.instrument_id is None or not isinstance(tx.instrument_id, UUID):
+        # Exhaustive transaction type check
+        if tx.transaction_type in _ALLOWED_POSITION_CHANGING_TYPES:
+            if isinstance(tx.instrument_id, bool) or not isinstance(tx.instrument_id, UUID):
                 raise PositionProjectionError(
                     f"Transaction {tx.id} of type {tx.transaction_type} missing valid instrument_id UUID"
                 )
 
-            if not isinstance(tx.quantity, Decimal) or isinstance(tx.quantity, bool):
+            if isinstance(tx.quantity, bool) or not isinstance(tx.quantity, Decimal):
                 raise PositionProjectionError(
                     f"Transaction {tx.id} quantity must be a Decimal instance, got {type(tx.quantity).__name__}"
                 )
@@ -181,6 +347,15 @@ def build_position_quantity_projection(
             key = (tx.account_id, tx.instrument_id)
             sign_mult = 1 if tx.transaction_type == TransactionType.BUY else -1
             deltas_by_key.setdefault(key, []).append((tx.quantity, sign_mult))
+
+        elif tx.transaction_type in _ALLOWED_QUANTITY_NEUTRAL_TYPES:
+            # Approved quantity-neutral events
+            pass
+
+        else:
+            raise PositionProjectionError(
+                f"Unhandled transaction type {tx.transaction_type} in position quantity projection"
+            )
 
     # Compute exact net quantities per (account_id, instrument_id)
     all_positions: List[PositionQuantityState] = []
