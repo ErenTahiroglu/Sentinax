@@ -39,8 +39,8 @@ from uuid import UUID
 
 from backend.engine.private.portfolio.import_provenance import ImportRecordProvenance
 
-_FIELD_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-_SHA256_HEX_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_FIELD_KEY_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_SHA256_HEX_PATTERN = re.compile(r"[0-9a-f]{64}")
 _MAX_FIELD_VALUE_LENGTH = 16384
 
 
@@ -62,7 +62,7 @@ class ImportParsedField:
             raise PortfolioImportParsingError(
                 f"field_key must be a str instance, got {type(self.field_key).__name__}"
             )
-        if not _FIELD_KEY_PATTERN.match(self.field_key):
+        if not _FIELD_KEY_PATTERN.fullmatch(self.field_key):
             raise PortfolioImportParsingError(
                 f"field_key must match pattern '^[a-z][a-z0-9_]{{0,63}}$', got: {self.field_key!r}"
             )
@@ -150,7 +150,7 @@ class ParsedImportRecord:
             raise PortfolioImportParsingError(
                 f"parsed_sha256 must be a str instance, got {type(self.parsed_sha256).__name__}"
             )
-        if not _SHA256_HEX_PATTERN.match(self.parsed_sha256):
+        if not _SHA256_HEX_PATTERN.fullmatch(self.parsed_sha256):
             raise PortfolioImportParsingError(
                 f"parsed_sha256 must be exactly 64 lowercase hexadecimal characters, got: {self.parsed_sha256!r}"
             )

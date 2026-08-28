@@ -36,8 +36,8 @@ import re
 from typing import Any, Tuple
 from uuid import UUID
 
-_SOURCE_KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
-_SHA256_HEX_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_SOURCE_KEY_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+_SHA256_HEX_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
 class PortfolioImportProvenanceError(ValueError):
@@ -67,7 +67,7 @@ def _validate_source_key(val: Any) -> str:
         raise PortfolioImportProvenanceError(
             f"source_key must be a str instance, got {type(val).__name__}"
         )
-    if not _SOURCE_KEY_PATTERN.match(val):
+    if not _SOURCE_KEY_PATTERN.fullmatch(val):
         raise PortfolioImportProvenanceError(
             f"source_key must be 1-64 ASCII lowercase alphanumeric characters or '._-', got: {val!r}"
         )
@@ -93,7 +93,7 @@ def _validate_sha256_hex(val: Any, field_name: str) -> str:
         raise PortfolioImportProvenanceError(
             f"{field_name} must be a str instance, got {type(val).__name__}"
         )
-    if not _SHA256_HEX_PATTERN.match(val):
+    if not _SHA256_HEX_PATTERN.fullmatch(val):
         raise PortfolioImportProvenanceError(
             f"{field_name} must be exactly 64 lowercase hexadecimal characters, got: {val!r}"
         )

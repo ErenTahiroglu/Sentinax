@@ -43,7 +43,7 @@ from backend.engine.private.portfolio.import_provenance import (
     ImportRecordProvenance,
 )
 
-_SHA256_HEX_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_SHA256_HEX_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
 class PortfolioImportBatchError(ValueError):
@@ -112,7 +112,7 @@ class ImportBatchManifest:
             raise PortfolioImportBatchError(
                 f"manifest_sha256 must be a str instance, got {type(self.manifest_sha256).__name__}"
             )
-        if not _SHA256_HEX_PATTERN.match(self.manifest_sha256):
+        if not _SHA256_HEX_PATTERN.fullmatch(self.manifest_sha256):
             raise PortfolioImportBatchError(
                 f"manifest_sha256 must be exactly 64 lowercase hexadecimal characters, got: {self.manifest_sha256!r}"
             )

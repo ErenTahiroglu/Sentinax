@@ -509,14 +509,38 @@ class TestDirectConstructorHardening:
             )
 
     def test_malformed_manifest_sha_rejected(self):
-        """AK, AL: Malformed or uppercase SHA string is rejected."""
+        """AK, AL, J, K: Malformed, uppercase, or newline-terminated SHA string is rejected."""
         file_prov = _make_file_provenance()
+        r1 = _make_record_provenance(file_prov, 1, b"row")
+        valid_sha = hashlib.sha256(
+            json.dumps([
+                str(file_prov.portfolio_id),
+                str(file_prov.account_id),
+                file_prov.source_key,
+                file_prov.content_sha256,
+                [[1, r1.record_sha256]],
+            ], ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
 
-        for bad_sha in ("short_sha", "Z" * 64, "0" * 63, "0" * 65, True, 123, None):
+        for bad_sha in (
+            "short_sha",
+            "Z" * 64,
+            "0" * 63,
+            "0" * 65,
+            valid_sha + "\n",    # J: Final newline
+            valid_sha + "\r",
+            valid_sha + "\r\n",  # K: Final CRLF
+            valid_sha + " ",
+            " " + valid_sha,
+            "\n" + valid_sha,
+            True,
+            123,
+            None,
+        ):
             with pytest.raises(PortfolioImportBatchError):
                 ImportBatchManifest(
                     file_provenance=file_prov,
-                    records=(),
+                    records=(r1,),
                     manifest_sha256=bad_sha,  # type: ignore
                 )
 

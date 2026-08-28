@@ -162,20 +162,27 @@ class TestSourceKeyAndFilenameContracts:
             assert prov.source_key == k
 
     def test_invalid_source_keys_rejected(self):
-        """L, M, N, O: Uppercase, whitespace, Unicode, leading punctuation, and >64-char keys rejected."""
+        """L, M, N, O: Uppercase, whitespace, Unicode, leading punctuation, newlines, and >64-char keys rejected."""
         invalid_keys = [
             "MIDAS",
             "Midas_csv",
             " midas",
             "midas ",
             "midas csv",
-            "mıdas",  # Turkish dotless i
+            "midas_csv\n",     # A: Trailing newline (Python $ edge case)
+            "midas_csv\r",     # B: Trailing CR
+            "midas_csv\r\n",   # C: Trailing CRLF
+            "midas_csv\t",     # D: Trailing Tab
+            "midas\ncsv",      # E: Internal newline
+            "\nmidas_csv",     # Leading newline
+            "mıdas",           # Turkish dotless i
             "midas_ümlaut",
             "_leading_underscore",
             ".leading_dot",
             "-leading_hyphen",
             "",
             "a" * 65,
+            ("a" * 64) + "\n", # Max length + newline edge
             True,
             123,
             None,
@@ -454,6 +461,18 @@ class TestDirectConstructorHardening:
         with pytest.raises(PortfolioImportProvenanceError, match="content_sha256 must be exactly 64"):
             ImportFileProvenance(valid_pid, valid_aid, "midas_csv", "f.csv", valid_sha.upper(), 10, valid_now)
 
+        # F, G: Content SHA + newline / CRLF rejected
+        for bad_sha in (
+            valid_sha + "\n",
+            valid_sha + "\r",
+            valid_sha + "\r\n",
+            valid_sha + " ",
+            " " + valid_sha,
+            "\n" + valid_sha,
+        ):
+            with pytest.raises(PortfolioImportProvenanceError, match="content_sha256 must be exactly 64"):
+                ImportFileProvenance(valid_pid, valid_aid, "midas_csv", "f.csv", bad_sha, 10, valid_now)
+
         # U, V: byte_length bool / <= 0 rejected
         for bad_len in (True, False, 0, -5, "10", None):
             with pytest.raises(PortfolioImportProvenanceError):
@@ -497,6 +516,27 @@ class TestDirectConstructorHardening:
         # Invalid record SHA
         with pytest.raises(PortfolioImportProvenanceError, match="record_sha256 must be exactly 64"):
             ImportRecordProvenance(valid_file_id, 1, "short_sha")
+
+        # H: Record SHA + newline / CRLF rejected
+        for bad_rec_sha in (
+            valid_rec_sha + "\n",
+            valid_rec_sha + "\r",
+            valid_rec_sha + "\r\n",
+            valid_rec_sha + " ",
+            " " + valid_rec_sha,
+            "\n" + valid_rec_sha,
+        ):
+            with pytest.raises(PortfolioImportProvenanceError, match="record_sha256 must be exactly 64"):
+                ImportRecordProvenance(valid_file_id, 1, bad_rec_sha)
+
+        # I: file_identity embedded SHA + newline rejected
+        for bad_f_sha in (
+            valid_file_sha + "\n",
+            valid_file_sha + "\r\n",
+        ):
+            bad_file_id = (valid_pid, valid_aid, "midas_csv", bad_f_sha)
+            with pytest.raises(PortfolioImportProvenanceError, match="file_identity\\[3\\] \\(content_sha256\\) must be exactly 64"):
+                ImportRecordProvenance(bad_file_id, 1, valid_rec_sha)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

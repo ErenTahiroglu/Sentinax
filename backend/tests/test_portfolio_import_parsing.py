@@ -97,17 +97,31 @@ class TestImportParsedFieldModel:
         "trade-date",      # F: Hyphen
         " trade_date",     # G: Leading whitespace
         "trade_date ",     # G: Trailing whitespace
+        "symbol\n",        # N: Trailing newline (Python $ edge case)
+        "symbol\r",        # O: Trailing CR
+        "symbol\r\n",      # P: Trailing CRLF
+        "symbol\t",        # Q: Trailing Tab
+        "symbol ",         # R: Trailing space
+        "sym\nbol",        # S: Internal newline
+        "\nsymbol",        # Leading newline
         "miktar_₺",        # H: Unicode key
         "1symbol",         # I: Starting with digit
         "",                # J: Empty key
         "a" * 65,          # K: Exceeds 64 chars
+        ("a" * 64) + "\n", # Max length + newline edge
         "foo.bar",         # Dot
         "foo@bar",         # Punctuation
     ])
     def test_invalid_field_keys_rejected(self, bad_key: str):
-        """E-K: Malformed field keys fail closed."""
+        """E-K, N-S: Malformed field keys fail closed."""
         with pytest.raises(PortfolioImportParsingError, match="field_key"):
             ImportParsedField(bad_key, "value")
+
+    def test_valid_maximum_length_field_key_accepted(self):
+        """T: Valid 64-character lowercase field key is accepted."""
+        max_key = "a" * 64
+        field = ImportParsedField(max_key, "value")
+        assert field.field_key == max_key
 
     def test_non_string_key_or_value_rejected(self):
         """L: Non-string (int, bool, None) keys and values are rejected."""
@@ -602,16 +616,43 @@ class TestDirectConstructorHardening:
             )
 
     def test_malformed_parsed_sha_rejected(self):
-        """BD, BE: Malformed or uppercase SHA string is rejected."""
+        """BD, BE, U, V: Malformed, uppercase, or newline-terminated SHA string is rejected."""
         raw = b"row_data"
         _, rec_prov = _make_provenance_and_record(raw)
+        f = ImportParsedField("symbol", "AAPL")
+        valid_sha = hashlib.sha256(
+            json.dumps([
+                str(rec_prov.file_identity[0]),
+                str(rec_prov.file_identity[1]),
+                rec_prov.file_identity[2],
+                rec_prov.file_identity[3],
+                rec_prov.record_ordinal,
+                rec_prov.record_sha256,
+                1,
+                [["symbol", "AAPL"]],
+            ], ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
 
-        for bad_sha in ("short_sha", "Z" * 64, "0" * 63, "0" * 65, True, 123, None):
+        for bad_sha in (
+            "short_sha",
+            "Z" * 64,
+            "0" * 63,
+            "0" * 65,
+            valid_sha + "\n",    # U: Final newline
+            valid_sha + "\r",
+            valid_sha + "\r\n",  # V: Final CRLF
+            valid_sha + " ",
+            " " + valid_sha,
+            "\n" + valid_sha,
+            True,
+            123,
+            None,
+        ):
             with pytest.raises(PortfolioImportParsingError):
                 ParsedImportRecord(
                     record_provenance=rec_prov,
                     parser_revision=1,
-                    fields=(),
+                    fields=(f,),
                     parsed_sha256=bad_sha,  # type: ignore
                 )
 
