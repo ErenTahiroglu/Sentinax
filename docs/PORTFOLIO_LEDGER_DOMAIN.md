@@ -190,4 +190,12 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Filename as Metadata:** Filenames are display metadata only and do not participate in content identity.
 - **Raw Record Provenance:** Record identity is the canonical tuple `(portfolio_id, account_id, source_key, file_content_sha256, record_ordinal, record_sha256)`.
 - **Identity Separation:** Import provenance exists strictly for staging, traceability, and diagnostics. It MUST NOT be mapped to `PortfolioTransaction.external_source` or `PortfolioTransaction.external_reference`.
-- **Deferred Scope:** Broker parsers (Midas, IBKR, banks, TEFAS), transaction inference, instrument mapping, and staging persistence remain deferred to Phase 13B+.
+
+---
+
+## 13b. Immutable Import Batch Manifest & Record-Set Integrity (Phase 13B)
+- **Manifest Binding Authority:** One `ImportBatchManifest` binds one `ImportFileProvenance` to an immutable, ordered tuple of `ImportRecordProvenance` instances.
+- **Unique & Contiguous Ordinals:** For non-empty manifests, records must be uniquely and contiguously numbered `1, 2, ..., N` without gaps or duplicates.
+- **Deterministic Manifest Preimage:** `manifest_sha256` is computed from compact JSON `[portfolio_id, account_id, source_key, file_content_sha256, [[ord, rec_sha], ...]]`. Display filenames, timestamps, and byte lengths are excluded.
+- **Staging Identity Separation:** `manifest_identity` is `(portfolio_id, account_id, source_key, file_content_sha256, manifest_sha256)`. It remains staging provenance and is NOT mapped to ledger idempotency keys.
+- **Deferred Scope:** Broker parsers (Midas, IBKR, banks, TEFAS), transaction inference, instrument mapping, staging persistence, and validation remain deferred to Phase 13C+.

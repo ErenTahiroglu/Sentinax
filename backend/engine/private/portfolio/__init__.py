@@ -65,6 +65,11 @@ from backend.engine.private.portfolio.import_provenance import (
     build_import_file_provenance,
     build_import_record_provenance,
 )
+from backend.engine.private.portfolio.import_batch import (
+    ImportBatchManifest,
+    PortfolioImportBatchError,
+    build_import_batch_manifest,
+)
 from backend.engine.private.portfolio.cash import (
     CashBalanceProjection,
     CashBalanceState,
@@ -122,6 +127,9 @@ __all__ = [
     "ImportRecordProvenance",
     "build_import_file_provenance",
     "build_import_record_provenance",
+    "PortfolioImportBatchError",
+    "ImportBatchManifest",
+    "build_import_batch_manifest",
     "serialize_portfolio",
     "hydrate_portfolio",
     "serialize_portfolio_account",
