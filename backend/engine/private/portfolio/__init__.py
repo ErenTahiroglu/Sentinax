@@ -35,6 +35,16 @@ from backend.engine.private.portfolio.persistence import (
     serialize_portfolio_account,
     serialize_portfolio_transaction,
 )
+from backend.engine.private.portfolio.postgrest_transport import (
+    ALL_SEVEN_FINANCIAL_NUMERIC_COLUMNS,
+    CASH_BUCKET_SELECT,
+    FINANCIAL_NUMERIC_COLUMNS_BY_TABLE,
+    INVESTMENT_GOAL_SELECT,
+    PLANNED_CONTRIBUTION_SELECT,
+    PORTFOLIO_ACCOUNT_SELECT,
+    PORTFOLIO_SELECT,
+    PORTFOLIO_TRANSACTION_SELECT,
+)
 
 __all__ = [
     "Portfolio",
@@ -60,4 +70,12 @@ __all__ = [
     "hydrate_planned_contribution",
     "serialize_portfolio_transaction",
     "hydrate_portfolio_transaction",
+    "PORTFOLIO_SELECT",
+    "PORTFOLIO_ACCOUNT_SELECT",
+    "CASH_BUCKET_SELECT",
+    "INVESTMENT_GOAL_SELECT",
+    "PLANNED_CONTRIBUTION_SELECT",
+    "PORTFOLIO_TRANSACTION_SELECT",
+    "FINANCIAL_NUMERIC_COLUMNS_BY_TABLE",
+    "ALL_SEVEN_FINANCIAL_NUMERIC_COLUMNS",
 ]

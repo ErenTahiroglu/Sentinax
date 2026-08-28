@@ -89,7 +89,7 @@ pytest-socket
 alembic
 sqlalchemy
 psutil
-supabase
+supabase==2.31.0
 yfinance
 pandas
 numpy
