@@ -345,6 +345,17 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Instrument ID Assignment:** Resolved canonical instrument UUID becomes `plan.instrument_id`. For `NOT_REQUIRED` resolutions, `plan.instrument_id` is strictly `None`.
 - **Semantic Rejections:** Rows `REJECTED` in Phase 13L remain visible in the nested `assessment_batch` and receive zero plans.
 - **Staging-Only Identity:** `plan_identity` and `materialization_manifest_identity` extend upstream staging identities. They MUST NOT be mapped to `PortfolioTransaction.external_source` or `external_reference`.
-- **Pre-Ledger Domain Boundary:** Pure pre-append plan. Zero `PortfolioTransaction` construction, zero transaction UUID generation, zero `recorded_at` assignment (system clock / repository authority), zero external identity or idempotency key derivation, zero cash bucket assignment, and zero database/ledger persistence.
-- **Deferred Scope:** Transaction UUID generation, `recorded_at` assignment, ledger external identity/idempotency mapping, cash-bucket attribution, and ledger append remain deferred to Phase 13O+.
+- **Deferred Scope:** Transaction UUID generation, `recorded_at` assignment, ledger external identity/idempotency mapping, cash-bucket attribution, and ledger append remain deferred to Phase 13O.
+
+---
+
+## 13o. Immutable Import-Commit Claim & Ledger-Binding Intent Contract (Phase 13O)
+- **Immutable Claim Intent Bridge:** Pure domain contract (`import_commit.py`) bridging an immutable `ImportLedgerMaterializationBatch` (Phase 13N) to an immutable `ImportLedgerBindingBatch`.
+- **Authoritative Claim Identity:** Import commit claims are anchored exclusively to immutable Phase 13A raw record provenance: `(portfolio_id, account_id, source_key, file_content_sha256, record_ordinal, record_sha256)`. Filename and observation time (`imported_at`) are excluded.
+- **Strict Ledger Identity Separation:** Import claim identities identify source records within imported files and are NEVER mapped to `PortfolioTransaction.external_source` or `external_reference`.
+- **Conflict Detection Data:** `expected_plan_sha256` records the exact plan interpretation at commit creation. It is NOT the claim identity itself. Future persistence layers use this separation to distinguish safe idempotent replays (same claim, same plan) from semantic conflicts (same claim, changed plan).
+- **Batch Coverage & Canonical Ordering:** Exactly one binding intent per materialization plan, ordered strictly by `record_ordinal` ascending. Duplicate claim identities within a single batch fail closed.
+- **Semantic Rejections:** Rows rejected in Phase 13L remain visible in the nested assessment batch and receive zero binding intents.
+- **Pre-Ledger Domain Boundary:** Pure pre-append intent. Zero `PortfolioTransaction` construction, zero transaction UUID generation, zero `recorded_at` assignment, zero cash bucket assignment, zero repository or database persistence, and zero new hash calculations.
+- **Deferred Scope:** Transaction UUID generation, `recorded_at` assignment, cash-bucket attribution, and ledger append remain deferred to Phase 13P+.
 

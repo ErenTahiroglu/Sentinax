@@ -139,6 +139,13 @@ from backend.engine.private.portfolio.import_materialization import (
     build_import_ledger_materialization_batch,
     build_import_ledger_transaction_plan,
 )
+from backend.engine.private.portfolio.import_commit import (
+    ImportLedgerBindingBatch,
+    ImportLedgerBindingIntent,
+    PortfolioImportCommitError,
+    build_import_ledger_binding_batch,
+    build_import_ledger_binding_intent,
+)
 from backend.engine.private.portfolio.cash import (
     CashBalanceProjection,
     CashBalanceState,
@@ -244,6 +251,11 @@ __all__ = [
     "ImportLedgerMaterializationBatch",
     "build_import_ledger_transaction_plan",
     "build_import_ledger_materialization_batch",
+    "PortfolioImportCommitError",
+    "ImportLedgerBindingIntent",
+    "ImportLedgerBindingBatch",
+    "build_import_ledger_binding_intent",
+    "build_import_ledger_binding_batch",
     "serialize_portfolio",
     "hydrate_portfolio",
     "serialize_portfolio_account",
