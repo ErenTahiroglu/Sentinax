@@ -126,12 +126,23 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 
 ---
 
+## 10c. Exact Position Quantity Projection (Phase 12C.2)
+- **Input Authority:** Position quantity projection (`build_position_quantity_projection`) consumes `LedgerProjectionView.active_transactions` exclusively.
+- **Position Scoping:** Position identity is strictly `(portfolio_id, account_id, instrument_id)`. The same instrument held in distinct accounts produces separate position states.
+- **Quantity Altering Events:** Only active `BUY` (+quantity) and `SELL` (-quantity) transactions alter security quantities. Non-trade events (cash flows, dividends, interest, fees, taxes, FX) do NOT modify security quantities.
+- **Zero-Position Retention & Open Holdings:** Fully closed positions (`quantity == Decimal("0")`) are preserved in `positions` for audit tracking; `open_positions` includes strictly positive holdings.
+- **Negative Quantity Fail-Closed:** Final net negative quantity for any `(account_id, instrument_id)` raises `PositionProjectionError`. Short positions or overselling are unsupported.
+- **Context-Independent Exact Decimal Aggregation:** Summation is computed via arbitrary-precision integer coefficient alignment, guaranteeing exact arithmetic regardless of ambient Decimal context precision.
+- **No Cost/Lot Calculations:** This phase evaluates exact share/unit quantities only. Cost basis, lots, cash balances, and valuations remain deferred to later phases.
+
+---
+
 ## 11. Multi-Currency Rules
 - **No Implicit Conversion:** Portfolio `base_currency` defines user reporting preference, but individual transactions strictly retain their native `trade_currency`, `cash_currency`, and FX conversion currencies.
 - **Exact Decimal Precision:** Floating-point representations, strings, integers (for monetary amounts), `NaN`, and `Infinity` are rejected.
 
 ---
 
-## 12. Deferred Scope (Phase 12C.2+ & Phase 14)
-- **Phase 12C.2+:** Lot matching engines (FIFO/LIFO/Average Cost), cash balance and position calculations.
+## 12. Deferred Scope (Phase 12C.3+ & Phase 14)
+- **Phase 12C.3+:** Lot matching engines (FIFO/LIFO/Average Cost), cash balance calculations, realized/unrealized P&L, valuations.
 - **Phase 14:** Turkish and international tax rules, withholding calculations, and fee optimization.
