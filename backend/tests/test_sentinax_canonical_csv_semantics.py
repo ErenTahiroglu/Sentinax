@@ -1022,3 +1022,81 @@ class TestFixedMetadataImmutabilityHardening:
         assert len(manifest.assessment_batch.assessment_manifest_sha256) == 64
         assert len(manifest.drafts[0].draft_sha256) == 64
         assert len(manifest.draft_manifest_sha256) == 64
+
+    def test_module_globals_removed(self):
+        """H: Mutable pseudo-constants removed from module namespace."""
+        import backend.engine.private.portfolio.parsers.sentinax_csv_semantics as mod
+        assert not hasattr(mod, "_SOURCE_KEY")
+        assert not hasattr(mod, "_PARSER_REVISION")
+        assert not hasattr(mod, "_SEMANTIC_REVISION")
+        assert not hasattr(mod, "_FIXED_METADATA_NAMES")
+
+    def test_module_rebinding_cannot_bypass_source_gate(self, monkeypatch):
+        """E, K, M: Setting a module attribute cannot bypass the fixed source gate."""
+        import backend.engine.private.portfolio.parsers.sentinax_csv_semantics as mod
+        monkeypatch.setattr(mod, "_SOURCE_KEY", "foreign_source", raising=False)
+
+        class ForeignSourceParser(SentinaxCanonicalCsvParserV1):
+            @property
+            def source_key(self) -> str:
+                return "foreign_source"
+
+        staging = build_import_staging_result(
+            portfolio_id=uuid4(),
+            account_id=uuid4(),
+            filename="test.csv",
+            content=_make_single_row_csv(),
+            imported_at=datetime(2026, 8, 28, 14, 0, tzinfo=timezone.utc),
+            parser=ForeignSourceParser(),
+        )
+
+        with pytest.raises(SentinaxCanonicalCsvSemanticError, match="source_key"):
+            SentinaxCanonicalCsvSemanticInterpreterV1().interpret(staging.parsed_manifest)
+
+    def test_module_rebinding_cannot_bypass_parser_gate(self, monkeypatch):
+        """F, L, M: Setting a module attribute cannot bypass the fixed parser revision gate."""
+        import backend.engine.private.portfolio.parsers.sentinax_csv_semantics as mod
+        monkeypatch.setattr(mod, "_PARSER_REVISION", 2, raising=False)
+
+        class Revision2Parser(SentinaxCanonicalCsvParserV1):
+            @property
+            def parser_revision(self) -> int:
+                return 2
+
+        staging = build_import_staging_result(
+            portfolio_id=uuid4(),
+            account_id=uuid4(),
+            filename="test.csv",
+            content=_make_single_row_csv(),
+            imported_at=datetime(2026, 8, 28, 14, 0, tzinfo=timezone.utc),
+            parser=Revision2Parser(),
+        )
+
+        with pytest.raises(SentinaxCanonicalCsvSemanticError, match="parser_revision"):
+            SentinaxCanonicalCsvSemanticInterpreterV1().interpret(staging.parsed_manifest)
+
+    def test_module_fixed_metadata_names_rebinding_cannot_disable_class_protection(self, monkeypatch):
+        """G: Injecting empty _FIXED_METADATA_NAMES at module level cannot disable metaclass protection."""
+        import backend.engine.private.portfolio.parsers.sentinax_csv_semantics as mod
+        monkeypatch.setattr(mod, "_FIXED_METADATA_NAMES", frozenset(), raising=False)
+
+        with pytest.raises(AttributeError):
+            SentinaxCanonicalCsvSemanticInterpreterV1.source_key = "evil"  # type: ignore
+
+    def test_interpret_gate_source_inspection(self):
+        """I: interpret method does not consult dynamically dispatchable or mutable globals for security gate."""
+        import inspect
+        source = inspect.getsource(SentinaxCanonicalCsvSemanticInterpreterV1.interpret)
+        assert "_SOURCE_KEY" not in source
+        assert "_PARSER_REVISION" not in source
+        assert "self.source_key" not in source
+        assert "self.parser_revision" not in source
+        assert "type(self).source_key" not in source
+        assert "type(self).parser_revision" not in source
+
+    def test_metaclass_source_inspection(self):
+        """J: Metaclass does not consult mutable external _FIXED_METADATA_NAMES."""
+        import inspect
+        import backend.engine.private.portfolio.parsers.sentinax_csv_semantics as mod
+        source = inspect.getsource(mod._FixedSemanticInterpreterMeta)
+        assert "_FIXED_METADATA_NAMES" not in source

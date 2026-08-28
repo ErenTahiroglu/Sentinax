@@ -144,28 +144,17 @@ class _TypedRecordArgs:
     to_amount: Optional[Decimal]
 
 
-_SOURCE_KEY: str = "sentinax_csv"
-_PARSER_REVISION: int = 1
-_SEMANTIC_REVISION: int = 1
-
-_FIXED_METADATA_NAMES = frozenset({
-    "source_key",
-    "parser_revision",
-    "semantic_revision",
-})
-
-
 class _FixedSemanticInterpreterMeta(type):
     """
     Metaclass enforcing class-level immutability for fixed semantic interpreter identity metadata.
     """
     def __setattr__(cls, name: str, value: Any) -> None:
-        if name in _FIXED_METADATA_NAMES:
+        if name in ("source_key", "parser_revision", "semantic_revision"):
             raise AttributeError(f"Cannot modify immutable metadata attribute {name!r} on {cls.__name__}")
         super().__setattr__(name, value)
 
     def __delattr__(cls, name: str) -> None:
-        if name in _FIXED_METADATA_NAMES:
+        if name in ("source_key", "parser_revision", "semantic_revision"):
             raise AttributeError(f"Cannot delete immutable metadata attribute {name!r} on {cls.__name__}")
         super().__delattr__(name)
 
@@ -177,9 +166,9 @@ class SentinaxCanonicalCsvSemanticInterpreterV1(metaclass=_FixedSemanticInterpre
     """
     __slots__ = ()
 
-    source_key: str = _SOURCE_KEY
-    parser_revision: int = _PARSER_REVISION
-    semantic_revision: int = _SEMANTIC_REVISION
+    source_key: str = "sentinax_csv"
+    parser_revision: int = 1
+    semantic_revision: int = 1
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         raise TypeError(f"Type {cls.__name__} cannot be subclassed")
@@ -197,15 +186,15 @@ class SentinaxCanonicalCsvSemanticInterpreterV1(metaclass=_FixedSemanticInterpre
                 f"parsed_manifest must be a ParsedImportBatchManifest instance, got {type(parsed_manifest).__name__}"
             )
 
-        # 2. Validate source_key and parser_revision bindings against fixed private authority
+        # 2. Validate source_key and parser_revision bindings against literal constants
         source_key = parsed_manifest.raw_manifest.file_provenance.source_key
-        if source_key != _SOURCE_KEY:
+        if source_key != "sentinax_csv":
             raise SentinaxCanonicalCsvSemanticError(
-                f"parsed_manifest source_key {source_key!r} does not match expected {_SOURCE_KEY!r}"
+                f"parsed_manifest source_key {source_key!r} does not match expected 'sentinax_csv'"
             )
-        if parsed_manifest.parser_revision != _PARSER_REVISION:
+        if parsed_manifest.parser_revision != 1:
             raise SentinaxCanonicalCsvSemanticError(
-                f"parsed_manifest parser_revision {parsed_manifest.parser_revision} does not match expected {_PARSER_REVISION}"
+                f"parsed_manifest parser_revision {parsed_manifest.parser_revision} does not match expected 1"
             )
 
         # 3. Handle empty parsed batch
