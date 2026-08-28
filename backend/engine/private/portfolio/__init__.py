@@ -132,6 +132,11 @@ from backend.engine.private.portfolio.parsers.sentinax_csv_semantics import (
 from backend.engine.private.portfolio.sentinax_csv_import import (
     run_sentinax_canonical_csv_import_v1,
 )
+from backend.engine.private.portfolio.sentinax_csv_import_execution import (
+    SentinaxCanonicalCsvImportExecutionStatus,
+    SentinaxCanonicalCsvImportExecutionResult,
+    execute_sentinax_canonical_csv_import_v1,
+)
 from backend.engine.private.portfolio.import_materialization import (
     ImportLedgerMaterializationBatch,
     ImportLedgerTransactionPlan,
@@ -257,6 +262,9 @@ __all__ = [
     "SentinaxCanonicalCsvSemanticError",
     "SentinaxCanonicalCsvSemanticInterpreterV1",
     "run_sentinax_canonical_csv_import_v1",
+    "SentinaxCanonicalCsvImportExecutionStatus",
+    "SentinaxCanonicalCsvImportExecutionResult",
+    "execute_sentinax_canonical_csv_import_v1",
     "PortfolioImportMaterializationError",
     "ImportLedgerTransactionPlan",
     "ImportLedgerMaterializationBatch",
