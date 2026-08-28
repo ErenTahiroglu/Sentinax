@@ -411,15 +411,90 @@ class TestCsvQuotingAndSyntax:
         """AR: Unclosed quote fails closed with physical row context."""
         parser = SentinaxCanonicalCsvParserV1()
         content = b'symbol,notes\nAAPL,"unclosed_quote\n'
-        with pytest.raises(SentinaxCanonicalCsvError, match="Malformed CSV at physical row 2"):
+        with pytest.raises(SentinaxCanonicalCsvError, match="Malformed CSV quoting at physical row 2"):
             parser.extract_records(content)
 
     def test_malformed_quote_syntax_rejected(self):
         """AS: Malformed quote placement (e.g. a,"b"c,d) fails closed."""
         parser = SentinaxCanonicalCsvParserV1()
         content = b'a,b,c\n1,"2"3,4\n'
-        with pytest.raises(SentinaxCanonicalCsvError, match="Malformed CSV at physical row 2"):
+        with pytest.raises(SentinaxCanonicalCsvError, match="Malformed CSV quoting at physical row 2"):
             parser.extract_records(content)
+
+    def test_unquoted_field_with_embedded_quote_rejected(self):
+        """6A-6D: Quotes anywhere inside unquoted fields are strictly rejected."""
+        parser = SentinaxCanonicalCsvParserV1()
+
+        cases = [
+            b"a,b,c\n1,ab\"cd,3\n",     # 6A: ab"cd
+            b"a,b,c\n1,ab\"cd\",3\n",   # 6B: ab"cd"
+            b"a,b\nabc\",2\n",          # 6C: abc"
+            b"a,b\nab\"c\"d,2\n",       # 6D: ab"c"d
+        ]
+        for content in cases:
+            with pytest.raises(SentinaxCanonicalCsvError, match="Malformed CSV quoting at physical row 2"):
+                parser.extract_records(content)
+
+    def test_junk_or_whitespace_after_closing_quote_rejected(self):
+        """7E, 7F: Non-delimiter characters or whitespace after closing quote are strictly rejected."""
+        parser = SentinaxCanonicalCsvParserV1()
+
+        cases = [
+            b'a,b,c\n1,"abc"x,3\n',     # 7E: "abc"x
+            b'a,b,c\n1,"abc" ,3\n',     # 7F: "abc" (space after closing quote)
+            b'a,b,c\n1,"abc"\t,3\n',    # tab after closing quote
+        ]
+        for content in cases:
+            with pytest.raises(SentinaxCanonicalCsvError, match="Malformed CSV quoting at physical row 2"):
+                parser.extract_records(content)
+
+    def test_leading_whitespace_before_quote_rejected(self):
+        """9: Leading whitespace before quote treats field as unquoted and fails closed."""
+        parser = SentinaxCanonicalCsvParserV1()
+        invalid_leading = b'a,b\n  "ABC",1\n'
+        with pytest.raises(SentinaxCanonicalCsvError, match="Malformed CSV quoting at physical row 2"):
+            parser.extract_records(invalid_leading)
+
+        # But whitespace INSIDE quoted field is valid
+        valid_inside = b'a,b\n"  ABC",1\n'
+        records = parser.extract_records(valid_inside)
+        assert len(records) == 1
+        assert records[0].fields[0].field_value == "  ABC"
+
+    def test_unclosed_or_unescaped_internal_quotes_rejected(self):
+        """10L, 10M: Unescaped single quotes inside quoted fields fail closed."""
+        parser = SentinaxCanonicalCsvParserV1()
+
+        cases = [
+            b'a,b\n"ab"cd",1\n',   # 10L: "ab"cd"
+            b'a,b\n"a"b",1\n',     # 10M: "a"b"
+        ]
+        for content in cases:
+            with pytest.raises(SentinaxCanonicalCsvError, match="Malformed CSV quoting at physical row 2"):
+                parser.extract_records(content)
+
+        # Valid escaped doubled quote
+        valid_doubled = b'a,b\n"a""b",1\n'
+        records = parser.extract_records(valid_doubled)
+        assert records[0].fields[0].field_value == 'a"b'
+
+    def test_malformed_header_quote_syntax_rejected(self):
+        """17N-17P: Malformed quotes in header fail closed; valid quoted header accepted."""
+        parser = SentinaxCanonicalCsvParserV1()
+
+        # 17N: Unquoted quote in header
+        with pytest.raises(SentinaxCanonicalCsvError, match="Malformed CSV quoting at physical row 1"):
+            parser.extract_records(b'sym"bol,quantity\nAAPL,10\n')
+
+        # 17O: Junk after closing quote in header
+        with pytest.raises(SentinaxCanonicalCsvError, match="Malformed CSV quoting at physical row 1"):
+            parser.extract_records(b'"symbol"x,quantity\nAAPL,10\n')
+
+        # 17P: Valid quoted canonical header
+        records = parser.extract_records(b'"symbol","quantity"\nAAPL,10\n')
+        assert len(records) == 1
+        fields_map = {f.field_key: f.field_value for f in records[0].fields}
+        assert fields_map == {"symbol": "AAPL", "quantity": "10"}
 
     def test_quoted_and_unquoted_same_logical_value_have_different_raw_bytes(self):
         """AT: Quoted ABC and unquoted ABC decode to same field value but distinct raw_record bytes."""
@@ -640,6 +715,48 @@ class TestPhase13EPipelineIntegration:
         assert result.raw_manifest.file_provenance is result.file_provenance
         assert result.parsed_manifest.raw_manifest is result.raw_manifest
 
+    def test_pipeline_malformed_quote_propagates_unchanged_without_partial_result(self):
+        """19Q, 19S: Malformed quote through pipeline propagates SentinaxCanonicalCsvError unchanged without partial result."""
+        parser = SentinaxCanonicalCsvParserV1()
+        port_id = uuid4()
+        acc_id = uuid4()
+        t = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+        bad_content = b'symbol,qty\n1,ab"cd\n'
+
+        result = None
+        with pytest.raises(SentinaxCanonicalCsvError, match="Malformed CSV quoting at physical row 2"):
+            result = build_import_staging_result(
+                portfolio_id=port_id,
+                account_id=acc_id,
+                filename="trades.csv",
+                content=bad_content,
+                imported_at=t,
+                parser=parser,
+            )
+
+        assert result is None
+
+    def test_pipeline_valid_escaped_quote_succeeds(self):
+        """19R: Valid escaped quote through pipeline produces verified parsed fields."""
+        parser = SentinaxCanonicalCsvParserV1()
+        port_id = uuid4()
+        acc_id = uuid4()
+        t = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+        content = b'symbol,notes\nAAPL,"He said ""buy"""\n'
+
+        result = build_import_staging_result(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            filename="trades.csv",
+            content=content,
+            imported_at=t,
+            parser=parser,
+        )
+
+        assert result.parsed_manifest.record_count == 1
+        p_fields = {f.field_key: f.field_value for f in result.parsed_manifest.parsed_records[0].fields}
+        assert p_fields == {"symbol": "AAPL", "notes": 'He said "buy"'}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 12. LF vs. CRLF Pipeline Sensitivity Tests
@@ -699,3 +816,46 @@ class TestFinancialSemanticSeparation:
         parser_dir = set(dir(parser))
         overlap = parser_dir & forbidden_attrs
         assert not overlap, f"Forbidden financial attributes found in parser: {overlap}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 14. Final Red-Team Quote Hardening Comprehensive Matrix
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestFinalRedTeamQuoteHardening:
+    """Explicitly tests the exact Red-Team challenge cases from Section 23."""
+
+    def test_final_red_team_quote_matrix(self):
+        """23: Verifies exact Red-Team quote patterns."""
+        parser = SentinaxCanonicalCsvParserV1()
+
+        # Reject cases
+        reject_cases = [
+            b"sym\nab\"cd\n",     # ab"cd
+            b"sym\nab\"cd\"\n",   # ab"cd"
+            b"sym\nabc\"\n",      # abc"
+            b"sym\n\"a\"b\n",     # "a"b
+            b"sym\n\"a\"x\n",     # "a"x
+            b"sym\n\"a\" \n",     # "a" (trailing space after closing quote)
+            b"sym\n \"a\"\n",     #  "a" (leading space before quote)
+        ]
+        for content in reject_cases:
+            with pytest.raises(SentinaxCanonicalCsvError, match="Malformed CSV quoting at physical row 2"):
+                parser.extract_records(content)
+
+        # Accept cases
+        # "a""b" -> a"b
+        r1 = parser.extract_records(b'sym\n"a""b"\n')
+        assert len(r1) == 1
+        assert r1[0].fields[0].field_value == 'a"b'
+
+        # "a,b" -> a,b
+        r2 = parser.extract_records(b'sym\n"a,b"\n')
+        assert len(r2) == 1
+        assert r2[0].fields[0].field_value == "a,b"
+
+        # "" -> ""
+        r3 = parser.extract_records(b'sym\n""\n')
+        assert len(r3) == 1
+        assert r3[0].fields[0].field_value == ""
+

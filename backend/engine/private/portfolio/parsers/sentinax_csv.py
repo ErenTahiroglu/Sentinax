@@ -110,6 +110,60 @@ def _scan_physical_lines(content: bytes) -> Tuple[List[bytes], List[str]]:
     return lines, terminators
 
 
+def _validate_csv_line_quotes(line_text: str, physical_row: int) -> None:
+    """
+    Validates strict Canonical CSV v1 quote discipline on a single decoded physical line.
+
+    Rules:
+    - Quoted field begins with '"', ends with '"', escapes internal quotes with '""',
+      and must be followed immediately by a delimiter (',') or end-of-line.
+    - Unquoted field cannot contain any '"' character.
+    - Fails closed on unclosed quotes, characters/whitespace after closing quotes, and quotes in unquoted fields.
+    """
+    i = 0
+    n = len(line_text)
+
+    while i < n:
+        if line_text[i] == '"':
+            # Quoted field
+            i += 1
+            closed = False
+            while i < n:
+                if line_text[i] == '"':
+                    if i + 1 < n and line_text[i + 1] == '"':
+                        # Escaped quote ("")
+                        i += 2
+                    else:
+                        # Closing quote
+                        closed = True
+                        i += 1
+                        if i == n:
+                            break
+                        if line_text[i] == ",":
+                            i += 1
+                            break
+                        raise SentinaxCanonicalCsvError(
+                            f"Malformed CSV quoting at physical row {physical_row}: unexpected character after closing quote"
+                        )
+                else:
+                    i += 1
+            if not closed:
+                raise SentinaxCanonicalCsvError(
+                    f"Malformed CSV quoting at physical row {physical_row}: unclosed quoted field"
+                )
+        else:
+            # Unquoted field
+            while i < n:
+                if line_text[i] == ",":
+                    i += 1
+                    break
+                if line_text[i] == '"':
+                    raise SentinaxCanonicalCsvError(
+                        f"Malformed CSV quoting at physical row {physical_row}: unquoted field contains quote"
+                    )
+                i += 1
+
+
 class SentinaxCanonicalCsvParserV1:
     """
     Authoritative Sentinax Canonical CSV v1 parser adapter.
@@ -172,6 +226,8 @@ class SentinaxCanonicalCsvParserV1:
         except UnicodeDecodeError as e:
             raise SentinaxCanonicalCsvError(f"Malformed UTF-8 in header row: {e}") from e
 
+        _validate_csv_line_quotes(header_text, physical_row=1)
+
         try:
             header_reader = csv.reader([header_text], delimiter=",", quotechar='"', doublequote=True, strict=True)
             header_rows = list(header_reader)
@@ -218,6 +274,8 @@ class SentinaxCanonicalCsvParserV1:
                 raise SentinaxCanonicalCsvError(
                     f"Malformed UTF-8 at physical row {physical_row}: {e}"
                 ) from e
+
+            _validate_csv_line_quotes(row_text, physical_row=physical_row)
 
             try:
                 row_reader = csv.reader([row_text], delimiter=",", quotechar='"', doublequote=True, strict=True)
