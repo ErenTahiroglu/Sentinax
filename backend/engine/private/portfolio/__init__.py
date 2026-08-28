@@ -132,6 +132,13 @@ from backend.engine.private.portfolio.parsers.sentinax_csv_semantics import (
 from backend.engine.private.portfolio.sentinax_csv_import import (
     run_sentinax_canonical_csv_import_v1,
 )
+from backend.engine.private.portfolio.import_materialization import (
+    ImportLedgerMaterializationBatch,
+    ImportLedgerTransactionPlan,
+    PortfolioImportMaterializationError,
+    build_import_ledger_materialization_batch,
+    build_import_ledger_transaction_plan,
+)
 from backend.engine.private.portfolio.cash import (
     CashBalanceProjection,
     CashBalanceState,
@@ -232,6 +239,11 @@ __all__ = [
     "SentinaxCanonicalCsvSemanticError",
     "SentinaxCanonicalCsvSemanticInterpreterV1",
     "run_sentinax_canonical_csv_import_v1",
+    "PortfolioImportMaterializationError",
+    "ImportLedgerTransactionPlan",
+    "ImportLedgerMaterializationBatch",
+    "build_import_ledger_transaction_plan",
+    "build_import_ledger_materialization_batch",
     "serialize_portfolio",
     "hydrate_portfolio",
     "serialize_portfolio_account",

@@ -333,5 +333,18 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Zero New Hashes or UUIDs:** Introduces zero new cryptographic hashes or identifier schemes; relies exclusively on the closed immutable hash manifest hierarchy established in Phases 13A–13L.
 - **Provenance Authority:** `imported_at` is explicit caller observation metadata and is not mapped to ledger `recorded_at`.
 - **Pre-Ledger Domain Boundary:** Pure pre-ledger pipeline orchestration. Zero `PortfolioTransaction` construction, zero external identity/idempotency derivation, zero cash bucket assignment, zero repository or database persistence, and zero mutation of the financial ledger.
-- **Deferred Scope:** Ledger transaction materialization, idempotency key derivation, cash bucket attribution, and ledger persistence remain deferred to Phase 13N+.
+- **Deferred Scope:** Ledger transaction materialization, idempotency key derivation, cash bucket attribution, and ledger persistence remain deferred to Phase 13N.
+
+---
+
+## 13n. Immutable Ledger-Materialization Plan Contract & Full Resolution-Batch Eligibility (Phase 13N)
+- **Immutable Bridge Contract:** Pure domain bridge (`import_materialization.py`) connecting an immutable `ImportInstrumentResolutionBatch` (Phase 13J/K) to an immutable `ImportLedgerMaterializationBatch`.
+- **Eligible Resolution States:** A resolution outcome is materializable if and only if its status is `RESOLVED` or `NOT_REQUIRED`.
+- **Full-Batch Fail-Closed Gate:** Batch materialization requires `is_fully_resolved is True`. If any resolution is `UNRESOLVED` or `AMBIGUOUS`, the entire batch fails closed and raises `PortfolioImportMaterializationError`. No partial materialization batch is ever returned.
+- **Exact Field Copying & Target Binding:** The plan copies exact target identifiers (`portfolio_id`, `account_id`) from immutable file provenance, and freezes exact economic fields (`transaction_type`, `effective_date`, `executed_at`, `quantity`, `unit_price`, `trade_currency`, `cash_amount`, `cash_currency`, `from_currency`, `from_amount`, `to_currency`, `to_amount`) from draft authority.
+- **Instrument ID Assignment:** Resolved canonical instrument UUID becomes `plan.instrument_id`. For `NOT_REQUIRED` resolutions, `plan.instrument_id` is strictly `None`.
+- **Semantic Rejections:** Rows `REJECTED` in Phase 13L remain visible in the nested `assessment_batch` and receive zero plans.
+- **Staging-Only Identity:** `plan_identity` and `materialization_manifest_identity` extend upstream staging identities. They MUST NOT be mapped to `PortfolioTransaction.external_source` or `external_reference`.
+- **Pre-Ledger Domain Boundary:** Pure pre-append plan. Zero `PortfolioTransaction` construction, zero transaction UUID generation, zero `recorded_at` assignment (system clock / repository authority), zero external identity or idempotency key derivation, zero cash bucket assignment, and zero database/ledger persistence.
+- **Deferred Scope:** Transaction UUID generation, `recorded_at` assignment, ledger external identity/idempotency mapping, cash-bucket attribution, and ledger append remain deferred to Phase 13O+.
 
