@@ -259,4 +259,19 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Field Family Exclusivity:** BUY/SELL requires `instrument_reference`, `quantity`, `unit_price`, `trade_currency`; CASH movements require `cash_amount`, `cash_currency`; INCOME/FEES require `cash_amount`, `cash_currency` with optional `instrument_reference`; FX conversions require `from_currency != to_currency`, `from_amount`, `to_amount`. Contradictory cross-family fields fail closed.
 - **Instrument Reference Authority:** Unresolved instruments are preserved verbatim as `instrument_reference: Optional[str]` (1..256 chars, non-blank) without canonical lookup, stripping, or normalization.
 - **Deterministic Draft Preimage & Digest:** `draft_sha256` binds the draft to `assessment_manifest_sha256`, `record_ordinal`, `parsed_sha256`, and canonicalized economics (canonical Decimal and UTC instant strings).
-- **Deferred Scope:** Canonical instrument resolution, ledger materialization, and persistence remain deferred to Phase 13I+.
+- **Deferred Scope:** Draft batch composition, canonical instrument resolution, ledger materialization, and persistence remain deferred to Phase 13I+.
+
+---
+
+## 13i. Immutable Economic Draft Batch Manifest & Complete READY-Coverage Integrity (Phase 13I)
+- **One-Draft-Per-READY Contract:** Exactly one `ImportTransactionDraft` is required for every READY record in the authoritative `ImportAssessmentBatch`. UNRESOLVED records must have zero drafts. REJECTED records must have zero drafts. No READY record may be omitted; no READY record may have two drafts.
+- **Exact Assessment Batch Binding:** Every draft's `assessment_batch` must be the same object as the manifest's `assessment_batch` (not merely the same SHA). Drafts from foreign batches fail closed immediately.
+- **READY Ordinal Derivation:** Canonical READY ordinals are derived solely from `assessment_batch.assessments` where `status == READY`. Caller-supplied ordinal lists are never accepted.
+- **One Logical Record → One Economic Draft:** Multi-event rows must be represented as separate logical records before this boundary. Phase 13I enforces a strict one-logical-record / one-economic-draft boundary.
+- **Deterministic Canonical Ordering:** Drafts are canonically sorted by `record_ordinal` ascending. Builder input order is irrelevant; the output tuple is always deterministic.
+- **Canonical Draft Batch Preimage & Digest:** `draft_manifest_sha256` is computed from compact JSON: `[str(portfolio_id), str(account_id), source_key, file_content_sha256, raw_manifest_sha256, parser_revision, parsed_manifest_sha256, assessment_manifest_sha256, [[record_ordinal, parsed_sha256, draft_sha256], ...]]`. Entries sorted by `record_ordinal` ascending.
+- **Manifest Identity:** `draft_manifest_identity` extends `assessment_manifest_identity` with `draft_manifest_sha256`. Not a ledger external identity. No UUID generated at manifest level.
+- **Zero-READY Batch:** A batch containing only UNRESOLVED/REJECTED records (or empty) is valid with `drafts == ()` and a deterministic manifest SHA.
+- **Still Pre-Ledger:** Zero `PortfolioTransaction`. Zero canonical `instrument_id` UUIDs. Zero `external_source` / `external_reference` derivations. Zero `cash_bucket_id` attribution. Zero persistence. Zero ledger mutations.
+- **Deferred Scope:** Canonical instrument resolution, ledger materialization, external identity assignment, cash-bucket attribution, and persistence remain deferred to Phase 13J+.
+

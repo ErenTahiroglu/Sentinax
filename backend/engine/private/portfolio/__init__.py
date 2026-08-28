@@ -106,6 +106,11 @@ from backend.engine.private.portfolio.import_draft import (
     PortfolioImportDraftError,
     build_import_transaction_draft,
 )
+from backend.engine.private.portfolio.import_draft_batch import (
+    ImportDraftBatchManifest,
+    PortfolioImportDraftBatchError,
+    build_import_draft_batch_manifest,
+)
 from backend.engine.private.portfolio.cash import (
     CashBalanceProjection,
     CashBalanceState,
@@ -190,6 +195,9 @@ __all__ = [
     "PortfolioImportDraftError",
     "ImportTransactionDraft",
     "build_import_transaction_draft",
+    "PortfolioImportDraftBatchError",
+    "ImportDraftBatchManifest",
+    "build_import_draft_batch_manifest",
     "serialize_portfolio",
     "hydrate_portfolio",
     "serialize_portfolio_account",
