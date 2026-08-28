@@ -1,20 +1,21 @@
 """
 backend/engine/private/portfolio/persistence.py
 ================================================
-Strict Persistence Codec & Serialization/Hydration Boundary for Portfolio Ledger (Phase 12B.2A).
+Strict Persistence Codec & Serialization/Hydration Boundary for Portfolio Ledger (Phase 12B.2A & 12B.2A.5).
 
 Pure Python — No database I/O, no network calls, no environment variables.
 
 Architectural Invariants:
     - Pure codec between canonical Phase 12A domain dataclasses and database-shaped row dictionaries.
     - Explicit trusted `owner_id` context on all operations (fails closed on mismatch/omission).
-    - Strict UUID parsing (rejects bools, ints, empty strings, malformed strings).
-    - Strict exact Decimal parsing (accepts Decimal or exact decimal str; strictly rejects float, int, bool, NaN, Infinity).
-    - Strict Datetime parsing (timezone-aware datetime or ISO-8601 with tz info only; rejects naive datetimes).
-    - Strict Date parsing (date or YYYY-MM-DD str only; rejects datetime objects).
-    - Strict Enum parsing (exact canonical enum values from domain.py; no fallback defaults).
+    - Strict UUID parsing: Inbound strings must be canonical lowercase hyphenated UUID format (rejects uppercase, braces, whitespace).
+    - Strict Date parsing: Inbound strings must be canonical YYYY-MM-DD format (rejects alternative formats, whitespace, datetime objects).
+    - Strict exact Decimal parsing: Accepts Decimal or exact decimal str (rejects float, int, bool, NaN, Infinity).
+    - Strict Datetime parsing: Timezone-aware datetime or ISO-8601 with tz info only (rejects naive datetimes).
+    - Strict Enum parsing: Exact canonical enum values from domain.py; fails closed on missing persisted status/priority columns.
     - Verification of deterministic 64-char SHA-256 `economic_fingerprint` on transaction hydration.
     - Reuses canonical domain model `__post_init__` validation on all hydrations.
+    - Strict outbound validation: Serializers validate mutated domain entities before emitting rows (zero float/int/bool coercion).
     - Schema whitelisting matching migration 011 (never persists derived properties like `is_active`).
 """
 
@@ -46,22 +47,32 @@ from backend.engine.private.portfolio.models import (
 
 E = TypeVar("E")
 
+UUID_CANONICAL_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+DATE_CANONICAL_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Type-Safe Parsing Helpers (Fail-Closed)
+# Inbound Type-Safe Parsing Helpers (Hydration - Fail-Closed)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_required_uuid(val: Any, field_name: str) -> UUID:
-    """Parses a required UUID. Rejects bool, int, empty strings, and malformed strings."""
+    """
+    Parses a required UUID.
+    Strictly accepts UUID instances or canonical lowercase hyphenated UUID strings.
+    Rejects uppercase, braces, hyphenless, whitespace, bool, and int.
+    """
     if val is None:
         raise ValueError(f"Required UUID field '{field_name}' is missing or None.")
     if isinstance(val, bool) or not isinstance(val, (UUID, str)):
-        raise TypeError(f"Field '{field_name}' must be UUID or str, got {type(val).__name__}: {val!r}")
+        raise TypeError(f"Field '{field_name}' must be UUID or canonical UUID str, got {type(val).__name__}: {val!r}")
     if isinstance(val, str):
-        if not val.strip():
-            raise ValueError(f"Field '{field_name}' cannot be empty string.")
+        if not UUID_CANONICAL_PATTERN.match(val):
+            raise ValueError(f"Non-canonical or invalid UUID string for '{field_name}': {val!r}")
         try:
-            return UUID(val.strip())
+            parsed = UUID(val)
+            if str(parsed) != val:
+                raise ValueError(f"Non-canonical UUID string for '{field_name}': {val!r}")
+            return parsed
         except Exception as e:
             raise ValueError(f"Invalid UUID string for '{field_name}': {val!r}") from e
     return val
@@ -107,13 +118,6 @@ def _parse_optional_decimal(val: Any, field_name: str) -> Optional[Decimal]:
     return _parse_required_decimal(val, field_name)
 
 
-def _format_decimal(d: Optional[Decimal]) -> Optional[str]:
-    """Formats a Decimal to exact fixed-point string without scientific exponent."""
-    if d is None:
-        return None
-    return format(d, "f")
-
-
 def _parse_required_datetime(val: Any, field_name: str) -> datetime:
     """
     Parses a required timezone-aware datetime.
@@ -147,8 +151,8 @@ def _parse_optional_datetime(val: Any, field_name: str) -> Optional[datetime]:
 def _parse_required_date(val: Any, field_name: str) -> date:
     """
     Parses a required calendar date.
-    Strictly accepts date objects or 'YYYY-MM-DD' strings.
-    Rejects datetime objects masquerading as date.
+    Strictly accepts date objects or canonical 'YYYY-MM-DD' strings.
+    Rejects datetime objects masquerading as date, alternative formats, and whitespace.
     """
     if val is None:
         raise ValueError(f"Required date field '{field_name}' is missing or None.")
@@ -159,10 +163,10 @@ def _parse_required_date(val: Any, field_name: str) -> date:
     if isinstance(val, date):
         return val
     if isinstance(val, str):
-        if not val.strip():
-            raise ValueError(f"Field '{field_name}' cannot be empty string.")
+        if not DATE_CANONICAL_PATTERN.match(val):
+            raise ValueError(f"Date string for '{field_name}' must be in canonical YYYY-MM-DD format, got: {val!r}")
         try:
-            return date.fromisoformat(val.strip())
+            return date.fromisoformat(val)
         except Exception as e:
             raise ValueError(f"Invalid date string for '{field_name}': {val!r}") from e
     raise TypeError(f"Field '{field_name}' must be date or YYYY-MM-DD str, got {type(val).__name__}: {val!r}")
@@ -228,6 +232,129 @@ def _validate_and_get_owner(row: Dict[str, Any], expected_owner_id: UUID | str) 
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Outbound Type-Safe Validation & Serialization Helpers (Fail-Closed)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _serialize_uuid(val: Any, field_name: str) -> str:
+    """Validates that a domain field is strictly a UUID instance and formats to canonical str."""
+    if val is None:
+        raise ValueError(f"Required UUID field '{field_name}' cannot be None.")
+    if isinstance(val, bool) or not isinstance(val, UUID):
+        raise TypeError(f"Field '{field_name}' must be UUID instance, got {type(val).__name__}: {val!r}")
+    return str(val)
+
+
+def _serialize_optional_uuid(val: Any, field_name: str) -> Optional[str]:
+    """Validates an optional UUID field and formats to canonical str."""
+    if val is None:
+        return None
+    return _serialize_uuid(val, field_name)
+
+
+def _serialize_decimal_positive(val: Any, field_name: str) -> str:
+    """
+    Validates that a domain field is strictly a finite Decimal > 0.
+    Strictly rejects float, int, bool, NaN, and Infinity.
+    Formats to fixed-point exact string (never scientific exponent).
+    """
+    if val is None:
+        raise ValueError(f"Required Decimal field '{field_name}' cannot be None.")
+    if isinstance(val, bool) or not isinstance(val, Decimal):
+        raise TypeError(f"Field '{field_name}' must be Decimal instance, got {type(val).__name__}: {val!r}")
+    if not val.is_finite():
+        raise ValueError(f"Field '{field_name}' must be finite Decimal, got: {val}")
+    if val <= Decimal("0"):
+        raise ValueError(f"Field '{field_name}' must be strictly positive (> 0), got: {val}")
+    return format(val, "f")
+
+
+def _serialize_optional_decimal_positive(val: Any, field_name: str) -> Optional[str]:
+    """Validates an optional positive Decimal and formats to fixed-point str."""
+    if val is None:
+        return None
+    return _serialize_decimal_positive(val, field_name)
+
+
+def _serialize_aware_datetime(val: Any, field_name: str) -> str:
+    """Validates that a domain field is strictly a timezone-aware datetime instance."""
+    if val is None:
+        raise ValueError(f"Required datetime field '{field_name}' cannot be None.")
+    if isinstance(val, bool) or not isinstance(val, datetime):
+        raise TypeError(f"Field '{field_name}' must be datetime instance, got {type(val).__name__}: {val!r}")
+    if val.tzinfo is None:
+        raise ValueError(f"Datetime field '{field_name}' must be timezone-aware, got naive: {val}")
+    return val.isoformat()
+
+
+def _serialize_optional_aware_datetime(val: Any, field_name: str) -> Optional[str]:
+    """Validates an optional timezone-aware datetime."""
+    if val is None:
+        return None
+    return _serialize_aware_datetime(val, field_name)
+
+
+def _serialize_date(val: Any, field_name: str) -> str:
+    """Validates that a domain field is strictly a date instance (not datetime)."""
+    if val is None:
+        raise ValueError(f"Required date field '{field_name}' cannot be None.")
+    if isinstance(val, bool) or isinstance(val, datetime) or not isinstance(val, date):
+        raise TypeError(f"Field '{field_name}' must be date instance (not datetime), got {type(val).__name__}: {val!r}")
+    return val.isoformat()
+
+
+def _serialize_optional_date(val: Any, field_name: str) -> Optional[str]:
+    """Validates an optional date instance."""
+    if val is None:
+        return None
+    return _serialize_date(val, field_name)
+
+
+def _serialize_enum(val: Any, enum_cls: Type[E], field_name: str) -> str:
+    """Validates that a domain field is strictly an instance of enum_cls."""
+    if val is None:
+        raise ValueError(f"Required enum field '{field_name}' cannot be None.")
+    if not isinstance(val, enum_cls):
+        raise TypeError(f"Field '{field_name}' must be {enum_cls.__name__} instance, got {type(val).__name__}: {val!r}")
+    return val.value
+
+
+def _serialize_optional_enum(val: Any, enum_cls: Type[E], field_name: str) -> Optional[str]:
+    """Validates an optional enum field."""
+    if val is None:
+        return None
+    return _serialize_enum(val, enum_cls, field_name)
+
+
+def _serialize_bool(val: Any, field_name: str) -> bool:
+    """Validates that a domain field is strictly a bool."""
+    if val is None:
+        raise ValueError(f"Required bool field '{field_name}' cannot be None.")
+    if not isinstance(val, bool):
+        raise TypeError(f"Field '{field_name}' must be strict bool, got {type(val).__name__}: {val!r}")
+    return val
+
+
+def _serialize_non_empty_str(val: Any, field_name: str) -> str:
+    """Validates that a domain field is strictly a non-empty string."""
+    if val is None:
+        raise ValueError(f"Required string field '{field_name}' cannot be None.")
+    if isinstance(val, bool) or not isinstance(val, str):
+        raise TypeError(f"Field '{field_name}' must be str instance, got {type(val).__name__}: {val!r}")
+    if not val.strip():
+        raise ValueError(f"Field '{field_name}' cannot be empty string.")
+    return val
+
+
+def _serialize_optional_str(val: Any, field_name: str) -> Optional[str]:
+    """Validates an optional string field."""
+    if val is None:
+        return None
+    if isinstance(val, bool) or not isinstance(val, str):
+        raise TypeError(f"Field '{field_name}' must be str instance, got {type(val).__name__}: {val!r}")
+    return val
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 1. Portfolio Codec
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -235,6 +362,7 @@ def serialize_portfolio(portfolio: Portfolio, owner_id: UUID | str) -> Dict[str,
     """
     Serializes a Portfolio domain aggregate into a database row dictionary.
     Whitelists columns from public.portfolios (never includes `is_active`).
+    Validates domain entity fields prior to emission.
     """
     if not isinstance(portfolio, Portfolio):
         raise TypeError(f"Expected Portfolio instance, got {type(portfolio).__name__}")
@@ -246,15 +374,15 @@ def serialize_portfolio(portfolio: Portfolio, owner_id: UUID | str) -> Dict[str,
             raise ValueError(f"Portfolio.owner_id {domain_owner} does not match trusted owner_id {trusted_owner}")
 
     return {
-        "id": str(portfolio.id),
+        "id": _serialize_uuid(portfolio.id, "portfolio.id"),
         "owner_id": str(trusted_owner),
-        "mode": portfolio.mode.value,
-        "name": portfolio.name,
-        "base_currency": portfolio.base_currency.value,
-        "created_at": portfolio.created_at.isoformat(),
-        "archived_at": portfolio.archived_at.isoformat() if portfolio.archived_at else None,
-        "source_portfolio_id": str(portfolio.source_portfolio_id) if portfolio.source_portfolio_id else None,
-        "source_snapshot_time": portfolio.source_snapshot_time.isoformat() if portfolio.source_snapshot_time else None,
+        "mode": _serialize_enum(portfolio.mode, PortfolioMode, "portfolio.mode"),
+        "name": _serialize_non_empty_str(portfolio.name, "portfolio.name"),
+        "base_currency": _serialize_enum(portfolio.base_currency, Currency, "portfolio.base_currency"),
+        "created_at": _serialize_aware_datetime(portfolio.created_at, "portfolio.created_at"),
+        "archived_at": _serialize_optional_aware_datetime(portfolio.archived_at, "portfolio.archived_at"),
+        "source_portfolio_id": _serialize_optional_uuid(portfolio.source_portfolio_id, "portfolio.source_portfolio_id"),
+        "source_snapshot_time": _serialize_optional_aware_datetime(portfolio.source_snapshot_time, "portfolio.source_snapshot_time"),
     }
 
 
@@ -292,20 +420,21 @@ def serialize_portfolio_account(account: PortfolioAccount, owner_id: UUID | str)
     """
     Serializes a PortfolioAccount domain entity into a database row dictionary.
     Whitelists columns from public.portfolio_accounts (never includes `is_active`).
+    Validates domain entity fields prior to emission.
     """
     if not isinstance(account, PortfolioAccount):
         raise TypeError(f"Expected PortfolioAccount instance, got {type(account).__name__}")
     trusted_owner = _parse_required_uuid(owner_id, "owner_id")
 
     return {
-        "id": str(account.id),
-        "portfolio_id": str(account.portfolio_id),
+        "id": _serialize_uuid(account.id, "account.id"),
+        "portfolio_id": _serialize_uuid(account.portfolio_id, "account.portfolio_id"),
         "owner_id": str(trusted_owner),
-        "name": account.name,
-        "base_currency": account.base_currency.value,
-        "broker_label": account.broker_label,
-        "created_at": account.created_at.isoformat(),
-        "archived_at": account.archived_at.isoformat() if account.archived_at else None,
+        "name": _serialize_non_empty_str(account.name, "account.name"),
+        "base_currency": _serialize_enum(account.base_currency, Currency, "account.base_currency"),
+        "broker_label": _serialize_optional_str(account.broker_label, "account.broker_label"),
+        "created_at": _serialize_aware_datetime(account.created_at, "account.created_at"),
+        "archived_at": _serialize_optional_aware_datetime(account.archived_at, "account.archived_at"),
     }
 
 
@@ -341,22 +470,23 @@ def serialize_cash_bucket(bucket: CashBucket, owner_id: UUID | str) -> Dict[str,
     """
     Serializes a CashBucket domain entity into a database row dictionary.
     Whitelists columns from public.cash_buckets (never includes `is_active`).
+    Validates domain entity fields prior to emission.
     """
     if not isinstance(bucket, CashBucket):
         raise TypeError(f"Expected CashBucket instance, got {type(bucket).__name__}")
     trusted_owner = _parse_required_uuid(owner_id, "owner_id")
 
     return {
-        "id": str(bucket.id),
-        "portfolio_id": str(bucket.portfolio_id),
+        "id": _serialize_uuid(bucket.id, "bucket.id"),
+        "portfolio_id": _serialize_uuid(bucket.portfolio_id, "bucket.portfolio_id"),
         "owner_id": str(trusted_owner),
-        "account_id": str(bucket.account_id) if bucket.account_id else None,
-        "name": bucket.name,
-        "currency": bucket.currency.value,
-        "purpose": bucket.purpose.value,
-        "included_in_investable_assets": bucket.included_in_investable_assets,
-        "created_at": bucket.created_at.isoformat(),
-        "archived_at": bucket.archived_at.isoformat() if bucket.archived_at else None,
+        "account_id": _serialize_optional_uuid(bucket.account_id, "bucket.account_id"),
+        "name": _serialize_non_empty_str(bucket.name, "bucket.name"),
+        "currency": _serialize_enum(bucket.currency, Currency, "bucket.currency"),
+        "purpose": _serialize_enum(bucket.purpose, CashPurpose, "bucket.purpose"),
+        "included_in_investable_assets": _serialize_bool(bucket.included_in_investable_assets, "bucket.included_in_investable_assets"),
+        "created_at": _serialize_aware_datetime(bucket.created_at, "bucket.created_at"),
+        "archived_at": _serialize_optional_aware_datetime(bucket.archived_at, "bucket.archived_at"),
     }
 
 
@@ -398,41 +528,43 @@ def serialize_investment_goal(goal: InvestmentGoal, owner_id: UUID | str) -> Dic
     """
     Serializes an InvestmentGoal domain entity into a database row dictionary.
     Emits exact decimal string for target_amount (never float).
+    Validates domain entity fields prior to emission.
     """
     if not isinstance(goal, InvestmentGoal):
         raise TypeError(f"Expected InvestmentGoal instance, got {type(goal).__name__}")
     trusted_owner = _parse_required_uuid(owner_id, "owner_id")
 
     return {
-        "id": str(goal.id),
-        "portfolio_id": str(goal.portfolio_id),
+        "id": _serialize_uuid(goal.id, "goal.id"),
+        "portfolio_id": _serialize_uuid(goal.portfolio_id, "goal.portfolio_id"),
         "owner_id": str(trusted_owner),
-        "name": goal.name,
-        "target_amount": _format_decimal(goal.target_amount),
-        "target_currency": goal.target_currency.value,
-        "target_date": goal.target_date.isoformat() if goal.target_date else None,
-        "priority": goal.priority.value,
-        "status": goal.status.value,
-        "created_at": goal.created_at.isoformat(),
-        "archived_at": goal.archived_at.isoformat() if goal.archived_at else None,
+        "name": _serialize_non_empty_str(goal.name, "goal.name"),
+        "target_amount": _serialize_decimal_positive(goal.target_amount, "goal.target_amount"),
+        "target_currency": _serialize_enum(goal.target_currency, Currency, "goal.target_currency"),
+        "target_date": _serialize_optional_date(goal.target_date, "goal.target_date"),
+        "priority": _serialize_enum(goal.priority, GoalPriority, "goal.priority"),
+        "status": _serialize_enum(goal.status, GoalStatus, "goal.status"),
+        "created_at": _serialize_aware_datetime(goal.created_at, "goal.created_at"),
+        "archived_at": _serialize_optional_aware_datetime(goal.archived_at, "goal.archived_at"),
     }
 
 
 def hydrate_investment_goal(row: Dict[str, Any], expected_owner_id: UUID | str) -> InvestmentGoal:
     """
     Hydrates a database row dictionary into a canonical InvestmentGoal domain entity.
+    Fails closed if priority or status is missing from the persisted row.
     """
     if not isinstance(row, dict):
         raise TypeError(f"Expected dict row, got {type(row).__name__}")
     _validate_and_get_owner(row, expected_owner_id)
 
-    required_cols = {"id", "portfolio_id", "name", "target_amount", "target_currency", "created_at"}
+    required_cols = {"id", "portfolio_id", "name", "target_amount", "target_currency", "priority", "status", "created_at"}
     missing = required_cols - set(row.keys())
     if missing:
         raise KeyError(f"Missing required columns for InvestmentGoal: {missing}")
 
-    priority = _parse_required_enum(row.get("priority", GoalPriority.MEDIUM.value), GoalPriority, "priority")
-    status = _parse_required_enum(row.get("status", GoalStatus.ACTIVE.value), GoalStatus, "status")
+    priority = _parse_required_enum(row["priority"], GoalPriority, "priority")
+    status = _parse_required_enum(row["status"], GoalStatus, "status")
 
     return InvestmentGoal(
         id=_parse_required_uuid(row["id"], "id"),
@@ -456,39 +588,41 @@ def serialize_planned_contribution(contribution: PlannedContribution, owner_id: 
     """
     Serializes a PlannedContribution domain entity into a database row dictionary.
     Emits exact decimal string for amount (never float).
+    Validates domain entity fields prior to emission.
     """
     if not isinstance(contribution, PlannedContribution):
         raise TypeError(f"Expected PlannedContribution instance, got {type(contribution).__name__}")
     trusted_owner = _parse_required_uuid(owner_id, "owner_id")
 
     return {
-        "id": str(contribution.id),
-        "portfolio_id": str(contribution.portfolio_id),
+        "id": _serialize_uuid(contribution.id, "contribution.id"),
+        "portfolio_id": _serialize_uuid(contribution.portfolio_id, "contribution.portfolio_id"),
         "owner_id": str(trusted_owner),
-        "goal_id": str(contribution.goal_id) if contribution.goal_id else None,
-        "cash_bucket_id": str(contribution.cash_bucket_id) if contribution.cash_bucket_id else None,
-        "expected_date": contribution.expected_date.isoformat(),
-        "amount": _format_decimal(contribution.amount),
-        "currency": contribution.currency.value,
-        "status": contribution.status.value,
-        "created_at": contribution.created_at.isoformat(),
+        "goal_id": _serialize_optional_uuid(contribution.goal_id, "contribution.goal_id"),
+        "cash_bucket_id": _serialize_optional_uuid(contribution.cash_bucket_id, "contribution.cash_bucket_id"),
+        "expected_date": _serialize_date(contribution.expected_date, "contribution.expected_date"),
+        "amount": _serialize_decimal_positive(contribution.amount, "contribution.amount"),
+        "currency": _serialize_enum(contribution.currency, Currency, "contribution.currency"),
+        "status": _serialize_enum(contribution.status, ContributionStatus, "contribution.status"),
+        "created_at": _serialize_aware_datetime(contribution.created_at, "contribution.created_at"),
     }
 
 
 def hydrate_planned_contribution(row: Dict[str, Any], expected_owner_id: UUID | str) -> PlannedContribution:
     """
     Hydrates a database row dictionary into a canonical PlannedContribution domain entity.
+    Fails closed if status is missing from the persisted row.
     """
     if not isinstance(row, dict):
         raise TypeError(f"Expected dict row, got {type(row).__name__}")
     _validate_and_get_owner(row, expected_owner_id)
 
-    required_cols = {"id", "portfolio_id", "expected_date", "amount", "currency", "created_at"}
+    required_cols = {"id", "portfolio_id", "expected_date", "amount", "currency", "status", "created_at"}
     missing = required_cols - set(row.keys())
     if missing:
         raise KeyError(f"Missing required columns for PlannedContribution: {missing}")
 
-    status = _parse_required_enum(row.get("status", ContributionStatus.PLANNED.value), ContributionStatus, "status")
+    status = _parse_required_enum(row["status"], ContributionStatus, "status")
 
     return PlannedContribution(
         id=_parse_required_uuid(row["id"], "id"),
@@ -512,35 +646,36 @@ def serialize_portfolio_transaction(transaction: PortfolioTransaction, owner_id:
     Serializes a frozen PortfolioTransaction domain event into a database row dictionary.
     Emits exact decimal strings for all numeric fields (never floats).
     Emits canonical 64-char SHA-256 economic_fingerprint.
+    Validates domain entity fields prior to emission.
     """
     if not isinstance(transaction, PortfolioTransaction):
         raise TypeError(f"Expected PortfolioTransaction instance, got {type(transaction).__name__}")
     trusted_owner = _parse_required_uuid(owner_id, "owner_id")
 
     return {
-        "id": str(transaction.id),
-        "portfolio_id": str(transaction.portfolio_id),
-        "account_id": str(transaction.account_id),
+        "id": _serialize_uuid(transaction.id, "transaction.id"),
+        "portfolio_id": _serialize_uuid(transaction.portfolio_id, "transaction.portfolio_id"),
+        "account_id": _serialize_uuid(transaction.account_id, "transaction.account_id"),
         "owner_id": str(trusted_owner),
-        "transaction_type": transaction.transaction_type.value,
-        "effective_date": transaction.effective_date.isoformat(),
-        "executed_at": transaction.executed_at.isoformat() if transaction.executed_at else None,
-        "recorded_at": transaction.recorded_at.isoformat(),
-        "instrument_id": str(transaction.instrument_id) if transaction.instrument_id else None,
-        "quantity": _format_decimal(transaction.quantity),
-        "unit_price": _format_decimal(transaction.unit_price),
-        "trade_currency": transaction.trade_currency.value if transaction.trade_currency else None,
-        "cash_amount": _format_decimal(transaction.cash_amount),
-        "cash_currency": transaction.cash_currency.value if transaction.cash_currency else None,
-        "cash_bucket_id": str(transaction.cash_bucket_id) if transaction.cash_bucket_id else None,
-        "from_currency": transaction.from_currency.value if transaction.from_currency else None,
-        "from_amount": _format_decimal(transaction.from_amount),
-        "to_currency": transaction.to_currency.value if transaction.to_currency else None,
-        "to_amount": _format_decimal(transaction.to_amount),
-        "external_source": transaction.external_source,
-        "external_reference": transaction.external_reference,
-        "reverses_transaction_id": str(transaction.reverses_transaction_id) if transaction.reverses_transaction_id else None,
-        "notes": transaction.notes,
+        "transaction_type": _serialize_enum(transaction.transaction_type, TransactionType, "transaction.transaction_type"),
+        "effective_date": _serialize_date(transaction.effective_date, "transaction.effective_date"),
+        "executed_at": _serialize_optional_aware_datetime(transaction.executed_at, "transaction.executed_at"),
+        "recorded_at": _serialize_aware_datetime(transaction.recorded_at, "transaction.recorded_at"),
+        "instrument_id": _serialize_optional_uuid(transaction.instrument_id, "transaction.instrument_id"),
+        "quantity": _serialize_optional_decimal_positive(transaction.quantity, "transaction.quantity"),
+        "unit_price": _serialize_optional_decimal_positive(transaction.unit_price, "transaction.unit_price"),
+        "trade_currency": _serialize_optional_enum(transaction.trade_currency, Currency, "transaction.trade_currency"),
+        "cash_amount": _serialize_optional_decimal_positive(transaction.cash_amount, "transaction.cash_amount"),
+        "cash_currency": _serialize_optional_enum(transaction.cash_currency, Currency, "transaction.cash_currency"),
+        "cash_bucket_id": _serialize_optional_uuid(transaction.cash_bucket_id, "transaction.cash_bucket_id"),
+        "from_currency": _serialize_optional_enum(transaction.from_currency, Currency, "transaction.from_currency"),
+        "from_amount": _serialize_optional_decimal_positive(transaction.from_amount, "transaction.from_amount"),
+        "to_currency": _serialize_optional_enum(transaction.to_currency, Currency, "transaction.to_currency"),
+        "to_amount": _serialize_optional_decimal_positive(transaction.to_amount, "transaction.to_amount"),
+        "external_source": _serialize_optional_str(transaction.external_source, "transaction.external_source"),
+        "external_reference": _serialize_optional_str(transaction.external_reference, "transaction.external_reference"),
+        "reverses_transaction_id": _serialize_optional_uuid(transaction.reverses_transaction_id, "transaction.reverses_transaction_id"),
+        "notes": _serialize_optional_str(transaction.notes, "transaction.notes"),
         "economic_fingerprint": transaction.economic_fingerprint(),
     }
 

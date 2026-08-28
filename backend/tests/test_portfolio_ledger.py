@@ -150,6 +150,46 @@ def test_external_idempotency_safe_replay():
     assert len(ledger) == 1
 
 
+def test_external_idempotency_decimal_lexical_variation():
+    """Phase 12B.2A.5: Replaying external transaction with different Decimal lexical form (1.00 vs 1, 1000.00 vs 1E+3) is IDEMPOTENT_DUPLICATE."""
+    port = _make_portfolio()
+    p_id = port.id
+    a_id = uuid4()
+    inst_id = uuid4()
+    ledger = PortfolioLedger(port)
+
+    # Initial append with standard decimal string
+    tx1 = _make_buy(
+        p_id, a_id, inst_id, date(2026, 8, 1),
+        qty="1.00", price="1000.00",
+        ext_source="MIDAS", ext_ref="ORD-2001",
+    )
+    r1 = ledger.append(tx1)
+    assert r1.status == AppendStatus.APPENDED
+
+    # Replay with integer / exponent representation
+    tx2 = _make_buy(
+        p_id, a_id, inst_id, date(2026, 8, 1),
+        qty="1", price="1E+3",
+        ext_source="MIDAS", ext_ref="ORD-2001",
+    )
+    r2 = ledger.append(tx2)
+    assert r2.status == AppendStatus.IDEMPOTENT_DUPLICATE
+    assert r2.transaction_id == tx1.id
+    assert len(ledger) == 1
+
+    # Conflict test: replay with genuine numeric difference
+    tx3 = _make_buy(
+        p_id, a_id, inst_id, date(2026, 8, 1),
+        qty="1.01", price="1000.00",
+        ext_source="MIDAS", ext_ref="ORD-2001",
+    )
+    r3 = ledger.append(tx3)
+    assert r3.status == AppendStatus.CONFLICT
+    assert len(ledger) == 1
+
+
+
 def test_external_idempotency_conflict_detection():
     port = _make_portfolio()
     p_id = port.id

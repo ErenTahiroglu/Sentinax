@@ -898,3 +898,83 @@ def test_economic_fingerprint_uuid_independence():
 
     # Identical economic fingerprint despite different id, recorded_at, and notes
     assert tx1.economic_fingerprint() == tx2.economic_fingerprint()
+
+
+def test_economic_fingerprint_decimal_lexical_equivalence():
+    """Phase 12B.2A.5: Numerically identical Decimals with different lexical forms must produce the SAME fingerprint."""
+    p_id = uuid4()
+    a_id = uuid4()
+    inst_id = uuid4()
+    rec_time = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+    # 1 vs 1.0 vs 1.00 vs 1E+0
+    tx1 = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.BUY,
+        instrument_id=inst_id,
+        effective_date=date(2026, 8, 27),
+        recorded_at=rec_time,
+        quantity=Decimal("1"),
+        unit_price=Decimal("1000"),
+        trade_currency=Currency.TRY,
+    )
+    tx2 = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.BUY,
+        instrument_id=inst_id,
+        effective_date=date(2026, 8, 27),
+        recorded_at=rec_time,
+        quantity=Decimal("1.00"),
+        unit_price=Decimal("1000.00"),
+        trade_currency=Currency.TRY,
+    )
+    tx3 = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.BUY,
+        instrument_id=inst_id,
+        effective_date=date(2026, 8, 27),
+        recorded_at=rec_time,
+        quantity=Decimal("1E+0"),
+        unit_price=Decimal("1E+3"),
+        trade_currency=Currency.TRY,
+    )
+
+    assert tx1.economic_fingerprint() == tx2.economic_fingerprint()
+    assert tx2.economic_fingerprint() == tx3.economic_fingerprint()
+
+
+def test_economic_fingerprint_numeric_difference_produces_different_hash():
+    """Phase 12B.2A.5: Genuine numeric differences must produce distinct fingerprints."""
+    p_id = uuid4()
+    a_id = uuid4()
+    inst_id = uuid4()
+    rec_time = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+    tx1 = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.BUY,
+        instrument_id=inst_id,
+        effective_date=date(2026, 8, 27),
+        recorded_at=rec_time,
+        quantity=Decimal("1.00"),
+        unit_price=Decimal("100.00"),
+        trade_currency=Currency.TRY,
+    )
+    tx2 = PortfolioTransaction(
+        portfolio_id=p_id,
+        account_id=a_id,
+        transaction_type=TransactionType.BUY,
+        instrument_id=inst_id,
+        effective_date=date(2026, 8, 27),
+        recorded_at=rec_time,
+        quantity=Decimal("1.0000001"),
+        unit_price=Decimal("100.00"),
+        trade_currency=Currency.TRY,
+    )
+
+    assert tx1.economic_fingerprint() != tx2.economic_fingerprint()
+

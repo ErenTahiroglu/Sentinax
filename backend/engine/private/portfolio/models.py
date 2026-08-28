@@ -66,6 +66,31 @@ def _validate_aware_datetime(dt: Optional[datetime], field_name: str) -> None:
         raise ValueError(f"{field_name} must be a timezone-aware datetime, got naive: {dt}")
 
 
+def _canonical_decimal_str(d: Optional[Decimal]) -> str:
+    """
+    Renders a finite Decimal in canonical text form for economic fingerprinting.
+    Numerically equivalent Decimals (e.g. 1, 1.0, 1.00, 1E+0, 1E+3, 1000.00) produce identical text.
+    - No float conversion.
+    - No context-dependent rounding.
+    - No precision loss on arbitrarily large/small finite Decimals.
+    """
+    if d is None:
+        return "None"
+    if not isinstance(d, Decimal) or isinstance(d, bool):
+        raise TypeError(f"Expected Decimal, got {type(d).__name__}: {d!r}")
+    if not d.is_finite():
+        raise ValueError(f"Expected finite Decimal, got: {d}")
+
+    # Format to fixed-point string
+    s = format(d, "f")
+    if "." in s:
+        # Strip trailing fractional zeros and trailing dot
+        s = s.rstrip("0").rstrip(".")
+    if s == "-0":
+        s = "0"
+    return s
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. Portfolio Model (Lifecycle Entity)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -367,16 +392,16 @@ class PortfolioTransaction:
             str(self.instrument_id) if self.instrument_id else "None",
             self.effective_date.isoformat(),
             self.executed_at.isoformat() if self.executed_at else "None",
-            str(self.quantity) if self.quantity is not None else "None",
-            str(self.unit_price) if self.unit_price is not None else "None",
+            _canonical_decimal_str(self.quantity),
+            _canonical_decimal_str(self.unit_price),
             self.trade_currency.value if self.trade_currency else "None",
-            str(self.cash_amount) if self.cash_amount is not None else "None",
+            _canonical_decimal_str(self.cash_amount),
             self.cash_currency.value if self.cash_currency else "None",
             str(self.cash_bucket_id) if self.cash_bucket_id else "None",
             self.from_currency.value if self.from_currency else "None",
-            str(self.from_amount) if self.from_amount is not None else "None",
+            _canonical_decimal_str(self.from_amount),
             self.to_currency.value if self.to_currency else "None",
-            str(self.to_amount) if self.to_amount is not None else "None",
+            _canonical_decimal_str(self.to_amount),
             ext_source_str,
             ext_ref_str,
             str(self.reverses_transaction_id) if self.reverses_transaction_id else "None",
