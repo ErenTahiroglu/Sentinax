@@ -1,7 +1,7 @@
 """
 backend/engine/private/portfolio/sentinax_csv_import_execution.py
 =================================================================
-End-to-End Canonical CSV Import Execution Orchestrator & Authoritative Execution Result (Phase 13S).
+End-to-End Canonical CSV Import Execution Orchestrator & Authoritative Execution Result (Phase 13S/13S.1).
 
 Composes the closed Phase 13 pre-ledger import, materialization, binding, and file-level atomic
 commit pipeline into one canonical execution entrypoint:
@@ -61,13 +61,22 @@ class SentinaxCanonicalCsvImportExecutionStatus(Enum):
     INVALID = "invalid"
 
 
-_COMMIT_STATUS_MAP = {
-    ImportBatchCommitStatus.NOOP: SentinaxCanonicalCsvImportExecutionStatus.NOOP,
-    ImportBatchCommitStatus.APPENDED: SentinaxCanonicalCsvImportExecutionStatus.APPENDED,
-    ImportBatchCommitStatus.IDEMPOTENT_DUPLICATE: SentinaxCanonicalCsvImportExecutionStatus.IDEMPOTENT_DUPLICATE,
-    ImportBatchCommitStatus.CONFLICT: SentinaxCanonicalCsvImportExecutionStatus.CONFLICT,
-    ImportBatchCommitStatus.INVALID: SentinaxCanonicalCsvImportExecutionStatus.INVALID,
-}
+def _execution_status_from_commit_status(
+    status: ImportBatchCommitStatus,
+) -> SentinaxCanonicalCsvImportExecutionStatus:
+    """
+    Pure fail-closed converter from authoritative ImportBatchCommitStatus to SentinaxCanonicalCsvImportExecutionStatus.
+    """
+    if not isinstance(status, ImportBatchCommitStatus):
+        raise TypeError(
+            f"status must be an ImportBatchCommitStatus instance, got {type(status).__name__}"
+        )
+    try:
+        return SentinaxCanonicalCsvImportExecutionStatus(status.value)
+    except ValueError as e:
+        raise ValueError(
+            f"Unrecognized ImportBatchCommitStatus cannot be mapped to execution status: {status!r}"
+        ) from e
 
 
 @dataclass(frozen=True)
@@ -166,12 +175,51 @@ class SentinaxCanonicalCsvImportExecutionResult:
                     "binding_batch.materialization_batch does not match materialization_batch"
                 )
 
-            # Top-level status mapping check
-            expected_status = _COMMIT_STATUS_MAP.get(self.commit_result.status)
+            # Top-level status mapping check (via non-mutable fail-closed converter)
+            expected_status = _execution_status_from_commit_status(self.commit_result.status)
             if self.status != expected_status:
                 raise ValueError(
                     f"Top-level status {self.status.name} does not match commit_result status {self.commit_result.status.name}"
                 )
+
+            # Cross-stage commit coherence with binding_batch
+            binding_count = self.binding_batch.intent_count
+            if self.commit_result.status == ImportBatchCommitStatus.NOOP:
+                if binding_count != 0:
+                    raise ValueError(
+                        f"NOOP commit_result requires binding_batch.intent_count == 0, got {binding_count}"
+                    )
+            else:
+                if binding_count == 0:
+                    raise ValueError(
+                        f"{self.commit_result.status.name} commit_result requires binding_batch.intent_count > 0, got 0"
+                    )
+
+                if self.commit_result.status in (
+                    ImportBatchCommitStatus.APPENDED,
+                    ImportBatchCommitStatus.IDEMPOTENT_DUPLICATE,
+                ):
+                    if len(self.commit_result.transaction_ids) != binding_count:
+                        raise ValueError(
+                            f"{self.commit_result.status.name} transaction_ids count {len(self.commit_result.transaction_ids)} "
+                            f"does not match binding_batch.intent_count {binding_count}"
+                        )
+                    if len(self.commit_result.item_statuses) != binding_count:
+                        raise ValueError(
+                            f"{self.commit_result.status.name} item_statuses count {len(self.commit_result.item_statuses)} "
+                            f"does not match binding_batch.intent_count {binding_count}"
+                        )
+
+                elif self.commit_result.status in (
+                    ImportBatchCommitStatus.CONFLICT,
+                    ImportBatchCommitStatus.INVALID,
+                ):
+                    valid_ordinals = {i.record_ordinal for i in self.binding_batch.intents}
+                    if self.commit_result.problem_record_ordinal not in valid_ordinals:
+                        raise ValueError(
+                            f"{self.commit_result.status.name} problem_record_ordinal {self.commit_result.problem_record_ordinal} "
+                            f"is not present in binding_batch intent ordinals {sorted(valid_ordinals)}"
+                        )
 
     # ─── Audit Count Properties ──────────────────────────────────────────────
 
@@ -300,7 +348,7 @@ def execute_sentinax_canonical_csv_import_v1(
         binding_batch
     )
 
-    top_status = _COMMIT_STATUS_MAP[commit_result.status]
+    top_status = _execution_status_from_commit_status(commit_result.status)
 
     return SentinaxCanonicalCsvImportExecutionResult(
         status=top_status,

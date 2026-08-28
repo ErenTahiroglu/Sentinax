@@ -634,6 +634,400 @@ class TestResultContractAndDirectConstructor:
         assert res.commit_result.problem_record_ordinal == 1
         assert res.transaction_ids == ()
 
+    def test_17_nonempty_noop_tamper_rejected(self):
+        """17. Non-empty binding batch with NOOP commit result -> reject."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+        eff_date = date(2026, 8, 28)
+
+        res_batch = run_sentinax_canonical_csv_import_v1(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            filename="test.csv",
+            content=_make_csv(["buy,2026-08-28,2026-08-28T10:15:30+00:00,AAPL,10,150.00,USD,,,,,,"]),
+            imported_at=datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc),
+            resolver=MockInstrumentResolver(mapping={("AAPL", eff_date): [inst_id]}),
+        )
+        mat_batch = build_import_ledger_materialization_batch(res_batch)
+        bind_batch = build_import_ledger_binding_batch(mat_batch)
+        assert bind_batch.intent_count == 1
+
+        with pytest.raises(ValueError, match="NOOP commit_result requires binding_batch.intent_count == 0"):
+            SentinaxCanonicalCsvImportExecutionResult(
+                status=SentinaxCanonicalCsvImportExecutionStatus.NOOP,
+                resolution_batch=res_batch,
+                materialization_batch=mat_batch,
+                binding_batch=bind_batch,
+                commit_result=ImportBatchCommitResult(status=ImportBatchCommitStatus.NOOP),
+            )
+
+    def test_18_success_count_too_small_rejected(self):
+        """18. Binding batch intent_count = 2 with APPENDED commit result with 1 item -> reject."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+        eff_date = date(2026, 8, 28)
+
+        res_batch = run_sentinax_canonical_csv_import_v1(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            filename="test.csv",
+            content=_make_csv([
+                "buy,2026-08-28,2026-08-28T10:15:30+00:00,AAPL,10,150.00,USD,,,,,,",
+                "cash_deposit,2026-08-28,2026-08-28T10:15:30+00:00,,,,,1000.00,USD,,,,",
+            ]),
+            imported_at=datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc),
+            resolver=MockInstrumentResolver(mapping={("AAPL", eff_date): [inst_id]}),
+        )
+        mat_batch = build_import_ledger_materialization_batch(res_batch)
+        bind_batch = build_import_ledger_binding_batch(mat_batch)
+        assert bind_batch.intent_count == 2
+
+        with pytest.raises(ValueError, match="transaction_ids count 1 does not match binding_batch.intent_count 2"):
+            SentinaxCanonicalCsvImportExecutionResult(
+                status=SentinaxCanonicalCsvImportExecutionStatus.APPENDED,
+                resolution_batch=res_batch,
+                materialization_batch=mat_batch,
+                binding_batch=bind_batch,
+                commit_result=ImportBatchCommitResult(
+                    status=ImportBatchCommitStatus.APPENDED,
+                    transaction_ids=(uuid4(),),
+                    item_statuses=(ImportBatchItemCommitStatus.APPENDED,),
+                ),
+            )
+
+    def test_19_success_count_too_large_rejected(self):
+        """19. Binding batch intent_count = 1 with APPENDED commit result with 2 items -> reject."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+        eff_date = date(2026, 8, 28)
+
+        res_batch = run_sentinax_canonical_csv_import_v1(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            filename="test.csv",
+            content=_make_csv(["buy,2026-08-28,2026-08-28T10:15:30+00:00,AAPL,10,150.00,USD,,,,,,"]),
+            imported_at=datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc),
+            resolver=MockInstrumentResolver(mapping={("AAPL", eff_date): [inst_id]}),
+        )
+        mat_batch = build_import_ledger_materialization_batch(res_batch)
+        bind_batch = build_import_ledger_binding_batch(mat_batch)
+        assert bind_batch.intent_count == 1
+
+        with pytest.raises(ValueError, match="transaction_ids count 2 does not match binding_batch.intent_count 1"):
+            SentinaxCanonicalCsvImportExecutionResult(
+                status=SentinaxCanonicalCsvImportExecutionStatus.APPENDED,
+                resolution_batch=res_batch,
+                materialization_batch=mat_batch,
+                binding_batch=bind_batch,
+                commit_result=ImportBatchCommitResult(
+                    status=ImportBatchCommitStatus.APPENDED,
+                    transaction_ids=(uuid4(), uuid4()),
+                    item_statuses=(ImportBatchItemCommitStatus.APPENDED, ImportBatchItemCommitStatus.APPENDED),
+                ),
+            )
+
+    def test_20_idempotent_count_tamper_rejected(self):
+        """20. Binding batch intent_count = 2 with IDEMPOTENT_DUPLICATE commit result with 1 item -> reject."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+        eff_date = date(2026, 8, 28)
+
+        res_batch = run_sentinax_canonical_csv_import_v1(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            filename="test.csv",
+            content=_make_csv([
+                "buy,2026-08-28,2026-08-28T10:15:30+00:00,AAPL,10,150.00,USD,,,,,,",
+                "cash_deposit,2026-08-28,2026-08-28T10:15:30+00:00,,,,,1000.00,USD,,,,",
+            ]),
+            imported_at=datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc),
+            resolver=MockInstrumentResolver(mapping={("AAPL", eff_date): [inst_id]}),
+        )
+        mat_batch = build_import_ledger_materialization_batch(res_batch)
+        bind_batch = build_import_ledger_binding_batch(mat_batch)
+        assert bind_batch.intent_count == 2
+
+        with pytest.raises(ValueError, match="transaction_ids count 1 does not match binding_batch.intent_count 2"):
+            SentinaxCanonicalCsvImportExecutionResult(
+                status=SentinaxCanonicalCsvImportExecutionStatus.IDEMPOTENT_DUPLICATE,
+                resolution_batch=res_batch,
+                materialization_batch=mat_batch,
+                binding_batch=bind_batch,
+                commit_result=ImportBatchCommitResult(
+                    status=ImportBatchCommitStatus.IDEMPOTENT_DUPLICATE,
+                    transaction_ids=(uuid4(),),
+                    item_statuses=(ImportBatchItemCommitStatus.IDEMPOTENT_DUPLICATE,),
+                ),
+            )
+
+    def test_21_empty_binding_plus_appended_rejected(self):
+        """21. Empty binding batch with APPENDED commit result -> reject."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        res_batch = run_sentinax_canonical_csv_import_v1(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            filename="empty.csv",
+            content=f"{CANONICAL_HEADERS}\n".encode("utf-8"),
+            imported_at=datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc),
+            resolver=MockInstrumentResolver(),
+        )
+        mat_batch = build_import_ledger_materialization_batch(res_batch)
+        bind_batch = build_import_ledger_binding_batch(mat_batch)
+        assert bind_batch.intent_count == 0
+
+        with pytest.raises(ValueError, match="APPENDED commit_result requires binding_batch.intent_count > 0"):
+            SentinaxCanonicalCsvImportExecutionResult(
+                status=SentinaxCanonicalCsvImportExecutionStatus.APPENDED,
+                resolution_batch=res_batch,
+                materialization_batch=mat_batch,
+                binding_batch=bind_batch,
+                commit_result=ImportBatchCommitResult(
+                    status=ImportBatchCommitStatus.APPENDED,
+                    transaction_ids=(uuid4(),),
+                    item_statuses=(ImportBatchItemCommitStatus.APPENDED,),
+                ),
+            )
+
+    def test_22_empty_binding_plus_idempotent_rejected(self):
+        """22. Empty binding batch with IDEMPOTENT_DUPLICATE commit result -> reject."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        res_batch = run_sentinax_canonical_csv_import_v1(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            filename="empty.csv",
+            content=f"{CANONICAL_HEADERS}\n".encode("utf-8"),
+            imported_at=datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc),
+            resolver=MockInstrumentResolver(),
+        )
+        mat_batch = build_import_ledger_materialization_batch(res_batch)
+        bind_batch = build_import_ledger_binding_batch(mat_batch)
+        assert bind_batch.intent_count == 0
+
+        with pytest.raises(ValueError, match="IDEMPOTENT_DUPLICATE commit_result requires binding_batch.intent_count > 0"):
+            SentinaxCanonicalCsvImportExecutionResult(
+                status=SentinaxCanonicalCsvImportExecutionStatus.IDEMPOTENT_DUPLICATE,
+                resolution_batch=res_batch,
+                materialization_batch=mat_batch,
+                binding_batch=bind_batch,
+                commit_result=ImportBatchCommitResult(
+                    status=ImportBatchCommitStatus.IDEMPOTENT_DUPLICATE,
+                    transaction_ids=(uuid4(),),
+                    item_statuses=(ImportBatchItemCommitStatus.IDEMPOTENT_DUPLICATE,),
+                ),
+            )
+
+    def test_23_empty_binding_plus_conflict_rejected(self):
+        """23. Empty binding batch with CONFLICT commit result -> reject."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        res_batch = run_sentinax_canonical_csv_import_v1(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            filename="empty.csv",
+            content=f"{CANONICAL_HEADERS}\n".encode("utf-8"),
+            imported_at=datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc),
+            resolver=MockInstrumentResolver(),
+        )
+        mat_batch = build_import_ledger_materialization_batch(res_batch)
+        bind_batch = build_import_ledger_binding_batch(mat_batch)
+        assert bind_batch.intent_count == 0
+
+        with pytest.raises(ValueError, match="CONFLICT commit_result requires binding_batch.intent_count > 0"):
+            SentinaxCanonicalCsvImportExecutionResult(
+                status=SentinaxCanonicalCsvImportExecutionStatus.CONFLICT,
+                resolution_batch=res_batch,
+                materialization_batch=mat_batch,
+                binding_batch=bind_batch,
+                commit_result=ImportBatchCommitResult(
+                    status=ImportBatchCommitStatus.CONFLICT,
+                    problem_record_ordinal=1,
+                    conflict_transaction_id=uuid4(),
+                    diagnostics=("Conflict",),
+                ),
+            )
+
+    def test_24_empty_binding_plus_invalid_rejected(self):
+        """24. Empty binding batch with INVALID commit result -> reject."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        res_batch = run_sentinax_canonical_csv_import_v1(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            filename="empty.csv",
+            content=f"{CANONICAL_HEADERS}\n".encode("utf-8"),
+            imported_at=datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc),
+            resolver=MockInstrumentResolver(),
+        )
+        mat_batch = build_import_ledger_materialization_batch(res_batch)
+        bind_batch = build_import_ledger_binding_batch(mat_batch)
+        assert bind_batch.intent_count == 0
+
+        with pytest.raises(ValueError, match="INVALID commit_result requires binding_batch.intent_count > 0"):
+            SentinaxCanonicalCsvImportExecutionResult(
+                status=SentinaxCanonicalCsvImportExecutionStatus.INVALID,
+                resolution_batch=res_batch,
+                materialization_batch=mat_batch,
+                binding_batch=bind_batch,
+                commit_result=ImportBatchCommitResult(
+                    status=ImportBatchCommitStatus.INVALID,
+                    problem_record_ordinal=1,
+                    diagnostics=("Invalid",),
+                ),
+            )
+
+    def test_25_conflict_ordinal_tamper_rejected(self):
+        """25. Binding ordinals 1,3 with CONFLICT problem_record_ordinal 2 -> reject."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+        eff_date = date(2026, 8, 28)
+
+        res_batch = run_sentinax_canonical_csv_import_v1(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            filename="mixed.csv",
+            content=_make_csv([
+                "buy,2026-08-28,2026-08-28T10:15:30+00:00,AAPL,10,150.00,USD,,,,,,",
+                "buy,2026-08-28,2026-08-28T10:15:30+00:00,BAD,bad_qty,150.00,USD,,,,,,",
+                "cash_deposit,2026-08-28,2026-08-28T10:15:30+00:00,,,,,1000.00,USD,,,,",
+            ]),
+            imported_at=datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc),
+            resolver=MockInstrumentResolver(mapping={("AAPL", eff_date): [inst_id]}),
+        )
+        mat_batch = build_import_ledger_materialization_batch(res_batch)
+        bind_batch = build_import_ledger_binding_batch(mat_batch)
+        assert tuple(i.record_ordinal for i in bind_batch.intents) == (1, 3)
+
+        with pytest.raises(ValueError, match="problem_record_ordinal 2 is not present in binding_batch intent ordinals"):
+            SentinaxCanonicalCsvImportExecutionResult(
+                status=SentinaxCanonicalCsvImportExecutionStatus.CONFLICT,
+                resolution_batch=res_batch,
+                materialization_batch=mat_batch,
+                binding_batch=bind_batch,
+                commit_result=ImportBatchCommitResult(
+                    status=ImportBatchCommitStatus.CONFLICT,
+                    problem_record_ordinal=2,
+                    conflict_transaction_id=uuid4(),
+                    diagnostics=("Conflict",),
+                ),
+            )
+
+    def test_26_invalid_ordinal_tamper_rejected(self):
+        """26. Binding ordinals 1,3 with INVALID problem_record_ordinal 2 -> reject."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+        eff_date = date(2026, 8, 28)
+
+        res_batch = run_sentinax_canonical_csv_import_v1(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            filename="mixed.csv",
+            content=_make_csv([
+                "buy,2026-08-28,2026-08-28T10:15:30+00:00,AAPL,10,150.00,USD,,,,,,",
+                "buy,2026-08-28,2026-08-28T10:15:30+00:00,BAD,bad_qty,150.00,USD,,,,,,",
+                "cash_deposit,2026-08-28,2026-08-28T10:15:30+00:00,,,,,1000.00,USD,,,,",
+            ]),
+            imported_at=datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc),
+            resolver=MockInstrumentResolver(mapping={("AAPL", eff_date): [inst_id]}),
+        )
+        mat_batch = build_import_ledger_materialization_batch(res_batch)
+        bind_batch = build_import_ledger_binding_batch(mat_batch)
+        assert tuple(i.record_ordinal for i in bind_batch.intents) == (1, 3)
+
+        with pytest.raises(ValueError, match="problem_record_ordinal 2 is not present in binding_batch intent ordinals"):
+            SentinaxCanonicalCsvImportExecutionResult(
+                status=SentinaxCanonicalCsvImportExecutionStatus.INVALID,
+                resolution_batch=res_batch,
+                materialization_batch=mat_batch,
+                binding_batch=bind_batch,
+                commit_result=ImportBatchCommitResult(
+                    status=ImportBatchCommitStatus.INVALID,
+                    problem_record_ordinal=2,
+                    diagnostics=("Invalid",),
+                ),
+            )
+
+    def test_27_valid_conflict_ordinal_accepted(self):
+        """27. Binding ordinals 1,3 with CONFLICT problem_record_ordinal 3 -> accepted."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+        eff_date = date(2026, 8, 28)
+
+        res_batch = run_sentinax_canonical_csv_import_v1(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            filename="mixed.csv",
+            content=_make_csv([
+                "buy,2026-08-28,2026-08-28T10:15:30+00:00,AAPL,10,150.00,USD,,,,,,",
+                "buy,2026-08-28,2026-08-28T10:15:30+00:00,BAD,bad_qty,150.00,USD,,,,,,",
+                "cash_deposit,2026-08-28,2026-08-28T10:15:30+00:00,,,,,1000.00,USD,,,,",
+            ]),
+            imported_at=datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc),
+            resolver=MockInstrumentResolver(mapping={("AAPL", eff_date): [inst_id]}),
+        )
+        mat_batch = build_import_ledger_materialization_batch(res_batch)
+        bind_batch = build_import_ledger_binding_batch(mat_batch)
+        conf_tx_id = uuid4()
+
+        result = SentinaxCanonicalCsvImportExecutionResult(
+            status=SentinaxCanonicalCsvImportExecutionStatus.CONFLICT,
+            resolution_batch=res_batch,
+            materialization_batch=mat_batch,
+            binding_batch=bind_batch,
+            commit_result=ImportBatchCommitResult(
+                status=ImportBatchCommitStatus.CONFLICT,
+                problem_record_ordinal=3,
+                conflict_transaction_id=conf_tx_id,
+                diagnostics=("Conflict on record 3",),
+            ),
+        )
+        assert result.status == SentinaxCanonicalCsvImportExecutionStatus.CONFLICT
+        assert result.commit_result.problem_record_ordinal == 3
+
+    def test_28_valid_invalid_ordinal_accepted(self):
+        """28. Binding ordinals 1,3 with INVALID problem_record_ordinal 1 -> accepted."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+        eff_date = date(2026, 8, 28)
+
+        res_batch = run_sentinax_canonical_csv_import_v1(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            filename="mixed.csv",
+            content=_make_csv([
+                "buy,2026-08-28,2026-08-28T10:15:30+00:00,AAPL,10,150.00,USD,,,,,,",
+                "buy,2026-08-28,2026-08-28T10:15:30+00:00,BAD,bad_qty,150.00,USD,,,,,,",
+                "cash_deposit,2026-08-28,2026-08-28T10:15:30+00:00,,,,,1000.00,USD,,,,",
+            ]),
+            imported_at=datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc),
+            resolver=MockInstrumentResolver(mapping={("AAPL", eff_date): [inst_id]}),
+        )
+        mat_batch = build_import_ledger_materialization_batch(res_batch)
+        bind_batch = build_import_ledger_binding_batch(mat_batch)
+
+        result = SentinaxCanonicalCsvImportExecutionResult(
+            status=SentinaxCanonicalCsvImportExecutionStatus.INVALID,
+            resolution_batch=res_batch,
+            materialization_batch=mat_batch,
+            binding_batch=bind_batch,
+            commit_result=ImportBatchCommitResult(
+                status=ImportBatchCommitStatus.INVALID,
+                problem_record_ordinal=1,
+                diagnostics=("Invalid on record 1",),
+            ),
+        )
+        assert result.status == SentinaxCanonicalCsvImportExecutionStatus.INVALID
+        assert result.commit_result.problem_record_ordinal == 1
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 56. Count Property Tests (J-P)
@@ -1308,6 +1702,36 @@ class TestStaticPurityAndInvariants:
         assert ".table(" not in src
         assert "PostgREST" not in src
         assert "Supabase" not in src
+
+    def test_29_no_mutable_status_map_in_production_source(self):
+        """29. Verify no mutable _COMMIT_STATUS_MAP exists in production module."""
+        src = inspect.getsource(exec_module)
+        assert "_COMMIT_STATUS_MAP" not in src
+        assert not hasattr(exec_module, "_COMMIT_STATUS_MAP")
+
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        assert not target.id.endswith("_MAP"), f"Found forbidden map constant: {target.id}"
+
+    def test_30_status_conversion_strictness(self):
+        """30. Verify exact fail-closed status conversion for all 5 Phase 13R statuses."""
+        from backend.engine.private.portfolio.sentinax_csv_import_execution import (
+            _execution_status_from_commit_status,
+        )
+        assert _execution_status_from_commit_status(ImportBatchCommitStatus.NOOP) == SentinaxCanonicalCsvImportExecutionStatus.NOOP
+        assert _execution_status_from_commit_status(ImportBatchCommitStatus.APPENDED) == SentinaxCanonicalCsvImportExecutionStatus.APPENDED
+        assert _execution_status_from_commit_status(ImportBatchCommitStatus.IDEMPOTENT_DUPLICATE) == SentinaxCanonicalCsvImportExecutionStatus.IDEMPOTENT_DUPLICATE
+        assert _execution_status_from_commit_status(ImportBatchCommitStatus.CONFLICT) == SentinaxCanonicalCsvImportExecutionStatus.CONFLICT
+        assert _execution_status_from_commit_status(ImportBatchCommitStatus.INVALID) == SentinaxCanonicalCsvImportExecutionStatus.INVALID
+
+        with pytest.raises(TypeError):
+            _execution_status_from_commit_status("appended")  # type: ignore
+
+        with pytest.raises(TypeError):
+            _execution_status_from_commit_status(None)  # type: ignore
 
 
 # ─────────────────────────────────────────────────────────────────────────────
