@@ -875,14 +875,14 @@ class TestRegressionsAndInvariants:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 13. Phase 13L.1 Fixed-Metadata Immutability Hardening
+# 13. Phase 13L.1 / 13L.2 Fixed-Metadata Immutability & Subclass Bypass Hardening
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestFixedMetadataImmutabilityHardening:
-    """Tests for Phase 13L.1 fixed metadata immutability and bypass prevention."""
+    """Tests for Phase 13L.1/13L.2 fixed metadata immutability and bypass prevention."""
 
-    def test_metadata_attributes_immutable(self):
-        """Section 10: Mutating source_key, parser_revision, or semantic_revision raises AttributeError."""
+    def test_instance_metadata_assignment_rejected(self):
+        """A-C: Mutating source_key, parser_revision, or semantic_revision on instance raises AttributeError."""
         interpreter = SentinaxCanonicalCsvSemanticInterpreterV1()
 
         with pytest.raises(AttributeError):
@@ -899,13 +899,66 @@ class TestFixedMetadataImmutabilityHardening:
         assert interpreter.parser_revision == 1
         assert interpreter.semantic_revision == 1
 
+    def test_class_metadata_assignment_rejected(self):
+        """D-F: Mutating source_key, parser_revision, or semantic_revision on class raises AttributeError."""
+        with pytest.raises(AttributeError):
+            SentinaxCanonicalCsvSemanticInterpreterV1.source_key = "evil_source"  # type: ignore
+
+        with pytest.raises(AttributeError):
+            SentinaxCanonicalCsvSemanticInterpreterV1.parser_revision = 999  # type: ignore
+
+        with pytest.raises(AttributeError):
+            SentinaxCanonicalCsvSemanticInterpreterV1.semantic_revision = 999  # type: ignore
+
+        # Verify values remain unchanged
+        assert SentinaxCanonicalCsvSemanticInterpreterV1.source_key == "sentinax_csv"
+        assert SentinaxCanonicalCsvSemanticInterpreterV1.parser_revision == 1
+        assert SentinaxCanonicalCsvSemanticInterpreterV1.semantic_revision == 1
+
+    def test_class_metadata_deletion_rejected(self):
+        """G-I: Deleting source_key, parser_revision, or semantic_revision on class raises AttributeError."""
+        with pytest.raises(AttributeError):
+            del SentinaxCanonicalCsvSemanticInterpreterV1.source_key  # type: ignore
+
+        with pytest.raises(AttributeError):
+            del SentinaxCanonicalCsvSemanticInterpreterV1.parser_revision  # type: ignore
+
+        with pytest.raises(AttributeError):
+            del SentinaxCanonicalCsvSemanticInterpreterV1.semantic_revision  # type: ignore
+
+        # Verify values remain present and unchanged
+        assert SentinaxCanonicalCsvSemanticInterpreterV1.source_key == "sentinax_csv"
+        assert SentinaxCanonicalCsvSemanticInterpreterV1.parser_revision == 1
+        assert SentinaxCanonicalCsvSemanticInterpreterV1.semantic_revision == 1
+
+    def test_subclass_creation_rejected(self):
+        """J-K: Attempting to subclass SentinaxCanonicalCsvSemanticInterpreterV1 raises TypeError."""
+        with pytest.raises(TypeError, match="cannot be subclassed"):
+            class EvilSourceInterpreter(SentinaxCanonicalCsvSemanticInterpreterV1):
+                source_key = "foreign_source"
+
+        with pytest.raises(TypeError, match="cannot be subclassed"):
+            class Revision2Interpreter(SentinaxCanonicalCsvSemanticInterpreterV1):
+                parser_revision = 2
+
     def test_slots_prevents_instance_dict(self):
-        """Section 8: Interpreter has __slots__ = () and no mutable __dict__."""
+        """L: Interpreter has __slots__ = () and no mutable __dict__."""
         interpreter = SentinaxCanonicalCsvSemanticInterpreterV1()
         assert not hasattr(interpreter, "__dict__")
 
+    def test_metadata_values_exact(self):
+        """M-N: Newly created interpreter instance and class report exact fixed metadata."""
+        interpreter = SentinaxCanonicalCsvSemanticInterpreterV1()
+        assert interpreter.source_key == "sentinax_csv"
+        assert interpreter.parser_revision == 1
+        assert interpreter.semantic_revision == 1
+
+        assert SentinaxCanonicalCsvSemanticInterpreterV1.source_key == "sentinax_csv"
+        assert SentinaxCanonicalCsvSemanticInterpreterV1.parser_revision == 1
+        assert SentinaxCanonicalCsvSemanticInterpreterV1.semantic_revision == 1
+
     def test_foreign_source_bypass_red_team(self):
-        """Section 11: Foreign source cannot bypass interpreter gate."""
+        """O: Foreign source cannot bypass interpreter gate even after attempted mutations."""
         interpreter = SentinaxCanonicalCsvSemanticInterpreterV1()
 
         class ForeignSourceParser(SentinaxCanonicalCsvParserV1):
@@ -925,11 +978,14 @@ class TestFixedMetadataImmutabilityHardening:
         with pytest.raises(AttributeError):
             interpreter.source_key = "foreign_source"  # type: ignore
 
+        with pytest.raises(AttributeError):
+            SentinaxCanonicalCsvSemanticInterpreterV1.source_key = "foreign_source"  # type: ignore
+
         with pytest.raises(SentinaxCanonicalCsvSemanticError, match="source_key"):
             interpreter.interpret(staging.parsed_manifest)
 
     def test_parser_revision_2_bypass_red_team(self):
-        """Section 12: Parser revision 2 cannot bypass interpreter gate."""
+        """P: Parser revision 2 cannot bypass interpreter gate even after attempted mutations."""
         interpreter = SentinaxCanonicalCsvSemanticInterpreterV1()
 
         class Revision2Parser(SentinaxCanonicalCsvParserV1):
@@ -949,12 +1005,20 @@ class TestFixedMetadataImmutabilityHardening:
         with pytest.raises(AttributeError):
             interpreter.parser_revision = 2  # type: ignore
 
+        with pytest.raises(AttributeError):
+            SentinaxCanonicalCsvSemanticInterpreterV1.parser_revision = 2  # type: ignore
+
         with pytest.raises(SentinaxCanonicalCsvSemanticError, match="parser_revision"):
             interpreter.interpret(staging.parsed_manifest)
 
-    def test_class_contract_defaults(self):
-        """Section 13: Newly created interpreter always has exact fixed metadata."""
+    def test_valid_buy_hash_stability(self):
+        """Q-S: Valid BUY assessment SHA, draft SHA, and draft-manifest SHA are deterministic and stable."""
+        csv = _make_single_row_csv()
+        parsed = _parse_csv_bytes(csv)
         interpreter = SentinaxCanonicalCsvSemanticInterpreterV1()
-        assert interpreter.source_key == "sentinax_csv"
-        assert interpreter.parser_revision == 1
-        assert interpreter.semantic_revision == 1
+        manifest = interpreter.interpret(parsed)
+
+        assert manifest.draft_count == 1
+        assert len(manifest.assessment_batch.assessment_manifest_sha256) == 64
+        assert len(manifest.drafts[0].draft_sha256) == 64
+        assert len(manifest.draft_manifest_sha256) == 64
