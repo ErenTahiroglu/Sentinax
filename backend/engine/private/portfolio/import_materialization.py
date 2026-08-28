@@ -74,6 +74,44 @@ def _canonical_datetime_str(dt: Optional[datetime]) -> Optional[str]:
     return utc_dt.isoformat()
 
 
+def _decimal_storage_equal(
+    actual: Any,
+    expected: Optional[Decimal],
+) -> bool:
+    """
+    Returns True iff actual and expected have identical Decimal storage representation.
+    Fails closed on non-Decimal types (int, float, str, bool) and None mismatches.
+    """
+    if actual is None or expected is None:
+        return actual is None and expected is None
+    if isinstance(actual, bool) or type(actual) is not Decimal:
+        return False
+    if isinstance(expected, bool) or type(expected) is not Decimal:
+        return False
+    return actual.as_tuple() == expected.as_tuple()
+
+
+def _datetime_storage_equal(
+    actual: Any,
+    expected: Optional[datetime],
+) -> bool:
+    """
+    Returns True iff actual and expected have identical timezone-aware datetime representation.
+    Fails closed on non-datetime types (date, str, bool) and None mismatches.
+    """
+    if actual is None or expected is None:
+        return actual is None and expected is None
+    if isinstance(actual, bool) or type(actual) is not datetime:
+        return False
+    if isinstance(expected, bool) or type(expected) is not datetime:
+        return False
+    if actual.tzinfo is None or actual.tzinfo.utcoffset(actual) is None:
+        return False
+    if expected.tzinfo is None or expected.tzinfo.utcoffset(expected) is None:
+        return False
+    return actual.isoformat() == expected.isoformat()
+
+
 def _compute_plan_sha256(
     resolution: ImportInstrumentResolution,
     portfolio_id: UUID,
@@ -184,9 +222,9 @@ class ImportLedgerTransactionPlan:
             raise PortfolioImportMaterializationError(
                 f"effective_date {self.effective_date} does not match draft {draft.effective_date}"
             )
-        if self.executed_at != draft.executed_at:
+        if not _datetime_storage_equal(self.executed_at, draft.executed_at):
             raise PortfolioImportMaterializationError(
-                f"executed_at {self.executed_at} does not match draft {draft.executed_at}"
+                f"executed_at {self.executed_at!r} does not match draft {draft.executed_at!r}"
             )
 
         # Instrument ID verification
@@ -202,24 +240,24 @@ class ImportLedgerTransactionPlan:
                 )
 
         # Economics verification
-        if self.quantity != draft.quantity:
-            raise PortfolioImportMaterializationError(f"quantity {self.quantity} does not match draft {draft.quantity}")
-        if self.unit_price != draft.unit_price:
-            raise PortfolioImportMaterializationError(f"unit_price {self.unit_price} does not match draft {draft.unit_price}")
+        if not _decimal_storage_equal(self.quantity, draft.quantity):
+            raise PortfolioImportMaterializationError(f"quantity {self.quantity!r} does not match draft {draft.quantity!r}")
+        if not _decimal_storage_equal(self.unit_price, draft.unit_price):
+            raise PortfolioImportMaterializationError(f"unit_price {self.unit_price!r} does not match draft {draft.unit_price!r}")
         if self.trade_currency != draft.trade_currency:
             raise PortfolioImportMaterializationError(f"trade_currency {self.trade_currency} does not match draft {draft.trade_currency}")
-        if self.cash_amount != draft.cash_amount:
-            raise PortfolioImportMaterializationError(f"cash_amount {self.cash_amount} does not match draft {draft.cash_amount}")
+        if not _decimal_storage_equal(self.cash_amount, draft.cash_amount):
+            raise PortfolioImportMaterializationError(f"cash_amount {self.cash_amount!r} does not match draft {draft.cash_amount!r}")
         if self.cash_currency != draft.cash_currency:
             raise PortfolioImportMaterializationError(f"cash_currency {self.cash_currency} does not match draft {draft.cash_currency}")
         if self.from_currency != draft.from_currency:
             raise PortfolioImportMaterializationError(f"from_currency {self.from_currency} does not match draft {draft.from_currency}")
-        if self.from_amount != draft.from_amount:
-            raise PortfolioImportMaterializationError(f"from_amount {self.from_amount} does not match draft {draft.from_amount}")
+        if not _decimal_storage_equal(self.from_amount, draft.from_amount):
+            raise PortfolioImportMaterializationError(f"from_amount {self.from_amount!r} does not match draft {draft.from_amount!r}")
         if self.to_currency != draft.to_currency:
             raise PortfolioImportMaterializationError(f"to_currency {self.to_currency} does not match draft {draft.to_currency}")
-        if self.to_amount != draft.to_amount:
-            raise PortfolioImportMaterializationError(f"to_amount {self.to_amount} does not match draft {draft.to_amount}")
+        if not _decimal_storage_equal(self.to_amount, draft.to_amount):
+            raise PortfolioImportMaterializationError(f"to_amount {self.to_amount!r} does not match draft {draft.to_amount!r}")
 
         # Plan SHA verification
         if isinstance(self.plan_sha256, bool) or not isinstance(self.plan_sha256, str):

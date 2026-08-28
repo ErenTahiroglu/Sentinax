@@ -734,6 +734,656 @@ class TestDirectTamperMatrix:
                 plan_sha256=sha,
             )
 
+    def test_tampered_quantity_quantum_rejected(self):
+        """Phase 13N.1: Stored quantity Decimal('10.00') vs tampered Decimal('10') rejected."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+        eff_date = date(2026, 8, 28)
+        imported_at = datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc)
+
+        _, draft = _make_assessment_and_draft(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            ordinal=1,
+            imported_at=imported_at,
+            transaction_type=TransactionType.BUY,
+            effective_date=eff_date,
+            instrument_reference="AAPL",
+            quantity=Decimal("10.00"),
+            unit_price=Decimal("150.00"),
+            trade_currency=Currency.USD,
+        )
+
+        res = build_import_instrument_resolution(
+            draft=draft,
+            status=ImportInstrumentResolutionStatus.RESOLVED,
+            resolution_as_of_date=eff_date,
+            resolver_key="mock",
+            resolver_revision=1,
+            instrument_id=inst_id,
+        )
+
+        # Recomputed hash with Decimal("10") is identical to Decimal("10.00") due to canonicalization
+        sha = _compute_plan_sha256(
+            resolution=res,
+            portfolio_id=port_id,
+            account_id=acc_id,
+            transaction_type=TransactionType.BUY,
+            effective_date=eff_date,
+            executed_at=None,
+            instrument_id=inst_id,
+            quantity=Decimal("10"),
+            unit_price=Decimal("150.00"),
+            trade_currency=Currency.USD,
+            cash_amount=None,
+            cash_currency=None,
+            from_currency=None,
+            from_amount=None,
+            to_currency=None,
+            to_amount=None,
+        )
+
+        with pytest.raises(PortfolioImportMaterializationError, match="quantity"):
+            ImportLedgerTransactionPlan(
+                resolution=res,
+                portfolio_id=port_id,
+                account_id=acc_id,
+                transaction_type=TransactionType.BUY,
+                effective_date=eff_date,
+                executed_at=None,
+                instrument_id=inst_id,
+                quantity=Decimal("10"),
+                unit_price=Decimal("150.00"),
+                trade_currency=Currency.USD,
+                cash_amount=None,
+                cash_currency=None,
+                from_currency=None,
+                from_amount=None,
+                to_currency=None,
+                to_amount=None,
+                plan_sha256=sha,
+            )
+
+    def test_tampered_unit_price_quantum_rejected(self):
+        """Phase 13N.1: Stored unit_price Decimal('150.00') vs Decimal('150') rejected."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+        eff_date = date(2026, 8, 28)
+        imported_at = datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc)
+
+        _, draft = _make_assessment_and_draft(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            ordinal=1,
+            imported_at=imported_at,
+            transaction_type=TransactionType.BUY,
+            effective_date=eff_date,
+            instrument_reference="AAPL",
+            quantity=Decimal("10.00"),
+            unit_price=Decimal("150.00"),
+            trade_currency=Currency.USD,
+        )
+
+        res = build_import_instrument_resolution(
+            draft=draft,
+            status=ImportInstrumentResolutionStatus.RESOLVED,
+            resolution_as_of_date=eff_date,
+            resolver_key="mock",
+            resolver_revision=1,
+            instrument_id=inst_id,
+        )
+
+        sha = _compute_plan_sha256(
+            resolution=res,
+            portfolio_id=port_id,
+            account_id=acc_id,
+            transaction_type=TransactionType.BUY,
+            effective_date=eff_date,
+            executed_at=None,
+            instrument_id=inst_id,
+            quantity=Decimal("10.00"),
+            unit_price=Decimal("150"),
+            trade_currency=Currency.USD,
+            cash_amount=None,
+            cash_currency=None,
+            from_currency=None,
+            from_amount=None,
+            to_currency=None,
+            to_amount=None,
+        )
+
+        with pytest.raises(PortfolioImportMaterializationError, match="unit_price"):
+            ImportLedgerTransactionPlan(
+                resolution=res,
+                portfolio_id=port_id,
+                account_id=acc_id,
+                transaction_type=TransactionType.BUY,
+                effective_date=eff_date,
+                executed_at=None,
+                instrument_id=inst_id,
+                quantity=Decimal("10.00"),
+                unit_price=Decimal("150"),
+                trade_currency=Currency.USD,
+                cash_amount=None,
+                cash_currency=None,
+                from_currency=None,
+                from_amount=None,
+                to_currency=None,
+                to_amount=None,
+                plan_sha256=sha,
+            )
+
+    def test_tampered_cash_amount_quantum_rejected(self):
+        """Phase 13N.1: Stored cash_amount Decimal('1000.00') vs Decimal('1000') rejected."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        eff_date = date(2026, 8, 28)
+        imported_at = datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc)
+
+        _, draft = _make_assessment_and_draft(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            ordinal=1,
+            imported_at=imported_at,
+            transaction_type=TransactionType.CASH_DEPOSIT,
+            effective_date=eff_date,
+            cash_amount=Decimal("1000.00"),
+            cash_currency=Currency.TRY,
+        )
+
+        res = build_import_instrument_resolution(
+            draft=draft,
+            status=ImportInstrumentResolutionStatus.NOT_REQUIRED,
+            resolution_as_of_date=eff_date,
+        )
+
+        sha = _compute_plan_sha256(
+            resolution=res,
+            portfolio_id=port_id,
+            account_id=acc_id,
+            transaction_type=TransactionType.CASH_DEPOSIT,
+            effective_date=eff_date,
+            executed_at=None,
+            instrument_id=None,
+            quantity=None,
+            unit_price=None,
+            trade_currency=None,
+            cash_amount=Decimal("1000"),
+            cash_currency=Currency.TRY,
+            from_currency=None,
+            from_amount=None,
+            to_currency=None,
+            to_amount=None,
+        )
+
+        with pytest.raises(PortfolioImportMaterializationError, match="cash_amount"):
+            ImportLedgerTransactionPlan(
+                resolution=res,
+                portfolio_id=port_id,
+                account_id=acc_id,
+                transaction_type=TransactionType.CASH_DEPOSIT,
+                effective_date=eff_date,
+                executed_at=None,
+                instrument_id=None,
+                quantity=None,
+                unit_price=None,
+                trade_currency=None,
+                cash_amount=Decimal("1000"),
+                cash_currency=Currency.TRY,
+                from_currency=None,
+                from_amount=None,
+                to_currency=None,
+                to_amount=None,
+                plan_sha256=sha,
+            )
+
+    def test_tampered_fx_amounts_quantum_rejected(self):
+        """Phase 13N.1: Stored FX from_amount / to_amount quantum tampering rejected."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        eff_date = date(2026, 8, 28)
+        imported_at = datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc)
+
+        _, draft = _make_assessment_and_draft(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            ordinal=1,
+            imported_at=imported_at,
+            transaction_type=TransactionType.FX_CONVERSION,
+            effective_date=eff_date,
+            from_currency=Currency.USD,
+            from_amount=Decimal("100.00"),
+            to_currency=Currency.TRY,
+            to_amount=Decimal("3200.00"),
+        )
+
+        res = build_import_instrument_resolution(
+            draft=draft,
+            status=ImportInstrumentResolutionStatus.NOT_REQUIRED,
+            resolution_as_of_date=eff_date,
+        )
+
+        # Tamper from_amount
+        sha1 = _compute_plan_sha256(
+            resolution=res,
+            portfolio_id=port_id,
+            account_id=acc_id,
+            transaction_type=TransactionType.FX_CONVERSION,
+            effective_date=eff_date,
+            executed_at=None,
+            instrument_id=None,
+            quantity=None,
+            unit_price=None,
+            trade_currency=None,
+            cash_amount=None,
+            cash_currency=None,
+            from_currency=Currency.USD,
+            from_amount=Decimal("100"),
+            to_currency=Currency.TRY,
+            to_amount=Decimal("3200.00"),
+        )
+        with pytest.raises(PortfolioImportMaterializationError, match="from_amount"):
+            ImportLedgerTransactionPlan(
+                resolution=res,
+                portfolio_id=port_id,
+                account_id=acc_id,
+                transaction_type=TransactionType.FX_CONVERSION,
+                effective_date=eff_date,
+                executed_at=None,
+                instrument_id=None,
+                quantity=None,
+                unit_price=None,
+                trade_currency=None,
+                cash_amount=None,
+                cash_currency=None,
+                from_currency=Currency.USD,
+                from_amount=Decimal("100"),
+                to_currency=Currency.TRY,
+                to_amount=Decimal("3200.00"),
+                plan_sha256=sha1,
+            )
+
+        # Tamper to_amount
+        sha2 = _compute_plan_sha256(
+            resolution=res,
+            portfolio_id=port_id,
+            account_id=acc_id,
+            transaction_type=TransactionType.FX_CONVERSION,
+            effective_date=eff_date,
+            executed_at=None,
+            instrument_id=None,
+            quantity=None,
+            unit_price=None,
+            trade_currency=None,
+            cash_amount=None,
+            cash_currency=None,
+            from_currency=Currency.USD,
+            from_amount=Decimal("100.00"),
+            to_currency=Currency.TRY,
+            to_amount=Decimal("3200"),
+        )
+        with pytest.raises(PortfolioImportMaterializationError, match="to_amount"):
+            ImportLedgerTransactionPlan(
+                resolution=res,
+                portfolio_id=port_id,
+                account_id=acc_id,
+                transaction_type=TransactionType.FX_CONVERSION,
+                effective_date=eff_date,
+                executed_at=None,
+                instrument_id=None,
+                quantity=None,
+                unit_price=None,
+                trade_currency=None,
+                cash_amount=None,
+                cash_currency=None,
+                from_currency=Currency.USD,
+                from_amount=Decimal("100.00"),
+                to_currency=Currency.TRY,
+                to_amount=Decimal("3200"),
+                plan_sha256=sha2,
+            )
+
+    def test_tampered_exponent_representation_rejected(self):
+        """Phase 13N.1: Decimal('10') vs Decimal('1E+1') rejected."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+        eff_date = date(2026, 8, 28)
+        imported_at = datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc)
+
+        _, draft = _make_assessment_and_draft(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            ordinal=1,
+            imported_at=imported_at,
+            transaction_type=TransactionType.BUY,
+            effective_date=eff_date,
+            instrument_reference="AAPL",
+            quantity=Decimal("10"),
+            unit_price=Decimal("150.00"),
+            trade_currency=Currency.USD,
+        )
+
+        res = build_import_instrument_resolution(
+            draft=draft,
+            status=ImportInstrumentResolutionStatus.RESOLVED,
+            resolution_as_of_date=eff_date,
+            resolver_key="mock",
+            resolver_revision=1,
+            instrument_id=inst_id,
+        )
+
+        sha = _compute_plan_sha256(
+            resolution=res,
+            portfolio_id=port_id,
+            account_id=acc_id,
+            transaction_type=TransactionType.BUY,
+            effective_date=eff_date,
+            executed_at=None,
+            instrument_id=inst_id,
+            quantity=Decimal("1E+1"),
+            unit_price=Decimal("150.00"),
+            trade_currency=Currency.USD,
+            cash_amount=None,
+            cash_currency=None,
+            from_currency=None,
+            from_amount=None,
+            to_currency=None,
+            to_amount=None,
+        )
+
+        with pytest.raises(PortfolioImportMaterializationError, match="quantity"):
+            ImportLedgerTransactionPlan(
+                resolution=res,
+                portfolio_id=port_id,
+                account_id=acc_id,
+                transaction_type=TransactionType.BUY,
+                effective_date=eff_date,
+                executed_at=None,
+                instrument_id=inst_id,
+                quantity=Decimal("1E+1"),
+                unit_price=Decimal("150.00"),
+                trade_currency=Currency.USD,
+                cash_amount=None,
+                cash_currency=None,
+                from_currency=None,
+                from_amount=None,
+                to_currency=None,
+                to_amount=None,
+                plan_sha256=sha,
+            )
+
+    def test_integer_and_float_type_confusion_rejected(self):
+        """Phase 13N.1: int and float quantity rejected despite Python equality."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+        eff_date = date(2026, 8, 28)
+        imported_at = datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc)
+
+        _, draft = _make_assessment_and_draft(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            ordinal=1,
+            imported_at=imported_at,
+            transaction_type=TransactionType.BUY,
+            effective_date=eff_date,
+            instrument_reference="AAPL",
+            quantity=Decimal("10"),
+            unit_price=Decimal("150.00"),
+            trade_currency=Currency.USD,
+        )
+
+        res = build_import_instrument_resolution(
+            draft=draft,
+            status=ImportInstrumentResolutionStatus.RESOLVED,
+            resolution_as_of_date=eff_date,
+            resolver_key="mock",
+            resolver_revision=1,
+            instrument_id=inst_id,
+        )
+
+        # int 10
+        with pytest.raises(PortfolioImportMaterializationError, match="quantity"):
+            ImportLedgerTransactionPlan(
+                resolution=res,
+                portfolio_id=port_id,
+                account_id=acc_id,
+                transaction_type=TransactionType.BUY,
+                effective_date=eff_date,
+                executed_at=None,
+                instrument_id=inst_id,
+                quantity=10,  # type: ignore[arg-type]
+                unit_price=Decimal("150.00"),
+                trade_currency=Currency.USD,
+                cash_amount=None,
+                cash_currency=None,
+                from_currency=None,
+                from_amount=None,
+                to_currency=None,
+                to_amount=None,
+                plan_sha256="0" * 64,
+            )
+
+        # float 10.0
+        with pytest.raises(PortfolioImportMaterializationError, match="quantity"):
+            ImportLedgerTransactionPlan(
+                resolution=res,
+                portfolio_id=port_id,
+                account_id=acc_id,
+                transaction_type=TransactionType.BUY,
+                effective_date=eff_date,
+                executed_at=None,
+                instrument_id=inst_id,
+                quantity=10.0,  # type: ignore[arg-type]
+                unit_price=Decimal("150.00"),
+                trade_currency=Currency.USD,
+                cash_amount=None,
+                cash_currency=None,
+                from_currency=None,
+                from_amount=None,
+                to_currency=None,
+                to_amount=None,
+                plan_sha256="0" * 64,
+            )
+
+    def test_datetime_timezone_representation_tamper_rejected(self):
+        """Phase 13N.1: Timezone offset representation tamper rejected (same instant, different offset)."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+        eff_date = date(2026, 8, 28)
+        imported_at = datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc)
+        exec_at_utc = datetime(2026, 8, 28, 10, 15, 30, tzinfo=timezone.utc)
+
+        from datetime import timedelta, timezone as dt_tz
+        tz_plus_3 = dt_tz(timedelta(hours=3))
+        exec_at_plus_3 = datetime(2026, 8, 28, 13, 15, 30, tzinfo=tz_plus_3)
+
+        assert exec_at_utc == exec_at_plus_3  # same instant!
+
+        _, draft = _make_assessment_and_draft(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            ordinal=1,
+            imported_at=imported_at,
+            transaction_type=TransactionType.BUY,
+            effective_date=eff_date,
+            executed_at=exec_at_utc,
+            instrument_reference="AAPL",
+            quantity=Decimal("10.00"),
+            unit_price=Decimal("150.00"),
+            trade_currency=Currency.USD,
+        )
+
+        res = build_import_instrument_resolution(
+            draft=draft,
+            status=ImportInstrumentResolutionStatus.RESOLVED,
+            resolution_as_of_date=eff_date,
+            resolver_key="mock",
+            resolver_revision=1,
+            instrument_id=inst_id,
+        )
+
+        # Plan SHA computed with exec_at_plus_3 hashes to same UTC canonical instant
+        sha = _compute_plan_sha256(
+            resolution=res,
+            portfolio_id=port_id,
+            account_id=acc_id,
+            transaction_type=TransactionType.BUY,
+            effective_date=eff_date,
+            executed_at=exec_at_plus_3,
+            instrument_id=inst_id,
+            quantity=Decimal("10.00"),
+            unit_price=Decimal("150.00"),
+            trade_currency=Currency.USD,
+            cash_amount=None,
+            cash_currency=None,
+            from_currency=None,
+            from_amount=None,
+            to_currency=None,
+            to_amount=None,
+        )
+
+        with pytest.raises(PortfolioImportMaterializationError, match="executed_at"):
+            ImportLedgerTransactionPlan(
+                resolution=res,
+                portfolio_id=port_id,
+                account_id=acc_id,
+                transaction_type=TransactionType.BUY,
+                effective_date=eff_date,
+                executed_at=exec_at_plus_3,
+                instrument_id=inst_id,
+                quantity=Decimal("10.00"),
+                unit_price=Decimal("150.00"),
+                trade_currency=Currency.USD,
+                cash_amount=None,
+                cash_currency=None,
+                from_currency=None,
+                from_amount=None,
+                to_currency=None,
+                to_amount=None,
+                plan_sha256=sha,
+            )
+
+    def test_datetime_same_representation_reconstruction_accepted(self):
+        """Phase 13N.1: Reconstructed datetime with identical ISO representation accepted."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+        eff_date = date(2026, 8, 28)
+        imported_at = datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc)
+        exec_at1 = datetime(2026, 8, 28, 10, 15, 30, tzinfo=timezone.utc)
+        exec_at2 = datetime.fromisoformat("2026-08-28T10:15:30+00:00")
+
+        assert exec_at1 is not exec_at2
+
+        _, draft = _make_assessment_and_draft(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            ordinal=1,
+            imported_at=imported_at,
+            transaction_type=TransactionType.BUY,
+            effective_date=eff_date,
+            executed_at=exec_at1,
+            instrument_reference="AAPL",
+            quantity=Decimal("10.00"),
+            unit_price=Decimal("150.00"),
+            trade_currency=Currency.USD,
+        )
+
+        res = build_import_instrument_resolution(
+            draft=draft,
+            status=ImportInstrumentResolutionStatus.RESOLVED,
+            resolution_as_of_date=eff_date,
+            resolver_key="mock",
+            resolver_revision=1,
+            instrument_id=inst_id,
+        )
+
+        sha = _compute_plan_sha256(
+            resolution=res,
+            portfolio_id=port_id,
+            account_id=acc_id,
+            transaction_type=TransactionType.BUY,
+            effective_date=eff_date,
+            executed_at=exec_at2,
+            instrument_id=inst_id,
+            quantity=Decimal("10.00"),
+            unit_price=Decimal("150.00"),
+            trade_currency=Currency.USD,
+            cash_amount=None,
+            cash_currency=None,
+            from_currency=None,
+            from_amount=None,
+            to_currency=None,
+            to_amount=None,
+        )
+
+        plan = ImportLedgerTransactionPlan(
+            resolution=res,
+            portfolio_id=port_id,
+            account_id=acc_id,
+            transaction_type=TransactionType.BUY,
+            effective_date=eff_date,
+            executed_at=exec_at2,
+            instrument_id=inst_id,
+            quantity=Decimal("10.00"),
+            unit_price=Decimal("150.00"),
+            trade_currency=Currency.USD,
+            cash_amount=None,
+            cash_currency=None,
+            from_currency=None,
+            from_amount=None,
+            to_currency=None,
+            to_amount=None,
+            plan_sha256=sha,
+        )
+
+        assert plan.executed_at == exec_at1
+
+    def test_builder_preserves_exact_objects_and_representations(self):
+        """Phase 13N.1: Builder preserves exact draft objects and values without normalization."""
+        port_id = uuid4()
+        acc_id = uuid4()
+        inst_id = uuid4()
+        eff_date = date(2026, 8, 28)
+        imported_at = datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc)
+        exec_at = datetime(2026, 8, 28, 10, 15, 30, tzinfo=timezone.utc)
+        qty = Decimal("10.00")
+        price = Decimal("150.00")
+
+        _, draft = _make_assessment_and_draft(
+            portfolio_id=port_id,
+            account_id=acc_id,
+            ordinal=1,
+            imported_at=imported_at,
+            transaction_type=TransactionType.BUY,
+            effective_date=eff_date,
+            executed_at=exec_at,
+            instrument_reference="AAPL",
+            quantity=qty,
+            unit_price=price,
+            trade_currency=Currency.USD,
+        )
+
+        res = build_import_instrument_resolution(
+            draft=draft,
+            status=ImportInstrumentResolutionStatus.RESOLVED,
+            resolution_as_of_date=eff_date,
+            resolver_key="mock",
+            resolver_revision=1,
+            instrument_id=inst_id,
+        )
+
+        plan = build_import_ledger_transaction_plan(res)
+
+        assert plan.quantity is draft.quantity
+        assert plan.unit_price is draft.unit_price
+        assert plan.executed_at is draft.executed_at
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Hash & Identity Matrix (Sections 56-57)
