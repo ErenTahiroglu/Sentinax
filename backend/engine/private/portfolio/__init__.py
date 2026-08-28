@@ -58,6 +58,13 @@ from backend.engine.private.portfolio.accounting_service import (
     PortfolioAccountingQueryError,
     PortfolioAccountingQueryService,
 )
+from backend.engine.private.portfolio.import_provenance import (
+    ImportFileProvenance,
+    ImportRecordProvenance,
+    PortfolioImportProvenanceError,
+    build_import_file_provenance,
+    build_import_record_provenance,
+)
 from backend.engine.private.portfolio.cash import (
     CashBalanceProjection,
     CashBalanceState,
@@ -110,6 +117,11 @@ __all__ = [
     "build_portfolio_accounting_snapshot",
     "PortfolioAccountingQueryError",
     "PortfolioAccountingQueryService",
+    "PortfolioImportProvenanceError",
+    "ImportFileProvenance",
+    "ImportRecordProvenance",
+    "build_import_file_provenance",
+    "build_import_record_provenance",
     "serialize_portfolio",
     "hydrate_portfolio",
     "serialize_portfolio_account",

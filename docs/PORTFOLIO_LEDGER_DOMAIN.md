@@ -181,3 +181,13 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 ## 12. Deferred Scope (Phase 12C.6+ & Phase 14)
 - **Phase 12C.6+:** Lot matching engines (FIFO/LIFO/Average Cost), cash bucket attribution, realized/unrealized P&L, portfolio valuations.
 - **Phase 14:** Turkish and international tax rules, withholding calculations, and fee optimization.
+
+---
+
+## 13. Broker/File Import Provenance & Raw-Record Identity Foundation (Phase 13A)
+- **Target-Bound & Source-Bound Identity:** Raw import file identity is the canonical tuple `(portfolio_id, account_id, source_key, content_sha256)`. Same content imported into different accounts/portfolios or under different source parsers produces distinct file identities.
+- **Bytes-Only Content Digest:** `content_sha256` is the exact lowercase SHA-256 hex digest of raw file bytes without salts, timestamps, filenames, or target IDs.
+- **Filename as Metadata:** Filenames are display metadata only and do not participate in content identity.
+- **Raw Record Provenance:** Record identity is the canonical tuple `(portfolio_id, account_id, source_key, file_content_sha256, record_ordinal, record_sha256)`.
+- **Identity Separation:** Import provenance exists strictly for staging, traceability, and diagnostics. It MUST NOT be mapped to `PortfolioTransaction.external_source` or `PortfolioTransaction.external_reference`.
+- **Deferred Scope:** Broker parsers (Midas, IBKR, banks, TEFAS), transaction inference, instrument mapping, and staging persistence remain deferred to Phase 13B+.
