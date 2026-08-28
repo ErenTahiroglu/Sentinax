@@ -356,6 +356,20 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Conflict Detection Data:** `expected_plan_sha256` records the exact plan interpretation at commit creation. It is NOT the claim identity itself. Future persistence layers use this separation to distinguish safe idempotent replays (same claim, same plan) from semantic conflicts (same claim, changed plan).
 - **Batch Coverage & Canonical Ordering:** Exactly one binding intent per materialization plan, ordered strictly by `record_ordinal` ascending. Duplicate claim identities within a single batch fail closed.
 - **Semantic Rejections:** Rows rejected in Phase 13L remain visible in the nested assessment batch and receive zero binding intents.
-- **Pre-Ledger Domain Boundary:** Pure pre-append intent. Zero `PortfolioTransaction` construction, zero transaction UUID generation, zero `recorded_at` assignment, zero cash bucket assignment, zero repository or database persistence, and zero new hash calculations.
-- **Deferred Scope:** Transaction UUID generation, `recorded_at` assignment, cash-bucket attribution, and ledger append remain deferred to Phase 13P+.
+- **Deferred Scope:** Transaction UUID generation, `recorded_at` assignment, cash-bucket attribution, and ledger append remain deferred to Phase 13P.
+
+---
+
+## 13p. Import Claim-Binding Persistence Schema & Strict Pure Codec (Phase 13P)
+- **Persistent Table:** Supabase migration 014 creates `public.portfolio_import_claim_bindings`.
+- **Composite Primary Key Uniqueness:** Exact raw claim identity `(portfolio_id, account_id, source_key, file_content_sha256, record_ordinal, record_sha256)` forms the authoritative database primary key.
+- **Interpretation Separation:** `expected_plan_sha256` is stored separately as the interpretation snapshot and excluded from primary key uniqueness. Same claim + changed plan surfaces as an explicit uniqueness conflict.
+- **Target Transaction Foreign Key:** `transaction_id` references `portfolio_transactions(id, portfolio_id, account_id)` with `ON DELETE RESTRICT`. Non-unique index allows multiple overlapping claims to bind to a single transaction.
+- **Relational Integrity:** Foreign keys enforce target portfolio/owner and account/portfolio consistency with `ON DELETE RESTRICT`.
+- **Domain Grammar & Constraints:** Strict ASCII regex check constraints for `source_key` (`^[a-z0-9][a-z0-9._-]{0,63}$`), 64-char lowercase hex for all SHA fields, and `record_ordinal >= 1`.
+- **Anti-Tamper Immutability:** Dedicated trigger `trg_prevent_import_claim_binding_tamper` blocks `UPDATE` and `DELETE` on binding rows.
+- **Row Level Security (RLS):** Authenticated users have `SELECT` and `INSERT` access scoped strictly to `owner_id = auth.uid()`.
+- **Pure Python Codec:** `import_commit_persistence.py` provides `PersistedImportLedgerBinding`, `serialize_import_ledger_binding`, and `hydrate_import_ledger_binding`. Zero DB/network I/O, zero UUID generation, zero clock calls.
+- **Owner Context Defense-in-Depth:** Serializer and hydrator enforce explicit trusted `expected_owner_id`.
+- **Persistence Boundary:** Phase 13P establishes schema and codec only; runtime atomic ledger commit and conflict resolution are deferred to Phase 13Q.
 

@@ -146,6 +146,12 @@ from backend.engine.private.portfolio.import_commit import (
     build_import_ledger_binding_batch,
     build_import_ledger_binding_intent,
 )
+from backend.engine.private.portfolio.import_commit_persistence import (
+    PersistedImportLedgerBinding,
+    PortfolioImportCommitPersistenceError,
+    hydrate_import_ledger_binding,
+    serialize_import_ledger_binding,
+)
 from backend.engine.private.portfolio.cash import (
     CashBalanceProjection,
     CashBalanceState,
@@ -256,6 +262,10 @@ __all__ = [
     "ImportLedgerBindingBatch",
     "build_import_ledger_binding_intent",
     "build_import_ledger_binding_batch",
+    "PortfolioImportCommitPersistenceError",
+    "PersistedImportLedgerBinding",
+    "serialize_import_ledger_binding",
+    "hydrate_import_ledger_binding",
     "serialize_portfolio",
     "hydrate_portfolio",
     "serialize_portfolio_account",
