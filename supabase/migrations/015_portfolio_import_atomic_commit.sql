@@ -117,18 +117,61 @@ BEGIN
     v_binding_account_id := (p_binding->>'account_id')::UUID;
     v_binding_tx_id := (p_binding->>'transaction_id')::UUID;
 
-    IF v_tx_owner_id <> v_binding_owner_id
-       OR v_tx_portfolio_id <> v_binding_portfolio_id
-       OR v_tx_account_id <> v_binding_account_id
-       OR v_tx_id <> v_binding_tx_id THEN
+    -- Explicit non-null validation on all eight required identity fields
+    IF v_tx_owner_id IS NULL
+       OR v_tx_portfolio_id IS NULL
+       OR v_tx_account_id IS NULL
+       OR v_tx_id IS NULL
+       OR v_binding_owner_id IS NULL
+       OR v_binding_portfolio_id IS NULL
+       OR v_binding_account_id IS NULL
+       OR v_binding_tx_id IS NULL THEN
+        RAISE EXCEPTION 'Transaction and binding identity fields must be non-null.';
+    END IF;
+
+    -- NULL-safe identity cross-matching
+    IF v_tx_owner_id IS DISTINCT FROM v_binding_owner_id
+       OR v_tx_portfolio_id IS DISTINCT FROM v_binding_portfolio_id
+       OR v_tx_account_id IS DISTINCT FROM v_binding_account_id
+       OR v_tx_id IS DISTINCT FROM v_binding_tx_id THEN
         RAISE EXCEPTION 'Cross-payload identity mismatch between transaction and binding.';
     END IF;
 
+    -- Extract binding claim fields and validate non-null and domain grammar before precheck
     v_binding_source_key := p_binding->>'source_key';
     v_binding_file_sha := p_binding->>'file_content_sha256';
-    v_binding_ordinal := (p_binding->>'record_ordinal')::BIGINT;
     v_binding_rec_sha := p_binding->>'record_sha256';
     v_binding_plan_sha := p_binding->>'expected_plan_sha256';
+
+    IF v_binding_source_key IS NULL
+       OR v_binding_file_sha IS NULL
+       OR p_binding->>'record_ordinal' IS NULL
+       OR v_binding_rec_sha IS NULL
+       OR v_binding_plan_sha IS NULL THEN
+        RAISE EXCEPTION 'Binding claim fields must be non-null.';
+    END IF;
+
+    v_binding_ordinal := (p_binding->>'record_ordinal')::BIGINT;
+
+    IF v_binding_source_key !~ '^[a-z0-9][a-z0-9._-]{0,63}$' THEN
+        RAISE EXCEPTION 'Invalid source_key format in binding payload.';
+    END IF;
+
+    IF v_binding_file_sha !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'Invalid file_content_sha256 format in binding payload.';
+    END IF;
+
+    IF v_binding_ordinal < 1 THEN
+        RAISE EXCEPTION 'record_ordinal must be a positive integer (>= 1).';
+    END IF;
+
+    IF v_binding_rec_sha !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'Invalid record_sha256 format in binding payload.';
+    END IF;
+
+    IF v_binding_plan_sha !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'Invalid expected_plan_sha256 format in binding payload.';
+    END IF;
 
     -- ─────────────────────────────────────────────────────────────────────────
     -- 3. Invariant Checks on Transaction Payload

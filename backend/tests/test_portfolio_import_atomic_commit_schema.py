@@ -82,13 +82,35 @@ class TestPortfolioImportAtomicCommitSchema:
         for k in expected_binding_keys:
             assert f"'{k}'" in sql_without_comments
 
+    def test_non_null_identity_checks(self, sql_without_comments: str):
+        """Phase 13Q.1: Explicit non-null validation on all eight identity fields."""
+        assert "Transaction and binding identity fields must be non-null" in sql_without_comments
+        assert "v_tx_owner_id IS NULL" in sql_without_comments
+        assert "v_tx_portfolio_id IS NULL" in sql_without_comments
+        assert "v_tx_account_id IS NULL" in sql_without_comments
+        assert "v_tx_id IS NULL" in sql_without_comments
+        assert "v_binding_owner_id IS NULL" in sql_without_comments
+        assert "v_binding_portfolio_id IS NULL" in sql_without_comments
+        assert "v_binding_account_id IS NULL" in sql_without_comments
+        assert "v_binding_tx_id IS NULL" in sql_without_comments
+
     def test_cross_payload_identity_checks(self, sql_without_comments: str):
-        """Matrix F: Identity equality between transaction and binding."""
+        """Matrix F & Phase 13Q.1: Null-safe IS DISTINCT FROM identity equality between transaction and binding."""
         assert "Cross-payload identity mismatch" in sql_without_comments
-        assert "v_tx_owner_id <> v_binding_owner_id" in sql_without_comments
-        assert "v_tx_portfolio_id <> v_binding_portfolio_id" in sql_without_comments
-        assert "v_tx_account_id <> v_binding_account_id" in sql_without_comments
-        assert "v_tx_id <> v_binding_tx_id" in sql_without_comments
+        assert "v_tx_owner_id IS DISTINCT FROM v_binding_owner_id" in sql_without_comments
+        assert "v_tx_portfolio_id IS DISTINCT FROM v_binding_portfolio_id" in sql_without_comments
+        assert "v_tx_account_id IS DISTINCT FROM v_binding_account_id" in sql_without_comments
+        assert "v_tx_id IS DISTINCT FROM v_binding_tx_id" in sql_without_comments
+        assert "v_tx_owner_id <> v_binding_owner_id" not in sql_without_comments
+
+    def test_binding_claim_fields_precheck_validation(self, sql_without_comments: str):
+        """Phase 13Q.1 Matrix I-M, N-U: Binding claim fields non-null and domain grammar before claim lookup."""
+        assert "Binding claim fields must be non-null" in sql_without_comments
+        assert "v_binding_source_key !~ '^[a-z0-9][a-z0-9._-]{0,63}$'" in sql_without_comments
+        assert "v_binding_file_sha !~ '^[0-9a-f]{64}$'" in sql_without_comments
+        assert "v_binding_ordinal < 1" in sql_without_comments
+        assert "v_binding_rec_sha !~ '^[0-9a-f]{64}$'" in sql_without_comments
+        assert "v_binding_plan_sha !~ '^[0-9a-f]{64}$'" in sql_without_comments
 
     def test_external_identity_must_be_null(self, sql_without_comments: str):
         """Matrix G: External identity must be null in import transaction."""
