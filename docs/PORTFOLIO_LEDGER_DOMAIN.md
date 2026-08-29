@@ -730,6 +730,52 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Real database errors (single-reversal conflict by different command, cross-stream PIT, outages) propagate unchanged when no matching event was committed.
 - **Race-Safe Authority & Purity:** Database triggers and single-reversal unique index remain final race authority; zero heuristic target discovery, zero tax-law interpretation, zero FX/cost-basis mutation, and zero ledger reversal writes.
 
+---
+
+## 30. Final Fee/Tax Attribution Lifecycle Closure (Phase 14O)
+- **Subsystem Architecture Flow:**
+  ```text
+  ledger FEE / TAX_WITHHOLDING events (Phase 14A)
+          ↓
+  observed PIT projection (Phase 14A)
+          ↓
+  exact account/currency aggregation (Phase 14B)
+          ↓
+  explicit attribution intent (Phase 14C/D)
+          ↓
+  append-only persistence event (Phase 14E)
+          ↓
+  DB concurrency/PIT hardening (Phase 14F/G/G.1/G.2)
+          ↓
+  owner-bound repository read/write (Phase 14H/L)
+          ↓
+  persisted history projection (Phase 14I)
+          ↓
+  authoritative ledger semantic rebinding (Phase 14J/J.1)
+          ↓
+  owner-bound query service (Phase 14K)
+          ↓
+  retry-safe ALLOCATION command (Phase 14M/M.1)
+          ↓
+  retry-safe REVERSAL correction command (Phase 14N)
+  ```
+- **Lifecycle Guarantees:**
+  - Explicit evidence is strictly PIT- and reversal-aware across two independent axes (`effective_date` vs `recorded_at`).
+  - Strict Decimal exactness (`.as_tuple()`) is enforced throughout domain, persistence, query, and retry identity.
+  - Active allocation amounts can never exceed explicit charge capacity; duplicate active pairs are blocked.
+  - History and corrections are strictly append-only; zero mutable active-status fields, zero UPDATE/DELETE/UPSERT queries.
+  - An allocation can be reversed at most once; reversal releases capacity which can be reallocated by new commands.
+  - Retried commands return first-commit identity without regenerating clocks or recreating active allocations.
+  - Concurrent identical commands converge safely on first commit; conflicting commands fail closed.
+  - Cross-stream ledger/attribution PIT ordering guarantees authoritative economic consistency.
+- **Explicit Non-Goals & Invariants:**
+  - Zero tax-law interpretation (no deductibility, tax liabilities, refunds, basis, or credits).
+  - Zero cost-basis or lot mutation (no impact on positions or realized P&L).
+  - Zero FX conversion or cross-currency aggregation (amounts remain charge-denominated).
+  - Zero heuristic or fuzzy attribution matching (all linkages are strictly explicit).
+  - Zero lossy floating-point math.
+
+
 
 
 
