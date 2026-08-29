@@ -130,6 +130,19 @@ PORTFOLIO_TRANSACTION_SELECT: Final[str] = (
     "economic_fingerprint"
 )
 
+FEE_TAX_ATTRIBUTION_EVENT_SELECT: Final[str] = (
+    "id,"
+    "portfolio_id,"
+    "account_id,"
+    "owner_id,"
+    "event_type,"
+    "recorded_at,"
+    "charge_transaction_id,"
+    "target_transaction_id,"
+    "allocated_amount::text,"
+    "reverses_attribution_event_id"
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. Canonical Financial NUMERIC Columns Whitelist
@@ -148,6 +161,9 @@ FINANCIAL_NUMERIC_COLUMNS_BY_TABLE: Final[Mapping[str, FrozenSet[str]]] = {
         "from_amount",
         "to_amount",
     }),
+    "portfolio_fee_tax_attribution_events": frozenset({
+        "allocated_amount",
+    }),
 }
 
 ALL_SEVEN_FINANCIAL_NUMERIC_COLUMNS: Final[FrozenSet[str]] = frozenset({
@@ -159,3 +175,4 @@ ALL_SEVEN_FINANCIAL_NUMERIC_COLUMNS: Final[FrozenSet[str]] = frozenset({
     "from_amount",
     "to_amount",
 })
+

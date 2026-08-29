@@ -48,6 +48,7 @@ from backend.engine.private.portfolio.persistence import (
 from backend.engine.private.portfolio.postgrest_transport import (
     ALL_SEVEN_FINANCIAL_NUMERIC_COLUMNS,
     CASH_BUCKET_SELECT,
+    FEE_TAX_ATTRIBUTION_EVENT_SELECT,
     FINANCIAL_NUMERIC_COLUMNS_BY_TABLE,
     INVESTMENT_GOAL_SELECT,
     PLANNED_CONTRIBUTION_SELECT,
@@ -55,6 +56,7 @@ from backend.engine.private.portfolio.postgrest_transport import (
     PORTFOLIO_SELECT,
     PORTFOLIO_TRANSACTION_SELECT,
 )
+
 
 
 @pytest.fixture
@@ -470,6 +472,7 @@ class TestSelectContractIntegrity:
             ("INVESTMENT_GOAL_SELECT", INVESTMENT_GOAL_SELECT),
             ("PLANNED_CONTRIBUTION_SELECT", PLANNED_CONTRIBUTION_SELECT),
             ("PORTFOLIO_TRANSACTION_SELECT", PORTFOLIO_TRANSACTION_SELECT),
+            ("FEE_TAX_ATTRIBUTION_EVENT_SELECT", FEE_TAX_ATTRIBUTION_EVENT_SELECT),
         ]:
             assert "*" not in select_str, f"{name} contains wildcard select '*'"
 
@@ -482,10 +485,12 @@ class TestSelectContractIntegrity:
         assert "cash_amount::text" in PORTFOLIO_TRANSACTION_SELECT
         assert "from_amount::text" in PORTFOLIO_TRANSACTION_SELECT
         assert "to_amount::text" in PORTFOLIO_TRANSACTION_SELECT
+        assert "allocated_amount::text" in FEE_TAX_ATTRIBUTION_EVENT_SELECT
 
         # Total count across whitelist
         assert len(ALL_SEVEN_FINANCIAL_NUMERIC_COLUMNS) == 7
-        assert sum(len(cols) for cols in FINANCIAL_NUMERIC_COLUMNS_BY_TABLE.values()) == 7
+        assert sum(len(cols) for cols in FINANCIAL_NUMERIC_COLUMNS_BY_TABLE.values()) == 8
+
 
     def test_select_projections_satisfy_codec_hydration_requirements(self):
         """Every select projection contains all required columns for its hydrator."""

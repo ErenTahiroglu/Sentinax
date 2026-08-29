@@ -68,6 +68,13 @@ from backend.engine.private.portfolio.models import (
     PortfolioAccount,
     PortfolioTransaction,
 )
+from backend.engine.private.portfolio.fee_tax_attribution_persistence import (
+    FeeTaxAttributionPersistenceEvent,
+    hydrate_fee_tax_attribution_persistence_event,
+)
+from backend.engine.private.portfolio.fee_tax_attribution_transport import (
+    canonicalize_fee_tax_attribution_postgrest_row,
+)
 from backend.engine.private.portfolio.normalization import (
     normalize_external_reference,
     normalize_external_source,
@@ -88,12 +95,14 @@ from backend.engine.private.portfolio.persistence import (
 )
 from backend.engine.private.portfolio.postgrest_transport import (
     CASH_BUCKET_SELECT,
+    FEE_TAX_ATTRIBUTION_EVENT_SELECT,
     INVESTMENT_GOAL_SELECT,
     PLANNED_CONTRIBUTION_SELECT,
     PORTFOLIO_ACCOUNT_SELECT,
     PORTFOLIO_SELECT,
     PORTFOLIO_TRANSACTION_SELECT,
 )
+
 
 _CANONICAL_UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -1371,4 +1380,100 @@ class PortfolioRepository:
 
         else:
             raise RuntimeError(f"Unknown batch_status '{batch_status_raw}' returned from commit_portfolio_import_claim_batch RPC.")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 10. Fee / Tax Attribution Persistence Events (Read-Only)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def get_fee_tax_attribution_event(
+        self,
+        portfolio_id: UUID | str,
+        event_id: UUID | str,
+    ) -> Optional[FeeTaxAttributionPersistenceEvent]:
+        """
+        Retrieves an immutable fee/tax attribution persistence event by ID
+        strictly scoped to portfolio and bound owner.
+        """
+        p_id = _normalize_uuid(portfolio_id, "portfolio_id")
+        e_id = _normalize_uuid(event_id, "event_id")
+        res = (
+            self._client.table("portfolio_fee_tax_attribution_events")
+            .select(FEE_TAX_ATTRIBUTION_EVENT_SELECT)
+            .eq("owner_id", self._owner_id_str)
+            .eq("portfolio_id", str(p_id))
+            .eq("id", str(e_id))
+            .execute()
+        )
+        if not res.data:
+            return None
+        canonical_row = canonicalize_fee_tax_attribution_postgrest_row(res.data[0])
+        return hydrate_fee_tax_attribution_persistence_event(
+            canonical_row,
+            expected_owner_id=self._owner_id,
+        )
+
+    def list_fee_tax_attribution_events(
+        self,
+        portfolio_id: UUID | str,
+        account_id: Optional[UUID | str] = None,
+        as_of_recorded_at: Optional[datetime] = None,
+    ) -> List[FeeTaxAttributionPersistenceEvent]:
+        """
+        Lists all immutable fee/tax attribution persistence events for a portfolio across all pages,
+        with optional account filter and point-in-time recorded_at filter, returning canonically sorted list:
+        (recorded_at, id).
+        """
+        p_id = _normalize_uuid(portfolio_id, "portfolio_id")
+        a_id_str: Optional[str] = None
+        if account_id is not None:
+            a_id_str = str(_normalize_uuid(account_id, "account_id"))
+
+        cutoff_utc_str: Optional[str] = None
+        if as_of_recorded_at is not None:
+            if isinstance(as_of_recorded_at, bool) or not isinstance(as_of_recorded_at, datetime):
+                raise TypeError(
+                    f"as_of_recorded_at must be an aware datetime, got {type(as_of_recorded_at).__name__}: {as_of_recorded_at!r}"
+                )
+            if as_of_recorded_at.tzinfo is None or as_of_recorded_at.tzinfo.utcoffset(as_of_recorded_at) is None:
+                raise ValueError(
+                    f"as_of_recorded_at must be timezone-aware with non-null utcoffset, got naive: {as_of_recorded_at!r}"
+                )
+            cutoff_utc = as_of_recorded_at.astimezone(timezone.utc)
+            cutoff_utc_str = cutoff_utc.isoformat()
+
+        results: List[FeeTaxAttributionPersistenceEvent] = []
+        offset = 0
+
+        while True:
+            q = (
+                self._client.table("portfolio_fee_tax_attribution_events")
+                .select(FEE_TAX_ATTRIBUTION_EVENT_SELECT)
+                .eq("owner_id", self._owner_id_str)
+                .eq("portfolio_id", str(p_id))
+            )
+            if a_id_str is not None:
+                q = q.eq("account_id", a_id_str)
+            if cutoff_utc_str is not None:
+                q = q.lte("recorded_at", cutoff_utc_str)
+
+            q = q.order("recorded_at", desc=False).order("id", desc=False)
+
+            res = q.range(offset, offset + PAGE_SIZE - 1).execute()
+            rows = res.data or []
+            if not rows:
+                break
+            for r in rows:
+                canonical_row = canonicalize_fee_tax_attribution_postgrest_row(r)
+                results.append(
+                    hydrate_fee_tax_attribution_persistence_event(
+                        canonical_row,
+                        expected_owner_id=self._owner_id,
+                    )
+                )
+
+            offset += len(rows)
+
+        results.sort(key=lambda e: (e.recorded_at, e.id))
+        return results
+
 

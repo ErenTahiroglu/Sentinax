@@ -602,6 +602,20 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Forward-Dated Ledger Reversals Permitted:** Ledger reversals stamped with `recorded_at > max(related attribution evidence)` remain valid, inactivating the transaction for future PIT cutoffs without rewriting historical PIT truth.
 - **No Schema / Privilege / Tax Rule Changes:** Table schemas, RLS policies, privilege matrices, and closed business logic remain intact.
 
+---
+
+## 23. Owner-Bound Attribution Persistence Read & PostgREST Transport (Phase 14H)
+- **Owner-Bound Defense-in-Depth:** All attribution repository read queries (`get_fee_tax_attribution_event`, `list_fee_tax_attribution_events`) enforce an explicit `.eq("owner_id", self._owner_id_str)` filter in addition to database-level RLS. Hydration strictly asserts that returned `owner_id` matches trusted repository owner context.
+- **Exact Text-Cast Numeric Transport:** `FEE_TAX_ATTRIBUTION_EVENT_SELECT` explicitly selects `allocated_amount::text`, preventing PostgREST and JSON parsers from deserializing numeric fields into Python `float` or `int`. Wildcard selects (`*`) are prohibited.
+- **Transport Timestamp Adaptation:**
+  - PostgreSQL stores physical instants as `TIMESTAMPTZ` without preserving caller timezone offset.
+  - The narrow transport adapter (`canonicalize_fee_tax_attribution_postgrest_row`) parses timezone-aware PostgREST timestamp text into UTC `isoformat()` (`fold = 0`), preserving exact microsecond precision.
+  - Naive timestamps, non-string timestamp inputs, and float/int allocated amounts are rejected at the transport boundary.
+- **Preservation of Phase 14E Canonical Codec:** The strict canonical contract of `hydrate_fee_tax_attribution_persistence_event` remains closed and unmodified.
+- **Deterministic Pagination & Ordering:** `list_fee_tax_attribution_events` pages across all available records via `PAGE_SIZE = 1000` and orders deterministically by `(recorded_at, id)`.
+- **Raw Evidence History Read-Only:** Exposes raw append-only persisted events without active-state projection, without mutating or dropping reversed allocations, without ledger transaction joins, and without financial aggregation or tax rules.
+
+
 
 
 
