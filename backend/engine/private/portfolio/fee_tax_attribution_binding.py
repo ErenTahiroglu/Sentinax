@@ -295,6 +295,16 @@ class PersistedFeeTaxAttributionSemanticView:
                     f"as_of_recorded_at exact representation mismatch between self ({self.as_of_recorded_at}) and {name} ({other_dt})"
                 )
 
+        # Graph identity validation (Phase 14J.1)
+        if self.observed_projection.ledger_view is not self.ledger_view:
+            raise FeeTaxAttributionBindingError(
+                "observed_projection.ledger_view must be the exact attached ledger_view instance"
+            )
+        if self.attribution_set.observed_projection is not self.observed_projection:
+            raise FeeTaxAttributionBindingError(
+                "attribution_set.observed_projection must be the exact attached observed_projection instance"
+            )
+
         # Canonical rederivation to detect tampering
         exp_observed = build_observed_fee_tax_projection(self.ledger_view)
         if len(self.observed_projection.events) != len(exp_observed.events):
@@ -313,6 +323,30 @@ class PersistedFeeTaxAttributionSemanticView:
             self.persisted_history,
         )
 
+        # Intent validation
+        if len(self.attribution_set.intents) != len(exp_attribution_set.intents):
+            raise FeeTaxAttributionBindingError(
+                f"Tampered attribution_set intents length: got {len(self.attribution_set.intents)}, expected {len(exp_attribution_set.intents)}"
+            )
+        for idx, (act_intent, exp_intent) in enumerate(zip(self.attribution_set.intents, exp_attribution_set.intents)):
+            if isinstance(act_intent, bool) or not isinstance(act_intent, FeeTaxAttributionIntent):
+                raise FeeTaxAttributionBindingError(
+                    f"Intent at index {idx} must be a FeeTaxAttributionIntent instance, got {type(act_intent).__name__}"
+                )
+            if act_intent.charge_transaction_id != exp_intent.charge_transaction_id:
+                raise FeeTaxAttributionBindingError(
+                    f"Tampered intent at index {idx} charge_transaction_id: {act_intent.charge_transaction_id} != {exp_intent.charge_transaction_id}"
+                )
+            if act_intent.target_transaction_id != exp_intent.target_transaction_id:
+                raise FeeTaxAttributionBindingError(
+                    f"Tampered intent at index {idx} target_transaction_id: {act_intent.target_transaction_id} != {exp_intent.target_transaction_id}"
+                )
+            if act_intent.allocated_amount.as_tuple() != exp_intent.allocated_amount.as_tuple():
+                raise FeeTaxAttributionBindingError(
+                    f"Tampered intent at index {idx} allocated_amount representation: {act_intent.allocated_amount!r} != {exp_intent.allocated_amount!r}"
+                )
+
+        # Attribution validation
         if len(self.attribution_set.attributions) != len(exp_attribution_set.attributions):
             raise FeeTaxAttributionBindingError(
                 f"Tampered attribution_set attributions length: got {len(self.attribution_set.attributions)}, expected {len(exp_attribution_set.attributions)}"
@@ -330,6 +364,7 @@ class PersistedFeeTaxAttributionSemanticView:
                 raise FeeTaxAttributionBindingError(
                     f"Tampered attribution at index {idx} allocated_amount: {act_attr.allocated_amount!r} != {exp_attr.allocated_amount!r}"
                 )
+
 
 
 def bind_persisted_fee_tax_attribution_history(

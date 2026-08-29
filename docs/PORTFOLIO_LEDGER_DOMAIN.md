@@ -646,7 +646,9 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Canonical `build_observed_fee_tax_attribution_set` (Phase 14D) validates multi-target caps, single allocation limits, cumulative capacity, and target type allowlists.
   - Authoritative `PortfolioTransaction` instances are bound by object identity (`is`).
 - **Exact PIT Representation Consistency:** Ledger and history projection views must share identical wall-clock and timezone representation (`_is_exact_datetime_representation_equal`).
+- **Object-Graph Authority Hardening (Phase 14J.1):** Direct-constructor `__post_init__` enforces strict object identity across the attached graph (`observed_projection.ledger_view is self.ledger_view` and `attribution_set.observed_projection is self.observed_projection`), alongside ordered intent validation (`charge_transaction_id`, `target_transaction_id`, `.as_tuple()` exact Decimal representation).
 - **Zero Database / Zero Tax-Law Semantics:** Pure domain composition with no repository lookups, no clock calls, no tax calculations, no FX conversions, and no cost-basis modifications.
+
 
 
 

@@ -73,6 +73,7 @@ def make_tx(
     cash_currency: Currency | None = None,
     quantity: Decimal | None = None,
     unit_price: Decimal | None = None,
+    trade_currency: Currency | None = None,
     effective_date: date = date(2026, 8, 29),
     recorded_at: datetime | None = None,
     reverses_transaction_id: UUID | None = None,
@@ -96,11 +97,12 @@ def make_tx(
         instrument_id="AAPL" if tx_type in (TransactionType.BUY, TransactionType.SELL, TransactionType.DIVIDEND) else None,
         quantity=quantity if is_trade else None,
         unit_price=unit_price if is_trade else None,
-        trade_currency=Currency.USD if is_trade else None,
+        trade_currency=(trade_currency or Currency.USD) if is_trade else None,
         cash_amount=cash_amount if is_cash_tx else None,
         cash_currency=(cash_currency or Currency.USD) if is_cash_tx else None,
         reverses_transaction_id=reverses_transaction_id,
     )
+
 
 
 
@@ -499,7 +501,7 @@ class TestDirectConstructorHardening:
         # Forge empty attribution set when 1 was expected
         forged_attribution_set = build_observed_fee_tax_attribution_set(valid_view.observed_projection, ())
 
-        with pytest.raises(FeeTaxAttributionBindingError, match="Tampered attribution_set attributions length"):
+        with pytest.raises(FeeTaxAttributionBindingError, match="Tampered attribution_set"):
             PersistedFeeTaxAttributionSemanticView(
                 portfolio_id=valid_view.portfolio_id,
                 mode=valid_view.mode,
@@ -508,6 +510,207 @@ class TestDirectConstructorHardening:
                 observed_projection=valid_view.observed_projection,
                 persisted_history=valid_view.persisted_history,
                 attribution_set=forged_attribution_set,
+            )
+
+    def test_foreign_equivalent_ledger_graph_rejected(self):
+        """Item 15: Foreign but equivalent ledger view used in observed_projection is rejected."""
+        portfolio = make_portfolio()
+        account_id = uuid4()
+        fee_tx = make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
+
+        ledger_view_a = build_ledger_projection_view(portfolio, [fee_tx])
+        ledger_view_b = build_ledger_projection_view(portfolio, [fee_tx])
+        assert ledger_view_a is not ledger_view_b
+
+        foreign_observed = build_observed_fee_tax_projection(ledger_view_b)
+        history_view = build_persisted_fee_tax_attribution_history_view(portfolio.id, [])
+        attr_set = build_observed_fee_tax_attribution_set(foreign_observed, ())
+
+        with pytest.raises(FeeTaxAttributionBindingError, match="observed_projection.ledger_view must be the exact attached ledger_view instance"):
+            PersistedFeeTaxAttributionSemanticView(
+                portfolio_id=portfolio.id,
+                mode=portfolio.mode,
+                as_of_recorded_at=None,
+                ledger_view=ledger_view_a,
+                observed_projection=foreign_observed,
+                persisted_history=history_view,
+                attribution_set=attr_set,
+            )
+
+    def test_foreign_equivalent_observed_graph_inside_attribution_set_rejected(self):
+        """Item 16: Attribution set built from equivalent but foreign observed projection is rejected."""
+        portfolio = make_portfolio()
+        account_id = uuid4()
+        fee_tx = make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
+        buy_tx = make_tx(portfolio.id, account_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), trade_currency=Currency.USD)
+
+        alloc = make_allocation_event(portfolio.id, account_id, fee_tx.id, buy_tx.id, allocated_amount=Decimal("6.000"))
+
+        ledger_view = build_ledger_projection_view(portfolio, [fee_tx, buy_tx])
+        observed_a = build_observed_fee_tax_projection(ledger_view)
+        observed_b = build_observed_fee_tax_projection(ledger_view)
+        assert observed_a is not observed_b
+
+        intent = FeeTaxAttributionIntent(fee_tx.id, buy_tx.id, Decimal("6.000"))
+        foreign_set = build_observed_fee_tax_attribution_set(observed_b, (intent,))
+        history_view = build_persisted_fee_tax_attribution_history_view(portfolio.id, [alloc])
+
+        with pytest.raises(FeeTaxAttributionBindingError, match="attribution_set.observed_projection must be the exact attached observed_projection instance"):
+            PersistedFeeTaxAttributionSemanticView(
+                portfolio_id=portfolio.id,
+                mode=portfolio.mode,
+                as_of_recorded_at=None,
+                ledger_view=ledger_view,
+                observed_projection=observed_a,
+                persisted_history=history_view,
+                attribution_set=foreign_set,
+            )
+
+    def test_canonical_builder_graph_identities(self):
+        """Item 17: Canonical builder produces coherent object graph."""
+        portfolio = make_portfolio()
+        account_id = uuid4()
+        fee_tx = make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
+        buy_tx = make_tx(portfolio.id, account_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), trade_currency=Currency.USD)
+
+        alloc = make_allocation_event(portfolio.id, account_id, fee_tx.id, buy_tx.id, allocated_amount=Decimal("6.000"))
+
+        ledger_view = build_ledger_projection_view(portfolio, [fee_tx, buy_tx])
+        history_view = build_persisted_fee_tax_attribution_history_view(portfolio.id, [alloc])
+        view = bind_persisted_fee_tax_attribution_history(ledger_view, history_view)
+
+        assert view.observed_projection.ledger_view is view.ledger_view
+        assert view.attribution_set.observed_projection is view.observed_projection
+
+    def test_reordered_intents_rejected(self):
+        """Item 18: Reordered intents in attribution set are rejected."""
+        portfolio = make_portfolio()
+        account_id = uuid4()
+        fee_tx = make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
+        buy_tx = make_tx(portfolio.id, account_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), trade_currency=Currency.USD)
+        sell_tx = make_tx(portfolio.id, account_id, TransactionType.SELL, quantity=Decimal("2"), unit_price=Decimal("10"), trade_currency=Currency.USD)
+
+        t1 = datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc)
+        t2 = datetime(2026, 8, 29, 11, 0, 0, tzinfo=timezone.utc)
+        alloc1 = make_allocation_event(portfolio.id, account_id, fee_tx.id, buy_tx.id, allocated_amount=Decimal("6.000"), recorded_at=t1)
+        alloc2 = make_allocation_event(portfolio.id, account_id, fee_tx.id, sell_tx.id, allocated_amount=Decimal("4.000"), recorded_at=t2)
+
+        ledger_view = build_ledger_projection_view(portfolio, [fee_tx, buy_tx, sell_tx])
+        history_view = build_persisted_fee_tax_attribution_history_view(portfolio.id, [alloc1, alloc2])
+        valid_view = bind_persisted_fee_tax_attribution_history(ledger_view, history_view)
+
+        intent1 = FeeTaxAttributionIntent(fee_tx.id, buy_tx.id, Decimal("6.000"))
+        intent2 = FeeTaxAttributionIntent(fee_tx.id, sell_tx.id, Decimal("4.000"))
+        # Reordered intents
+        reordered_set = build_observed_fee_tax_attribution_set(valid_view.observed_projection, (intent2, intent1))
+
+        with pytest.raises(FeeTaxAttributionBindingError, match="Tampered intent at index 0"):
+            PersistedFeeTaxAttributionSemanticView(
+                portfolio_id=valid_view.portfolio_id,
+                mode=valid_view.mode,
+                as_of_recorded_at=valid_view.as_of_recorded_at,
+                ledger_view=valid_view.ledger_view,
+                observed_projection=valid_view.observed_projection,
+                persisted_history=valid_view.persisted_history,
+                attribution_set=reordered_set,
+            )
+
+    def test_altered_decimal_representation_in_intent_rejected(self):
+        """Item 19: Decimal representation change in intent is rejected."""
+        portfolio = make_portfolio()
+        account_id = uuid4()
+        fee_tx = make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
+        buy_tx = make_tx(portfolio.id, account_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), trade_currency=Currency.USD)
+
+        alloc = make_allocation_event(portfolio.id, account_id, fee_tx.id, buy_tx.id, allocated_amount=Decimal("6.000"))
+
+        ledger_view = build_ledger_projection_view(portfolio, [fee_tx, buy_tx])
+        history_view = build_persisted_fee_tax_attribution_history_view(portfolio.id, [alloc])
+        valid_view = bind_persisted_fee_tax_attribution_history(ledger_view, history_view)
+
+        # Alter Decimal("6.000") to Decimal("6")
+        intent_altered = FeeTaxAttributionIntent(fee_tx.id, buy_tx.id, Decimal("6"))
+        altered_set = build_observed_fee_tax_attribution_set(valid_view.observed_projection, (intent_altered,))
+
+        with pytest.raises(FeeTaxAttributionBindingError, match="Tampered intent at index 0 allocated_amount representation"):
+            PersistedFeeTaxAttributionSemanticView(
+                portfolio_id=valid_view.portfolio_id,
+                mode=valid_view.mode,
+                as_of_recorded_at=valid_view.as_of_recorded_at,
+                ledger_view=valid_view.ledger_view,
+                observed_projection=valid_view.observed_projection,
+                persisted_history=valid_view.persisted_history,
+                attribution_set=altered_set,
+            )
+
+    def test_intent_count_tamper_rejected(self):
+        """Item 20: Intent count mismatch is rejected."""
+        portfolio = make_portfolio()
+        account_id = uuid4()
+        fee_tx = make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
+        buy_tx = make_tx(portfolio.id, account_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), trade_currency=Currency.USD)
+
+        alloc = make_allocation_event(portfolio.id, account_id, fee_tx.id, buy_tx.id, allocated_amount=Decimal("6.000"))
+
+        ledger_view = build_ledger_projection_view(portfolio, [fee_tx, buy_tx])
+        history_view = build_persisted_fee_tax_attribution_history_view(portfolio.id, [alloc])
+        valid_view = bind_persisted_fee_tax_attribution_history(ledger_view, history_view)
+
+        empty_set = build_observed_fee_tax_attribution_set(valid_view.observed_projection, ())
+
+        with pytest.raises(FeeTaxAttributionBindingError, match="Tampered attribution_set intents length"):
+            PersistedFeeTaxAttributionSemanticView(
+                portfolio_id=valid_view.portfolio_id,
+                mode=valid_view.mode,
+                as_of_recorded_at=valid_view.as_of_recorded_at,
+                ledger_view=valid_view.ledger_view,
+                observed_projection=valid_view.observed_projection,
+                persisted_history=valid_view.persisted_history,
+                attribution_set=empty_set,
+            )
+
+    def test_attribution_set_observed_pointer_tamper_with_empty_history_rejected(self):
+        """Item 21: Attribution set graph identity with empty history fails closed."""
+        portfolio = make_portfolio()
+        ledger_view = build_ledger_projection_view(portfolio, [])
+        observed_a = build_observed_fee_tax_projection(ledger_view)
+        observed_b = build_observed_fee_tax_projection(ledger_view)
+        assert observed_a is not observed_b
+
+        empty_set_b = build_observed_fee_tax_attribution_set(observed_b, ())
+        history_view = build_persisted_fee_tax_attribution_history_view(portfolio.id, [])
+
+        with pytest.raises(FeeTaxAttributionBindingError, match="attribution_set.observed_projection must be the exact attached observed_projection instance"):
+            PersistedFeeTaxAttributionSemanticView(
+                portfolio_id=portfolio.id,
+                mode=portfolio.mode,
+                as_of_recorded_at=None,
+                ledger_view=ledger_view,
+                observed_projection=observed_a,
+                persisted_history=history_view,
+                attribution_set=empty_set_b,
+            )
+
+    def test_observed_foreign_ledger_with_empty_events_rejected(self):
+        """Item 22: Observed projection with empty events built from foreign ledger view fails closed."""
+        portfolio = make_portfolio()
+        ledger_view_a = build_ledger_projection_view(portfolio, [])
+        ledger_view_b = build_ledger_projection_view(portfolio, [])
+        assert ledger_view_a is not ledger_view_b
+
+        observed_b = build_observed_fee_tax_projection(ledger_view_b)
+        history_view = build_persisted_fee_tax_attribution_history_view(portfolio.id, [])
+        empty_set_b = build_observed_fee_tax_attribution_set(observed_b, ())
+
+        with pytest.raises(FeeTaxAttributionBindingError, match="observed_projection.ledger_view must be the exact attached ledger_view instance"):
+            PersistedFeeTaxAttributionSemanticView(
+                portfolio_id=portfolio.id,
+                mode=portfolio.mode,
+                as_of_recorded_at=None,
+                ledger_view=ledger_view_a,
+                observed_projection=observed_b,
+                persisted_history=history_view,
+                attribution_set=empty_set_b,
             )
 
 
@@ -535,3 +738,4 @@ class TestStaticPurity:
         ]
         for p in prohibited:
             assert p not in source, f"Found prohibited pattern '{p}' in fee_tax_attribution_binding.py"
+
