@@ -188,6 +188,10 @@ from backend.engine.private.portfolio.fee_tax import (
     build_observed_fee_tax_aggregation,
     build_observed_fee_tax_projection,
 )
+from backend.engine.private.portfolio.fee_tax_service import (
+    PortfolioFeeTaxQueryError,
+    PortfolioFeeTaxQueryService,
+)
 from backend.engine.private.portfolio.repository import PortfolioRepository
 
 __all__ = [
@@ -223,6 +227,8 @@ __all__ = [
     "ObservedFeeTaxAggregateState",
     "ObservedFeeTaxAggregation",
     "build_observed_fee_tax_aggregation",
+    "PortfolioFeeTaxQueryError",
+    "PortfolioFeeTaxQueryService",
     "PortfolioAccountingError",
     "PortfolioAccountingSnapshot",
     "build_portfolio_accounting_snapshot",

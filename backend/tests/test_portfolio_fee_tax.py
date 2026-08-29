@@ -1061,9 +1061,11 @@ def test_aggregation_different_account_same_currency_separation() -> None:
     portfolio = _make_portfolio()
     account_a = uuid4()
     account_b = uuid4()
+    t1 = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 6, 1, 11, 0, 0, tzinfo=timezone.utc)
 
-    fee_a = _make_tx(portfolio.id, account_a, TransactionType.FEE, cash_amount=Decimal("1.00"), cash_currency=Currency.USD)
-    fee_b = _make_tx(portfolio.id, account_b, TransactionType.FEE, cash_amount=Decimal("2.00"), cash_currency=Currency.USD)
+    fee_a = _make_tx(portfolio.id, account_a, TransactionType.FEE, recorded_at=t1, cash_amount=Decimal("1.00"), cash_currency=Currency.USD)
+    fee_b = _make_tx(portfolio.id, account_b, TransactionType.FEE, recorded_at=t2, cash_amount=Decimal("2.00"), cash_currency=Currency.USD)
 
     ledger_view = build_ledger_projection_view(portfolio, [fee_a, fee_b])
     proj = build_observed_fee_tax_projection(ledger_view)
@@ -1245,9 +1247,11 @@ def test_aggregation_tamper_omitted_state() -> None:
     portfolio = _make_portfolio()
     account_a = uuid4()
     account_b = uuid4()
+    t1 = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 6, 1, 11, 0, 0, tzinfo=timezone.utc)
 
-    fee_a = _make_tx(portfolio.id, account_a, TransactionType.FEE, cash_amount=Decimal("1.00"), cash_currency=Currency.USD)
-    fee_b = _make_tx(portfolio.id, account_b, TransactionType.FEE, cash_amount=Decimal("2.00"), cash_currency=Currency.USD)
+    fee_a = _make_tx(portfolio.id, account_a, TransactionType.FEE, recorded_at=t1, cash_amount=Decimal("1.00"), cash_currency=Currency.USD)
+    fee_b = _make_tx(portfolio.id, account_b, TransactionType.FEE, recorded_at=t2, cash_amount=Decimal("2.00"), cash_currency=Currency.USD)
 
     ledger_view = build_ledger_projection_view(portfolio, [fee_a, fee_b])
     proj = build_observed_fee_tax_projection(ledger_view)
@@ -1298,9 +1302,11 @@ def test_aggregation_tamper_reordered_states() -> None:
     portfolio = _make_portfolio()
     account_a = uuid4()
     account_b = uuid4()
+    t1 = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 6, 1, 11, 0, 0, tzinfo=timezone.utc)
 
-    fee_a = _make_tx(portfolio.id, account_a, TransactionType.FEE, cash_amount=Decimal("1.00"), cash_currency=Currency.USD)
-    fee_b = _make_tx(portfolio.id, account_b, TransactionType.FEE, cash_amount=Decimal("2.00"), cash_currency=Currency.USD)
+    fee_a = _make_tx(portfolio.id, account_a, TransactionType.FEE, recorded_at=t1, cash_amount=Decimal("1.00"), cash_currency=Currency.USD)
+    fee_b = _make_tx(portfolio.id, account_b, TransactionType.FEE, recorded_at=t2, cash_amount=Decimal("2.00"), cash_currency=Currency.USD)
 
     ledger_view = build_ledger_projection_view(portfolio, [fee_a, fee_b])
     proj = build_observed_fee_tax_projection(ledger_view)

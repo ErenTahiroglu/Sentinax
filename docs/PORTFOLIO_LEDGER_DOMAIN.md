@@ -178,11 +178,12 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 
 ---
 
-## 12. Deferred Scope (Phase 12C.6+ & Phase 14C+)
+## 12. Deferred Scope (Phase 12C.6+ & Phase 14D+)
 - **Phase 12C.6+:** Lot matching engines (FIFO/LIFO/Average Cost), cash bucket attribution, realized/unrealized P&L, portfolio valuations.
 - **Phase 14A:** Observed explicit fee & tax-withholding event projection foundation (completed).
 - **Phase 14B:** Exact per-account / per-currency observed fee & tax-withholding aggregation (completed).
-- **Phase 14C+:** Turkish and international tax rules, withholding calculations, tax liability estimation, and fee optimization.
+- **Phase 14C:** Owner-bound persisted observed fee/tax evidence query service (completed).
+- **Phase 14D+:** Turkish and international tax rules, withholding calculations, tax liability estimation, and fee optimization.
 
 ---
 
@@ -472,4 +473,24 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - No broker commission schedule or fee inference.
   - No FX conversion or base-currency rollup.
   - No cost-basis or tax-lot modification.
+
+---
+
+## 16. Owner-Bound Persisted Observed Fee/Tax Evidence Query Service (Phase 14C)
+- **Persistence Authority:** Injected owner-scoped `PortfolioRepository` (or structural `PortfolioFeeTaxRepositoryPort`) acts as sole data authority.
+- **Complete Portfolio History:** `list_transactions(portfolio_id)` loads complete portfolio transaction history without account-level filtering, allowing full multi-account aggregation.
+- **Explicit Knowledge Cutoff:**
+  - `get_current_aggregation`: Captures system clock exactly once per query, validates timezone awareness, normalizes to UTC, and uses that exact cutoff.
+  - `get_aggregation_as_of`: Validates caller's timezone-aware datetime and strictly preserves caller's exact representation (e.g. `+03:00`).
+- **Downstream Pipeline Execution:**
+  - `LedgerProjectionView` owns reversal/PIT semantics.
+  - `ObservedFeeTaxProjection` (Phase 14A) owns observed explicit charge filtering.
+  - `ObservedFeeTaxAggregation` (Phase 14B) owns exact per-account/currency Decimal aggregation.
+- **Read-Only & Stateless:** Zero write methods, zero caching/memoization, zero state mutation.
+- **Purity & Isolation:**
+  - No internal fee/tax arithmetic or filter duplication.
+  - No FX conversion or base-currency rollup.
+  - No tax law, liability estimates, or heuristic trade attribution.
+  - Fail-closed error propagation for lower-layer projection and operational repository exceptions.
+
 
