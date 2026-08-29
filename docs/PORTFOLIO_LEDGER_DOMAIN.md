@@ -631,6 +631,24 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Authoritative Object Identity Preservation:** Derived partition tuples retain exact event object instances (`is` comparison), preventing forged, copied, or reordered view states.
 - **Zero Ledger Rebinding & Zero Financial Aggregation:** Phase 14I operates purely on attribution event IDs without ledger transaction joins, currency conversions, decimal balance aggregations, or tax-law rules.
 
+---
+
+## 25. Persisted Attribution to Authoritative Ledger Semantic Rebinding (Phase 14J)
+- **Pure Semantic Bridge:** `bind_persisted_fee_tax_attribution_history` rebinds active persisted attribution history (`PersistedFeeTaxAttributionHistoryView`) to authoritative active ledger transactions (`LedgerProjectionView`).
+- **Active Persisted Allocations Only:** Consumes exclusively `persisted_history.active_allocation_events` in exact canonical order; reversed allocations and reversal events are excluded from the semantic set.
+- **Authoritative Active Charge & Target Enforcement:**
+  - Charge transaction ID must resolve to an active `FEE` or `TAX_WITHHOLDING` event in `ObservedFeeTaxProjection` (Phase 14A).
+  - Target transaction ID must resolve to an active transaction in `LedgerProjectionView.active_transactions` (Phase 12C.1).
+  - Missing, reversed, or inactive charges/targets fail closed immediately.
+- **Defense-in-Depth Account and Portfolio Binding:** Revalidates that `event.account_id == charge.account_id == target.account_id` and `event.portfolio_id == charge.portfolio_id == target.portfolio_id`.
+- **Exact Decimal & Object Preservation:**
+  - Persisted allocated amounts are preserved losslessly (`.as_tuple()`) and converted into `FeeTaxAttributionIntent`.
+  - Canonical `build_observed_fee_tax_attribution_set` (Phase 14D) validates multi-target caps, single allocation limits, cumulative capacity, and target type allowlists.
+  - Authoritative `PortfolioTransaction` instances are bound by object identity (`is`).
+- **Exact PIT Representation Consistency:** Ledger and history projection views must share identical wall-clock and timezone representation (`_is_exact_datetime_representation_equal`).
+- **Zero Database / Zero Tax-Law Semantics:** Pure domain composition with no repository lookups, no clock calls, no tax calculations, no FX conversions, and no cost-basis modifications.
+
+
 
 
 

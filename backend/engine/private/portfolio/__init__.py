@@ -213,7 +213,13 @@ from backend.engine.private.portfolio.fee_tax_attribution_history import (
     PersistedFeeTaxAttributionHistoryView,
     build_persisted_fee_tax_attribution_history_view,
 )
+from backend.engine.private.portfolio.fee_tax_attribution_binding import (
+    FeeTaxAttributionBindingError,
+    PersistedFeeTaxAttributionSemanticView,
+    bind_persisted_fee_tax_attribution_history,
+)
 from backend.engine.private.portfolio.repository import PortfolioRepository
+
 
 
 __all__ = [
@@ -266,7 +272,11 @@ __all__ = [
     "FeeTaxAttributionHistoryError",
     "PersistedFeeTaxAttributionHistoryView",
     "build_persisted_fee_tax_attribution_history_view",
+    "FeeTaxAttributionBindingError",
+    "PersistedFeeTaxAttributionSemanticView",
+    "bind_persisted_fee_tax_attribution_history",
     "PortfolioAccountingError",
+
 
     "PortfolioAccountingSnapshot",
     "build_portfolio_accounting_snapshot",
