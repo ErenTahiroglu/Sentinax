@@ -178,9 +178,10 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 
 ---
 
-## 12. Deferred Scope (Phase 12C.6+ & Phase 14)
+## 12. Deferred Scope (Phase 12C.6+ & Phase 14B+)
 - **Phase 12C.6+:** Lot matching engines (FIFO/LIFO/Average Cost), cash bucket attribution, realized/unrealized P&L, portfolio valuations.
-- **Phase 14:** Turkish and international tax rules, withholding calculations, and fee optimization.
+- **Phase 14A:** Observed explicit fee & tax-withholding event projection foundation (completed).
+- **Phase 14B+:** Turkish and international tax rules, withholding calculations, tax liability estimation, and fee optimization.
 
 ---
 
@@ -429,5 +430,25 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Identity & Cash Boundaries:** Staging claims are strictly separated from ledger external identity (`external_source = NULL`, `external_reference = NULL`); zero cash bucket assignment (`cash_bucket_id = NULL`).
 - **Unmodified Exception Propagation:** Parser, semantic format, resolver, and database/repository exceptions propagate directly without exception wrapping or conversion to `INVALID`.
 
+---
 
-
+## 14. Observed Explicit Fee & Tax-Withholding Projection (Phase 14A)
+- **Input Authority:** Sole input authority is `LedgerProjectionView.active_transactions` exclusively (Phase 12C.1).
+- **Observed-Only Semantics:** Captures ONLY actual explicit `FEE` and `TAX_WITHHOLDING` ledger events.
+  - `observed ledger charge ≠ estimated tax liability ≠ expected future tax ≠ synthetic fee estimate`.
+- **Reversal & PIT Aware:** Automatically inherits system PIT cutoff and reversal deactivation:
+  - At PIT before a reversal's `recorded_at`: charge remains visible.
+  - At PIT on/after a reversal's `recorded_at`: charge is absent from active events.
+- **Exact Object & Precision Preservation:** Preserves original authoritative `PortfolioTransaction` instances by exact object identity (`actual is expected`) and exact `Decimal` precision without numeric normalization or floating-point conversions.
+- **Canonical Event Ordering:** Strictly preserves the upstream relative ordering in `ledger_view.active_transactions`. No independent sorting by date, amount, or type.
+- **Optional Instrument Linkage vs. Account-Level Charges:**
+  - `instrument_linked_events`: filters events with `instrument_id is not None`.
+  - `account_level_events`: filters events with `instrument_id is None`.
+  - Instrument linkage is strictly the explicit ledger field already recorded; it does NOT imply heuristic trade attribution.
+- **No Monetary Aggregation Across Currencies:** Phase 14A does NOT compute total fees, total taxes, total costs, or effective tax rates. Multi-currency values remain distinct.
+- **No Tax Law / Inference / Attribution Heuristics:**
+  - Zero hard-coded tax rates or jurisdiction rules (Turkey, US, BIST, TEFAS, Eurobond).
+  - Zero fee inference from trade notionals or broker commission schedules.
+  - Zero tax withholding inference from dividend, interest, or sale events.
+  - Zero causal trade-attribution heuristics (matching by date, nearest timestamp, or account).
+- **Observed Charges as Evidence Layer:** Observed charges establish a trustworthy factual evidence foundation before later tax/fee calculation engines (Phase 14B+).

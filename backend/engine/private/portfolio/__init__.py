@@ -180,6 +180,11 @@ from backend.engine.private.portfolio.projection import (
     ProjectedTransactionState,
     build_ledger_projection_view,
 )
+from backend.engine.private.portfolio.fee_tax import (
+    FeeTaxProjectionError,
+    ObservedFeeTaxProjection,
+    build_observed_fee_tax_projection,
+)
 from backend.engine.private.portfolio.repository import PortfolioRepository
 
 __all__ = [
@@ -209,6 +214,9 @@ __all__ = [
     "CashBalanceState",
     "CashBalanceProjection",
     "build_cash_balance_projection",
+    "FeeTaxProjectionError",
+    "ObservedFeeTaxProjection",
+    "build_observed_fee_tax_projection",
     "PortfolioAccountingError",
     "PortfolioAccountingSnapshot",
     "build_portfolio_accounting_snapshot",
