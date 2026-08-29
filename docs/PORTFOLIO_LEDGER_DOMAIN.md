@@ -589,6 +589,20 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **No Ledger Semantic or Schema Mutation:** Zero alterations to ledger table columns, constraints, or the closed `validate_portfolio_transaction_integrity` business logic.
 - **Zero Tax Law / Cost Basis Effect:** Does not alter cost basis, tax calculations, or tax liabilities.
 
+---
+
+## 22. Cross-Stream PIT Backdating & Attribution-Reversal Lock Hardening (Phase 14G.2)
+- **Cross-Stream PIT Non-Backdating Invariant:** A ledger `REVERSAL` cannot be backdated to or before already-persisted related attribution evidence involving that transaction.
+  - Strict rule: If any Phase 14 attribution evidence exists where the reversed transaction is the charge or the target (including attribution reversals), `reversal.recorded_at` must be STRICTLY GREATER THAN (`>`) the maximum `recorded_at` of all such related attribution evidence.
+  - Rejects retroactive invalidation of previously accepted attribution snapshots across streams.
+- **Attribution Reversal Dual Row Locking:** The attribution-event `REVERSAL` path resolves `target_transaction_id` from the referenced allocation and acquires row locks (`FOR UPDATE`) on both the charge AND target ledger transactions in deterministic order (`charge` -> `target`).
+- **Complete Cross-Stream Synchronization:**
+  - Attribution `ALLOCATION` vs ledger `REVERSAL` (charge or target) serialize on the referenced transaction row.
+  - Attribution `REVERSAL` vs ledger `REVERSAL` (charge or target) serialize on the referenced transaction row.
+- **Forward-Dated Ledger Reversals Permitted:** Ledger reversals stamped with `recorded_at > max(related attribution evidence)` remain valid, inactivating the transaction for future PIT cutoffs without rewriting historical PIT truth.
+- **No Schema / Privilege / Tax Rule Changes:** Table schemas, RLS policies, privilege matrices, and closed business logic remain intact.
+
+
 
 
 
