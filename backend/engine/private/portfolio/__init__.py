@@ -199,6 +199,15 @@ from backend.engine.private.portfolio.fee_tax_attribution import (
     ResolvedFeeTaxAttribution,
     build_observed_fee_tax_attribution_set,
 )
+from backend.engine.private.portfolio.fee_tax_attribution_persistence import (
+    FeeTaxAttributionEventType,
+    FeeTaxAttributionPersistenceError,
+    FeeTaxAttributionPersistenceEvent,
+    build_allocation_persistence_event,
+    build_attribution_reversal_persistence_event,
+    hydrate_fee_tax_attribution_persistence_event,
+    serialize_fee_tax_attribution_persistence_event,
+)
 from backend.engine.private.portfolio.repository import PortfolioRepository
 
 __all__ = [
@@ -241,6 +250,13 @@ __all__ = [
     "ResolvedFeeTaxAttribution",
     "ObservedFeeTaxAttributionSet",
     "build_observed_fee_tax_attribution_set",
+    "FeeTaxAttributionPersistenceError",
+    "FeeTaxAttributionEventType",
+    "FeeTaxAttributionPersistenceEvent",
+    "build_allocation_persistence_event",
+    "build_attribution_reversal_persistence_event",
+    "serialize_fee_tax_attribution_persistence_event",
+    "hydrate_fee_tax_attribution_persistence_event",
     "PortfolioAccountingError",
     "PortfolioAccountingSnapshot",
     "build_portfolio_accounting_snapshot",

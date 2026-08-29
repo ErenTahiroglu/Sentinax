@@ -508,5 +508,22 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Zero Ledger Modification & Zero Persistence:** Attribution evidence is an independent factual layer; no fields are added to `PortfolioTransaction`, and no database tables/RPCs are introduced in Phase 14D.
 - **Zero Tax Law / Cost Basis Effect:** Does not modify `PositionLot`, unit cost, realized/unrealized P&L, or tax liabilities.
 
+---
+
+## 18. Immutable Fee/Tax Attribution Persistence-Event Contract & Exact Codec (Phase 14E)
+- **Append-Only Evidence Event Stream:** Attribution evidence is modeled as an append-only persistence event stream (`FeeTaxAttributionPersistenceEvent`), preserving audit history without mutating existing records.
+- **Explicit Correction Model (ALLOCATION vs. REVERSAL):**
+  - `ALLOCATION`: Contains explicit relationship economics (`charge_transaction_id`, `target_transaction_id`, finite `allocated_amount > 0`, `reverses_attribution_event_id = None`).
+  - `REVERSAL`: Reference-only event pointing to a prior attribution event (`reverses_attribution_event_id = UUID`, zero independent economics, all charge/target/amount fields `None`).
+  - Self-reversal (`id == reverses_attribution_event_id`) is strictly rejected.
+  - Zero `UPDATE` or `DELETE` correction semantics.
+- **System-Knowledge Time (`recorded_at`):** `recorded_at` represents the system-knowledge time when Sentinax recorded the attribution event. It is NOT transaction `effective_date`, `executed_at`, `imported_at`, or a legal tax date.
+- **Defense-in-Depth Owner Isolation:** `owner_id` is persistence-row boundary metadata required for storage isolation and defense-in-depth, not an attribute on domain event entities.
+- **No Data Denormalization:** Currency, transaction types, instrument IDs, and transaction execution dates are not copied into attribution persistence events; referenced ledger transactions remain authoritative.
+- **Exact Decimal Representation Preservation:** Serializer and hydrator strictly preserve exact Decimal scale and representation across text serialization (e.g. `6.000` -> `"6.000"` -> `Decimal("6.000")`).
+- **No Durability or Write Path Yet:** Phase 14E defines only the domain event contract, pure builders, serializer, and hydrator. No database schema, migration, RPC, or repository write methods exist yet (durability is deferred to Phase 14F+).
+- **Storage-History Validation Deferred:** Verification of whether referenced original events exist or have already been reversed is intentionally deferred to future persistence service layers.
+
+
 
 
