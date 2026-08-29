@@ -663,6 +663,21 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Rebinds semantic active attributions via `bind_persisted_fee_tax_attribution_history` (Phase 14J).
 - **Strict Read-Only Purity:** No persistence writes, no state mutation or caching, no attribution inference, no tax-law calculation, no FX conversion, and no cost-basis modifications.
 
+---
+
+## 27. Owner-Bound Append-Only Attribution Persistence Repository (Phase 14L)
+- **Trusted Low-Level Append Primitive:** `PortfolioRepository.append_fee_tax_attribution_event` accepts already-constructed immutable `FeeTaxAttributionPersistenceEvent` records and persists them directly to `portfolio_fee_tax_attribution_events`.
+- **Strict Owner Isolation & Row Formatting:** Bound `_owner_id` is passed to canonical `serialize_fee_tax_attribution_persistence_event`, generating an exact 10-field row payload with exact string Decimal formatting (no float/rounding) and caller-unforgeable owner identity.
+- **Direct INSERT with Hardened DB Invariants:** Uses `insert(row, returning="minimal")` relying on Phase 14F/G/G.1/G.2 database triggers and composite FKs as race-safe authority (zero client-side preflight queries, zero RPCs, zero UPDATE/DELETE/UPSERT).
+- **Mandatory Verified Readback:** After INSERT, the event is immediately read back via `get_fee_tax_attribution_event` and verified for persistence equivalence (`id`, `portfolio_id`, `account_id`, `event_type`, `charge_transaction_id`, `target_transaction_id`, `reverses_attribution_event_id`, exact Decimal `.as_tuple()`, and physical `TIMESTAMPTZ` instant in UTC).
+- **Physical Event-ID Idempotency:** Concurrent SQLSTATE `23505` uniqueness violations are deterministically resolved:
+  - If the physical event ID already exists with identical persistence semantics, the existing record is returned safely.
+  - If the ID exists with conflicting semantics, fails closed with `RuntimeError`.
+  - If the event ID does not exist (e.g. `uq_fee_tax_attribution_single_reversal` violation), the original `APIError` is re-raised.
+- **Trigger & Operational Error Transparency:** Database trigger exceptions (over-allocation, active duplicates, inactive charges/targets, backdating) propagate unchanged without client-side financial interpretation.
+- **Zero Clock / UUID Mutation:** Preserves caller-supplied event IDs and knowledge timestamps verbatim without system-time capture or UUID regeneration.
+
+
 
 
 

@@ -71,7 +71,9 @@ from backend.engine.private.portfolio.models import (
 from backend.engine.private.portfolio.fee_tax_attribution_persistence import (
     FeeTaxAttributionPersistenceEvent,
     hydrate_fee_tax_attribution_persistence_event,
+    serialize_fee_tax_attribution_persistence_event,
 )
+
 from backend.engine.private.portfolio.fee_tax_attribution_transport import (
     canonicalize_fee_tax_attribution_postgrest_row,
 )
@@ -1475,5 +1477,101 @@ class PortfolioRepository:
 
         results.sort(key=lambda e: (e.recorded_at, e.id))
         return results
+
+    def append_fee_tax_attribution_event(
+        self,
+        event: FeeTaxAttributionPersistenceEvent,
+    ) -> FeeTaxAttributionPersistenceEvent:
+        """
+        Appends an immutable fee/tax attribution persistence event to portfolio_fee_tax_attribution_events.
+        Performs direct INSERT using bound owner context, verifies readback, and handles idempotent physical replays.
+        """
+        if isinstance(event, bool) or not isinstance(event, FeeTaxAttributionPersistenceEvent):
+            raise TypeError(
+                f"event must be a FeeTaxAttributionPersistenceEvent instance, got {type(event).__name__}: {event!r}"
+            )
+
+        row = serialize_fee_tax_attribution_persistence_event(event, self._owner_id)
+
+        try:
+            self._client.table("portfolio_fee_tax_attribution_events").insert(
+                row, returning="minimal"
+            ).execute()
+        except APIError as e:
+            if getattr(e, "code", None) == "23505":
+                return self._resolve_fee_tax_attribution_23505_race(event, e)
+            raise
+
+        persisted = self.get_fee_tax_attribution_event(event.portfolio_id, event.id)
+        if persisted is None:
+            raise RuntimeError(
+                f"Inserted fee/tax attribution event {event.id} could not be read back from persistence."
+            )
+        if not _fee_tax_attribution_events_persistence_equivalent(event, persisted):
+            raise RuntimeError(
+                f"Persisted fee/tax attribution event {event.id} does not match expected persistence semantics."
+            )
+
+        return persisted
+
+    def _resolve_fee_tax_attribution_23505_race(
+        self,
+        event: FeeTaxAttributionPersistenceEvent,
+        original_error: APIError,
+    ) -> FeeTaxAttributionPersistenceEvent:
+        """
+        Resolves concurrent SQLSTATE 23505 uniqueness violations for fee/tax attribution events.
+        If the physical event ID already exists with identical persistence semantics, returns the existing event.
+        If it exists with conflicting semantics, raises RuntimeError.
+        If the event ID does not exist (e.g. single-reversal unique index violation), re-raises original APIError.
+        """
+        existing = self.get_fee_tax_attribution_event(event.portfolio_id, event.id)
+        if existing is not None:
+            if _fee_tax_attribution_events_persistence_equivalent(event, existing):
+                return existing
+            raise RuntimeError(
+                f"Concurrent conflict: Fee/tax attribution event ID {event.id} already exists with different persistence semantics."
+            )
+
+        raise original_error
+
+
+def _fee_tax_attribution_events_persistence_equivalent(
+    expected: FeeTaxAttributionPersistenceEvent,
+    actual: FeeTaxAttributionPersistenceEvent,
+) -> bool:
+    """
+    Checks exact persistence-domain equivalence between candidate and persisted readback event.
+    - Exact UUID / enum / ID fields equality.
+    - Exact Decimal representation equality via .as_tuple().
+    - TIMESTAMPTZ physical-instant equality in UTC.
+    """
+    if expected.id != actual.id:
+        return False
+    if expected.portfolio_id != actual.portfolio_id:
+        return False
+    if expected.account_id != actual.account_id:
+        return False
+    if expected.event_type != actual.event_type:
+        return False
+    if expected.charge_transaction_id != actual.charge_transaction_id:
+        return False
+    if expected.target_transaction_id != actual.target_transaction_id:
+        return False
+    if expected.reverses_attribution_event_id != actual.reverses_attribution_event_id:
+        return False
+
+    if expected.allocated_amount is None or actual.allocated_amount is None:
+        if expected.allocated_amount is not actual.allocated_amount:
+            return False
+    else:
+        if expected.allocated_amount.as_tuple() != actual.allocated_amount.as_tuple():
+            return False
+
+    if expected.recorded_at.astimezone(timezone.utc) != actual.recorded_at.astimezone(timezone.utc):
+        return False
+
+    return True
+
 
 

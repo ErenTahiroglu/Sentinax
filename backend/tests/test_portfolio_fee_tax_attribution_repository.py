@@ -427,13 +427,16 @@ class TestStaticAttributionRepositoryInvariants:
         assert '.eq("owner_id", self._owner_id_str)' in source_list
 
     def test_no_writes_in_attribution_repository_code(self):
-        """Item 64: Phase 14H adds zero attribution write methods."""
+        """Item 64: Verify attribution repository method surface (Phase 14H read + Phase 14L append)."""
         repo_methods = dir(PortfolioRepository)
         attribution_methods = [m for m in repo_methods if "fee_tax_attribution" in m]
         assert set(attribution_methods) == {
             "get_fee_tax_attribution_event",
             "list_fee_tax_attribution_events",
+            "append_fee_tax_attribution_event",
+            "_resolve_fee_tax_attribution_23505_race",
         }
+
 
     def test_no_clock_use_in_attribution_read_methods(self):
         """Item 65: Attribution read methods contain no clock or now() calls."""
