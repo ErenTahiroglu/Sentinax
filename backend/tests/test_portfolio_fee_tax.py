@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 from datetime import date, datetime, timedelta, timezone
+import decimal
 from decimal import Decimal
 import inspect
 from uuid import UUID, uuid4
@@ -27,7 +28,10 @@ from backend.engine.private.portfolio.cash import (
 )
 from backend.engine.private.portfolio.fee_tax import (
     FeeTaxProjectionError,
+    ObservedFeeTaxAggregateState,
+    ObservedFeeTaxAggregation,
     ObservedFeeTaxProjection,
+    build_observed_fee_tax_aggregation,
     build_observed_fee_tax_projection,
 )
 import backend.engine.private.portfolio.fee_tax as fee_tax_module
@@ -858,6 +862,36 @@ def test_purity_no_transaction_creation() -> None:
                 pytest.fail("fee_tax module must not construct new PortfolioTransaction instances")
 
 
+def test_purity_no_round_or_quantize() -> None:
+    src = inspect.getsource(fee_tax_module)
+    tree = ast.parse(src)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id == "round":
+                pytest.fail("fee_tax module must not use round()")
+        if isinstance(node, ast.Attribute):
+            assert node.attr not in ("quantize", "fsum")
+
+
+def test_purity_no_tax_law_rules() -> None:
+    src = inspect.getsource(fee_tax_module)
+    tree = ast.parse(src)
+
+    tax_law_terms = {
+        "tax_due", "tax_refund", "tax_credit", "estimated_tax", "remaining_tax",
+        "tax_bracket", "tax_rate", "withholding_rate", "bist_fee", "sec_fee",
+        "turkey", "turkish", "tefas", "eurobond", "stopaj"
+    }
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            assert node.id.lower() not in tax_law_terms
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            for term in tax_law_terms:
+                assert term not in node.value.lower(), f"Found tax law term '{term}' in docstring/constant: {node.value}"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 7. Red-Team Scenarios
 # ─────────────────────────────────────────────────────────────────────────────
@@ -890,3 +924,835 @@ def test_red_team_cannot_infer_fee_from_buy_or_sell() -> None:
     assert proj.events == ()
     assert proj.fee_count == 0
     assert proj.tax_withholding_count == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. Phase 14B Aggregation Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_aggregation_empty() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    dep_tx = _make_tx(portfolio.id, account_id, TransactionType.CASH_DEPOSIT, cash_amount=Decimal("1000.00"))
+    ledger_view = build_ledger_projection_view(portfolio, [dep_tx])
+    proj = build_observed_fee_tax_projection(ledger_view)
+
+    agg = build_observed_fee_tax_aggregation(proj)
+    assert agg.portfolio_id == portfolio.id
+    assert agg.mode == portfolio.mode
+    assert agg.as_of_recorded_at is None
+    assert agg.observed_projection is proj
+    assert agg.states == ()
+    assert agg.state_count == 0
+    assert agg.account_ids == ()
+    assert agg.fee_bearing_states == ()
+    assert agg.tax_withholding_bearing_states == ()
+
+
+def test_aggregation_one_fee() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    fee_tx = _make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("12.50"), cash_currency=Currency.USD)
+    ledger_view = build_ledger_projection_view(portfolio, [fee_tx])
+    proj = build_observed_fee_tax_projection(ledger_view)
+
+    agg = build_observed_fee_tax_aggregation(proj)
+    assert agg.state_count == 1
+    assert agg.account_ids == (account_id,)
+    state = agg.states[0]
+    assert state.portfolio_id == portfolio.id
+    assert state.account_id == account_id
+    assert state.currency == Currency.USD
+    assert state.fee_amount == Decimal("12.50")
+    assert state.tax_withholding_amount == Decimal("0")
+    assert state.fee_event_count == 1
+    assert state.tax_withholding_event_count == 0
+    assert state.total_observed_charge == Decimal("12.50")
+    assert agg.fee_bearing_states == (state,)
+    assert agg.tax_withholding_bearing_states == ()
+
+
+def test_aggregation_one_tax_withholding() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    tax_tx = _make_tx(portfolio.id, account_id, TransactionType.TAX_WITHHOLDING, cash_amount=Decimal("15.75"), cash_currency=Currency.TRY)
+    ledger_view = build_ledger_projection_view(portfolio, [tax_tx])
+    proj = build_observed_fee_tax_projection(ledger_view)
+
+    agg = build_observed_fee_tax_aggregation(proj)
+    assert agg.state_count == 1
+    assert agg.account_ids == (account_id,)
+    state = agg.states[0]
+    assert state.portfolio_id == portfolio.id
+    assert state.account_id == account_id
+    assert state.currency == Currency.TRY
+    assert state.fee_amount == Decimal("0")
+    assert state.tax_withholding_amount == Decimal("15.75")
+    assert state.fee_event_count == 0
+    assert state.tax_withholding_event_count == 1
+    assert state.total_observed_charge == Decimal("15.75")
+    assert agg.fee_bearing_states == ()
+    assert agg.tax_withholding_bearing_states == (state,)
+
+
+def test_aggregation_mixed_fee_and_tax_same_account_currency() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    t1 = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 6, 1, 11, 0, 0, tzinfo=timezone.utc)
+    t3 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    fee1 = _make_tx(portfolio.id, account_id, TransactionType.FEE, recorded_at=t1, cash_amount=Decimal("1.20"), cash_currency=Currency.USD)
+    tax1 = _make_tx(portfolio.id, account_id, TransactionType.TAX_WITHHOLDING, recorded_at=t2, cash_amount=Decimal("3.400"), cash_currency=Currency.USD)
+    fee2 = _make_tx(portfolio.id, account_id, TransactionType.FEE, recorded_at=t3, cash_amount=Decimal("2.300"), cash_currency=Currency.USD)
+
+    ledger_view = build_ledger_projection_view(portfolio, [fee1, tax1, fee2])
+    proj = build_observed_fee_tax_projection(ledger_view)
+    agg = build_observed_fee_tax_aggregation(proj)
+
+    assert agg.state_count == 1
+    state = agg.states[0]
+    assert state.fee_event_count == 2
+    assert state.tax_withholding_event_count == 1
+    assert state.fee_amount == Decimal("3.500")
+    assert state.fee_amount.as_tuple() == Decimal("3.500").as_tuple()
+    assert state.tax_withholding_amount == Decimal("3.400")
+    assert state.tax_withholding_amount.as_tuple() == Decimal("3.400").as_tuple()
+    assert state.total_observed_charge == Decimal("6.900")
+    assert state.total_observed_charge.as_tuple() == Decimal("6.900").as_tuple()
+    assert agg.fee_bearing_states == (state,)
+    assert agg.tax_withholding_bearing_states == (state,)
+
+
+def test_aggregation_same_account_different_currency_separation() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    t1 = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 6, 1, 11, 0, 0, tzinfo=timezone.utc)
+    t3 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    fee_usd = _make_tx(portfolio.id, account_id, TransactionType.FEE, recorded_at=t1, cash_amount=Decimal("1.00"), cash_currency=Currency.USD)
+    fee_try = _make_tx(portfolio.id, account_id, TransactionType.FEE, recorded_at=t2, cash_amount=Decimal("10.00"), cash_currency=Currency.TRY)
+    tax_usd = _make_tx(portfolio.id, account_id, TransactionType.TAX_WITHHOLDING, recorded_at=t3, cash_amount=Decimal("2.00"), cash_currency=Currency.USD)
+
+    ledger_view = build_ledger_projection_view(portfolio, [fee_usd, fee_try, tax_usd])
+    proj = build_observed_fee_tax_projection(ledger_view)
+    agg = build_observed_fee_tax_aggregation(proj)
+
+    assert agg.state_count == 2
+    assert agg.account_ids == (account_id,)
+
+    state_usd = agg.states[0]
+    assert state_usd.currency == Currency.USD
+    assert state_usd.fee_amount == Decimal("1.00")
+    assert state_usd.tax_withholding_amount == Decimal("2.00")
+    assert state_usd.fee_event_count == 1
+    assert state_usd.tax_withholding_event_count == 1
+
+    state_try = agg.states[1]
+    assert state_try.currency == Currency.TRY
+    assert state_try.fee_amount == Decimal("10.00")
+    assert state_try.tax_withholding_amount == Decimal("0")
+    assert state_try.fee_event_count == 1
+    assert state_try.tax_withholding_event_count == 0
+
+
+def test_aggregation_different_account_same_currency_separation() -> None:
+    portfolio = _make_portfolio()
+    account_a = uuid4()
+    account_b = uuid4()
+
+    fee_a = _make_tx(portfolio.id, account_a, TransactionType.FEE, cash_amount=Decimal("1.00"), cash_currency=Currency.USD)
+    fee_b = _make_tx(portfolio.id, account_b, TransactionType.FEE, cash_amount=Decimal("2.00"), cash_currency=Currency.USD)
+
+    ledger_view = build_ledger_projection_view(portfolio, [fee_a, fee_b])
+    proj = build_observed_fee_tax_projection(ledger_view)
+    agg = build_observed_fee_tax_aggregation(proj)
+
+    assert agg.state_count == 2
+    assert agg.account_ids == (account_a, account_b)
+    assert agg.states[0].account_id == account_a
+    assert agg.states[0].fee_amount == Decimal("1.00")
+    assert agg.states[1].account_id == account_b
+    assert agg.states[1].fee_amount == Decimal("2.00")
+
+
+def test_aggregation_first_seen_state_ordering() -> None:
+    portfolio = _make_portfolio()
+    account_a = uuid4()
+    account_b = uuid4()
+
+    t1 = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 6, 1, 11, 0, 0, tzinfo=timezone.utc)
+    t3 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    t4 = datetime(2026, 6, 1, 13, 0, 0, tzinfo=timezone.utc)
+
+    # Sequence: (B, USD), (A, TRY), (B, USD), (A, EUR)
+    tx1 = _make_tx(portfolio.id, account_b, TransactionType.FEE, recorded_at=t1, cash_amount=Decimal("5.00"), cash_currency=Currency.USD)
+    tx2 = _make_tx(portfolio.id, account_a, TransactionType.FEE, recorded_at=t2, cash_amount=Decimal("10.00"), cash_currency=Currency.TRY)
+    tx3 = _make_tx(portfolio.id, account_b, TransactionType.TAX_WITHHOLDING, recorded_at=t3, cash_amount=Decimal("1.50"), cash_currency=Currency.USD)
+    tx4 = _make_tx(portfolio.id, account_a, TransactionType.FEE, recorded_at=t4, cash_amount=Decimal("20.00"), cash_currency=Currency.EUR)
+
+    ledger_view = build_ledger_projection_view(portfolio, [tx1, tx2, tx3, tx4])
+    proj = build_observed_fee_tax_projection(ledger_view)
+    agg = build_observed_fee_tax_aggregation(proj)
+
+    assert agg.state_count == 3
+    assert agg.states[0].account_id == account_b and agg.states[0].currency == Currency.USD
+    assert agg.states[1].account_id == account_a and agg.states[1].currency == Currency.TRY
+    assert agg.states[2].account_id == account_a and agg.states[2].currency == Currency.EUR
+    assert agg.account_ids == (account_b, account_a)
+
+
+def test_aggregation_instrument_linked_and_account_level_coexistence() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    inst_id = uuid4()
+
+    fee_acc = _make_tx(portfolio.id, account_id, TransactionType.FEE, instrument_id=None, cash_amount=Decimal("10.00"), cash_currency=Currency.USD)
+    fee_inst = _make_tx(portfolio.id, account_id, TransactionType.FEE, instrument_id=inst_id, cash_amount=Decimal("5.00"), cash_currency=Currency.USD)
+
+    ledger_view = build_ledger_projection_view(portfolio, [fee_acc, fee_inst])
+    proj = build_observed_fee_tax_projection(ledger_view)
+    agg = build_observed_fee_tax_aggregation(proj)
+
+    assert agg.state_count == 1
+    state = agg.states[0]
+    assert state.fee_event_count == 2
+    assert state.fee_amount == Decimal("15.00")
+
+
+def test_aggregation_exact_decimal_representation_preservation() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+
+    fee1 = _make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("1.20"), cash_currency=Currency.USD)
+    fee2 = _make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("2.300"), cash_currency=Currency.USD)
+
+    ledger_view = build_ledger_projection_view(portfolio, [fee1, fee2])
+    proj = build_observed_fee_tax_projection(ledger_view)
+    agg = build_observed_fee_tax_aggregation(proj)
+
+    state = agg.states[0]
+    assert state.fee_amount == Decimal("3.500")
+    assert state.fee_amount.as_tuple() == (0, (3, 5, 0, 0), -3)
+
+
+def test_aggregation_ambient_decimal_precision_independence() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+
+    fee1 = _make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("1234567890.123456789"), cash_currency=Currency.USD)
+    fee2 = _make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("9876543210.987654321"), cash_currency=Currency.USD)
+
+    ledger_view = build_ledger_projection_view(portfolio, [fee1, fee2])
+    proj = build_observed_fee_tax_projection(ledger_view)
+
+    original_prec = decimal.getcontext().prec
+    try:
+        # Lower ambient precision drastically to 2 digits
+        decimal.getcontext().prec = 2
+
+        agg = build_observed_fee_tax_aggregation(proj)
+        state = agg.states[0]
+        expected_fee = Decimal("11111111101.111111110")
+        assert state.fee_amount == expected_fee
+        assert state.fee_amount.as_tuple() == expected_fee.as_tuple()
+        assert state.total_observed_charge == expected_fee
+    finally:
+        decimal.getcontext().prec = original_prec
+
+
+def test_aggregation_pit_fee_reversal_inheritance() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    t1 = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 6, 2, 10, 0, 0, tzinfo=timezone.utc)
+
+    fee_tx = _make_tx(portfolio.id, account_id, TransactionType.FEE, recorded_at=t1, cash_amount=Decimal("50.00"), cash_currency=Currency.USD)
+    rev_tx = _make_tx(portfolio.id, account_id, TransactionType.REVERSAL, recorded_at=t2, reverses_transaction_id=fee_tx.id)
+
+    all_txs = [fee_tx, rev_tx]
+
+    # PIT before reversal
+    view_t1 = build_ledger_projection_view(portfolio, all_txs, as_of_recorded_at=t1)
+    proj_t1 = build_observed_fee_tax_projection(view_t1)
+    agg_t1 = build_observed_fee_tax_aggregation(proj_t1)
+    assert agg_t1.state_count == 1
+    assert agg_t1.states[0].fee_amount == Decimal("50.00")
+
+    # PIT on/after reversal
+    view_t2 = build_ledger_projection_view(portfolio, all_txs, as_of_recorded_at=t2)
+    proj_t2 = build_observed_fee_tax_projection(view_t2)
+    agg_t2 = build_observed_fee_tax_aggregation(proj_t2)
+    assert agg_t2.state_count == 0
+    assert agg_t2.states == ()
+
+
+def test_aggregation_pit_tax_reversal_inheritance() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    t1 = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 6, 2, 10, 0, 0, tzinfo=timezone.utc)
+
+    tax_tx = _make_tx(portfolio.id, account_id, TransactionType.TAX_WITHHOLDING, recorded_at=t1, cash_amount=Decimal("25.00"), cash_currency=Currency.TRY)
+    rev_tx = _make_tx(portfolio.id, account_id, TransactionType.REVERSAL, recorded_at=t2, reverses_transaction_id=tax_tx.id)
+
+    all_txs = [tax_tx, rev_tx]
+
+    # PIT before reversal
+    view_t1 = build_ledger_projection_view(portfolio, all_txs, as_of_recorded_at=t1)
+    proj_t1 = build_observed_fee_tax_projection(view_t1)
+    agg_t1 = build_observed_fee_tax_aggregation(proj_t1)
+    assert agg_t1.state_count == 1
+    assert agg_t1.states[0].tax_withholding_amount == Decimal("25.00")
+
+    # PIT on/after reversal
+    view_t2 = build_ledger_projection_view(portfolio, all_txs, as_of_recorded_at=t2)
+    proj_t2 = build_observed_fee_tax_projection(view_t2)
+    agg_t2 = build_observed_fee_tax_aggregation(proj_t2)
+    assert agg_t2.state_count == 0
+    assert agg_t2.states == ()
+
+
+def test_aggregation_exact_pit_metadata_representation_binding() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    fee_tx = _make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("10.00"), cash_currency=Currency.USD)
+
+    utc_cutoff = datetime(2026, 6, 2, 0, 0, 0, tzinfo=timezone.utc)
+    plus_three_cutoff = datetime(2026, 6, 2, 3, 0, 0, tzinfo=timezone(timedelta(hours=3)))
+
+    ledger_view = build_ledger_projection_view(portfolio, [fee_tx], as_of_recorded_at=utc_cutoff)
+    proj = build_observed_fee_tax_projection(ledger_view)
+
+    # Valid construction via builder
+    agg = build_observed_fee_tax_aggregation(proj)
+    assert agg.as_of_recorded_at == utc_cutoff
+
+    # Direct constructor tampering with different offset representation of same instant
+    with pytest.raises(FeeTaxProjectionError, match="as_of_recorded_at .* does not match"):
+        ObservedFeeTaxAggregation(
+            portfolio_id=proj.portfolio_id,
+            mode=proj.mode,
+            as_of_recorded_at=plus_three_cutoff,
+            observed_projection=proj,
+            states=agg.states,
+        )
+
+
+def test_aggregation_tamper_omitted_state() -> None:
+    portfolio = _make_portfolio()
+    account_a = uuid4()
+    account_b = uuid4()
+
+    fee_a = _make_tx(portfolio.id, account_a, TransactionType.FEE, cash_amount=Decimal("1.00"), cash_currency=Currency.USD)
+    fee_b = _make_tx(portfolio.id, account_b, TransactionType.FEE, cash_amount=Decimal("2.00"), cash_currency=Currency.USD)
+
+    ledger_view = build_ledger_projection_view(portfolio, [fee_a, fee_b])
+    proj = build_observed_fee_tax_projection(ledger_view)
+    agg = build_observed_fee_tax_aggregation(proj)
+    assert agg.state_count == 2
+
+    # Supply only 1 state
+    with pytest.raises(FeeTaxProjectionError, match="states count .* does not match"):
+        ObservedFeeTaxAggregation(
+            portfolio_id=proj.portfolio_id,
+            mode=proj.mode,
+            as_of_recorded_at=proj.as_of_recorded_at,
+            observed_projection=proj,
+            states=(agg.states[0],),
+        )
+
+
+def test_aggregation_tamper_extra_state() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    fee_tx = _make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("1.00"), cash_currency=Currency.USD)
+
+    ledger_view = build_ledger_projection_view(portfolio, [fee_tx])
+    proj = build_observed_fee_tax_projection(ledger_view)
+    agg = build_observed_fee_tax_aggregation(proj)
+
+    extra_state = ObservedFeeTaxAggregateState(
+        portfolio_id=portfolio.id,
+        account_id=uuid4(),
+        currency=Currency.EUR,
+        fee_amount=Decimal("5.00"),
+        tax_withholding_amount=Decimal("0"),
+        fee_event_count=1,
+        tax_withholding_event_count=0,
+    )
+
+    with pytest.raises(FeeTaxProjectionError, match="states count .* does not match"):
+        ObservedFeeTaxAggregation(
+            portfolio_id=proj.portfolio_id,
+            mode=proj.mode,
+            as_of_recorded_at=proj.as_of_recorded_at,
+            observed_projection=proj,
+            states=(agg.states[0], extra_state),
+        )
+
+
+def test_aggregation_tamper_reordered_states() -> None:
+    portfolio = _make_portfolio()
+    account_a = uuid4()
+    account_b = uuid4()
+
+    fee_a = _make_tx(portfolio.id, account_a, TransactionType.FEE, cash_amount=Decimal("1.00"), cash_currency=Currency.USD)
+    fee_b = _make_tx(portfolio.id, account_b, TransactionType.FEE, cash_amount=Decimal("2.00"), cash_currency=Currency.USD)
+
+    ledger_view = build_ledger_projection_view(portfolio, [fee_a, fee_b])
+    proj = build_observed_fee_tax_projection(ledger_view)
+    agg = build_observed_fee_tax_aggregation(proj)
+
+    # Reorder (B then A instead of A then B)
+    with pytest.raises(FeeTaxProjectionError, match="account_id .* does not match"):
+        ObservedFeeTaxAggregation(
+            portfolio_id=proj.portfolio_id,
+            mode=proj.mode,
+            as_of_recorded_at=proj.as_of_recorded_at,
+            observed_projection=proj,
+            states=(agg.states[1], agg.states[0]),
+        )
+
+
+def test_aggregation_tamper_wrong_account() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    fee_tx = _make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("1.00"), cash_currency=Currency.USD)
+
+    ledger_view = build_ledger_projection_view(portfolio, [fee_tx])
+    proj = build_observed_fee_tax_projection(ledger_view)
+    agg = build_observed_fee_tax_aggregation(proj)
+
+    tampered_state = ObservedFeeTaxAggregateState(
+        portfolio_id=portfolio.id,
+        account_id=uuid4(),  # wrong account
+        currency=Currency.USD,
+        fee_amount=Decimal("1.00"),
+        tax_withholding_amount=Decimal("0"),
+        fee_event_count=1,
+        tax_withholding_event_count=0,
+    )
+
+    with pytest.raises(FeeTaxProjectionError, match="account_id .* does not match"):
+        ObservedFeeTaxAggregation(
+            portfolio_id=proj.portfolio_id,
+            mode=proj.mode,
+            as_of_recorded_at=proj.as_of_recorded_at,
+            observed_projection=proj,
+            states=(tampered_state,),
+        )
+
+
+def test_aggregation_tamper_wrong_currency() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    fee_tx = _make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("1.00"), cash_currency=Currency.USD)
+
+    ledger_view = build_ledger_projection_view(portfolio, [fee_tx])
+    proj = build_observed_fee_tax_projection(ledger_view)
+    agg = build_observed_fee_tax_aggregation(proj)
+
+    tampered_state = ObservedFeeTaxAggregateState(
+        portfolio_id=portfolio.id,
+        account_id=account_id,
+        currency=Currency.EUR,  # wrong currency
+        fee_amount=Decimal("1.00"),
+        tax_withholding_amount=Decimal("0"),
+        fee_event_count=1,
+        tax_withholding_event_count=0,
+    )
+
+    with pytest.raises(FeeTaxProjectionError, match="currency .* does not match"):
+        ObservedFeeTaxAggregation(
+            portfolio_id=proj.portfolio_id,
+            mode=proj.mode,
+            as_of_recorded_at=proj.as_of_recorded_at,
+            observed_projection=proj,
+            states=(tampered_state,),
+        )
+
+
+def test_aggregation_tamper_wrong_fee_amount() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    fee_tx = _make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("3.500"), cash_currency=Currency.USD)
+
+    ledger_view = build_ledger_projection_view(portfolio, [fee_tx])
+    proj = build_observed_fee_tax_projection(ledger_view)
+    agg = build_observed_fee_tax_aggregation(proj)
+
+    tampered_state = ObservedFeeTaxAggregateState(
+        portfolio_id=portfolio.id,
+        account_id=account_id,
+        currency=Currency.USD,
+        fee_amount=Decimal("3.501"),  # wrong amount
+        tax_withholding_amount=Decimal("0"),
+        fee_event_count=1,
+        tax_withholding_event_count=0,
+    )
+
+    with pytest.raises(FeeTaxProjectionError, match="fee_amount representation .* does not match"):
+        ObservedFeeTaxAggregation(
+            portfolio_id=proj.portfolio_id,
+            mode=proj.mode,
+            as_of_recorded_at=proj.as_of_recorded_at,
+            observed_projection=proj,
+            states=(tampered_state,),
+        )
+
+
+def test_aggregation_tamper_wrong_tax_amount() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    tax_tx = _make_tx(portfolio.id, account_id, TransactionType.TAX_WITHHOLDING, cash_amount=Decimal("5.00"), cash_currency=Currency.TRY)
+
+    ledger_view = build_ledger_projection_view(portfolio, [tax_tx])
+    proj = build_observed_fee_tax_projection(ledger_view)
+    agg = build_observed_fee_tax_aggregation(proj)
+
+    tampered_state = ObservedFeeTaxAggregateState(
+        portfolio_id=portfolio.id,
+        account_id=account_id,
+        currency=Currency.TRY,
+        fee_amount=Decimal("0"),
+        tax_withholding_amount=Decimal("5.01"),  # wrong amount
+        fee_event_count=0,
+        tax_withholding_event_count=1,
+    )
+
+    with pytest.raises(FeeTaxProjectionError, match="tax_withholding_amount representation .* does not match"):
+        ObservedFeeTaxAggregation(
+            portfolio_id=proj.portfolio_id,
+            mode=proj.mode,
+            as_of_recorded_at=proj.as_of_recorded_at,
+            observed_projection=proj,
+            states=(tampered_state,),
+        )
+
+
+def test_aggregation_tamper_equal_value_different_representation() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    fee_tx = _make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("3.500"), cash_currency=Currency.USD)
+
+    ledger_view = build_ledger_projection_view(portfolio, [fee_tx])
+    proj = build_observed_fee_tax_projection(ledger_view)
+    agg = build_observed_fee_tax_aggregation(proj)
+
+    assert Decimal("3.500") == Decimal("3.5")
+    assert Decimal("3.500").as_tuple() != Decimal("3.5").as_tuple()
+
+    tampered_state = ObservedFeeTaxAggregateState(
+        portfolio_id=portfolio.id,
+        account_id=account_id,
+        currency=Currency.USD,
+        fee_amount=Decimal("3.5"),  # different scale representation
+        tax_withholding_amount=Decimal("0"),
+        fee_event_count=1,
+        tax_withholding_event_count=0,
+    )
+
+    with pytest.raises(FeeTaxProjectionError, match="fee_amount representation .* does not match"):
+        ObservedFeeTaxAggregation(
+            portfolio_id=proj.portfolio_id,
+            mode=proj.mode,
+            as_of_recorded_at=proj.as_of_recorded_at,
+            observed_projection=proj,
+            states=(tampered_state,),
+        )
+
+
+def test_aggregation_tamper_wrong_fee_count() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    fee1 = _make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("1.00"), cash_currency=Currency.USD)
+    fee2 = _make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("2.00"), cash_currency=Currency.USD)
+
+    ledger_view = build_ledger_projection_view(portfolio, [fee1, fee2])
+    proj = build_observed_fee_tax_projection(ledger_view)
+    agg = build_observed_fee_tax_aggregation(proj)
+
+    tampered_state = ObservedFeeTaxAggregateState(
+        portfolio_id=portfolio.id,
+        account_id=account_id,
+        currency=Currency.USD,
+        fee_amount=Decimal("3.00"),
+        tax_withholding_amount=Decimal("0"),
+        fee_event_count=1,  # wrong count (expected 2)
+        tax_withholding_event_count=0,
+    )
+
+    with pytest.raises(FeeTaxProjectionError, match="fee_event_count .* does not match"):
+        ObservedFeeTaxAggregation(
+            portfolio_id=proj.portfolio_id,
+            mode=proj.mode,
+            as_of_recorded_at=proj.as_of_recorded_at,
+            observed_projection=proj,
+            states=(tampered_state,),
+        )
+
+
+def test_aggregation_tamper_wrong_tax_count() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    tax1 = _make_tx(portfolio.id, account_id, TransactionType.TAX_WITHHOLDING, cash_amount=Decimal("1.00"), cash_currency=Currency.TRY)
+    tax2 = _make_tx(portfolio.id, account_id, TransactionType.TAX_WITHHOLDING, cash_amount=Decimal("2.00"), cash_currency=Currency.TRY)
+
+    ledger_view = build_ledger_projection_view(portfolio, [tax1, tax2])
+    proj = build_observed_fee_tax_projection(ledger_view)
+    agg = build_observed_fee_tax_aggregation(proj)
+
+    tampered_state = ObservedFeeTaxAggregateState(
+        portfolio_id=portfolio.id,
+        account_id=account_id,
+        currency=Currency.TRY,
+        fee_amount=Decimal("0"),
+        tax_withholding_amount=Decimal("3.00"),
+        fee_event_count=0,
+        tax_withholding_event_count=1,  # wrong count (expected 2)
+    )
+
+    with pytest.raises(FeeTaxProjectionError, match="tax_withholding_event_count .* does not match"):
+        ObservedFeeTaxAggregation(
+            portfolio_id=proj.portfolio_id,
+            mode=proj.mode,
+            as_of_recorded_at=proj.as_of_recorded_at,
+            observed_projection=proj,
+            states=(tampered_state,),
+        )
+
+
+def test_aggregate_state_invalids() -> None:
+    pid = uuid4()
+    aid = uuid4()
+
+    # Zero / Zero count
+    with pytest.raises(FeeTaxProjectionError, match="requires at least one fee or tax withholding event"):
+        ObservedFeeTaxAggregateState(
+            portfolio_id=pid,
+            account_id=aid,
+            currency=Currency.USD,
+            fee_amount=Decimal("0"),
+            tax_withholding_amount=Decimal("0"),
+            fee_event_count=0,
+            tax_withholding_event_count=0,
+        )
+
+    # Incoherent fee: count 0, amount > 0
+    with pytest.raises(FeeTaxProjectionError, match="fee_event_count is 0 but fee_amount is non-zero"):
+        ObservedFeeTaxAggregateState(
+            portfolio_id=pid,
+            account_id=aid,
+            currency=Currency.USD,
+            fee_amount=Decimal("10.00"),
+            tax_withholding_amount=Decimal("0"),
+            fee_event_count=0,
+            tax_withholding_event_count=1,
+        )
+
+    # Incoherent fee: count > 0, amount == 0
+    with pytest.raises(FeeTaxProjectionError, match="fee_event_count is 1 but fee_amount is not strictly positive"):
+        ObservedFeeTaxAggregateState(
+            portfolio_id=pid,
+            account_id=aid,
+            currency=Currency.USD,
+            fee_amount=Decimal("0"),
+            tax_withholding_amount=Decimal("10.00"),
+            fee_event_count=1,
+            tax_withholding_event_count=1,
+        )
+
+    # Incoherent tax: count 0, amount > 0
+    with pytest.raises(FeeTaxProjectionError, match="tax_withholding_event_count is 0 but tax_withholding_amount is non-zero"):
+        ObservedFeeTaxAggregateState(
+            portfolio_id=pid,
+            account_id=aid,
+            currency=Currency.USD,
+            fee_amount=Decimal("10.00"),
+            tax_withholding_amount=Decimal("5.00"),
+            fee_event_count=1,
+            tax_withholding_event_count=0,
+        )
+
+    # Incoherent tax: count > 0, amount == 0
+    with pytest.raises(FeeTaxProjectionError, match="tax_withholding_event_count is 1 but tax_withholding_amount is not strictly positive"):
+        ObservedFeeTaxAggregateState(
+            portfolio_id=pid,
+            account_id=aid,
+            currency=Currency.USD,
+            fee_amount=Decimal("10.00"),
+            tax_withholding_amount=Decimal("0"),
+            fee_event_count=1,
+            tax_withholding_event_count=1,
+        )
+
+    # Negative fee amount
+    with pytest.raises(FeeTaxProjectionError, match="fee_amount must be a finite non-negative Decimal"):
+        ObservedFeeTaxAggregateState(
+            portfolio_id=pid,
+            account_id=aid,
+            currency=Currency.USD,
+            fee_amount=Decimal("-1.00"),
+            tax_withholding_amount=Decimal("0"),
+            fee_event_count=1,
+            tax_withholding_event_count=0,
+        )
+
+    # Negative tax amount
+    with pytest.raises(FeeTaxProjectionError, match="tax_withholding_amount must be a finite non-negative Decimal"):
+        ObservedFeeTaxAggregateState(
+            portfolio_id=pid,
+            account_id=aid,
+            currency=Currency.USD,
+            fee_amount=Decimal("1.00"),
+            tax_withholding_amount=Decimal("-5.00"),
+            fee_event_count=1,
+            tax_withholding_event_count=0,
+        )
+
+    # Non-finite Decimal (Infinity / NaN)
+    with pytest.raises(FeeTaxProjectionError, match="fee_amount must be a finite non-negative Decimal"):
+        ObservedFeeTaxAggregateState(
+            portfolio_id=pid,
+            account_id=aid,
+            currency=Currency.USD,
+            fee_amount=Decimal("Infinity"),
+            tax_withholding_amount=Decimal("0"),
+            fee_event_count=1,
+            tax_withholding_event_count=0,
+        )
+
+    with pytest.raises(FeeTaxProjectionError, match="fee_amount must be a finite non-negative Decimal"):
+        ObservedFeeTaxAggregateState(
+            portfolio_id=pid,
+            account_id=aid,
+            currency=Currency.USD,
+            fee_amount=Decimal("NaN"),
+            tax_withholding_amount=Decimal("0"),
+            fee_event_count=1,
+            tax_withholding_event_count=0,
+        )
+
+    # Type safety: bool rejected for counts
+    with pytest.raises(FeeTaxProjectionError, match="fee_event_count must be a non-negative int"):
+        ObservedFeeTaxAggregateState(
+            portfolio_id=pid,
+            account_id=aid,
+            currency=Currency.USD,
+            fee_amount=Decimal("10.00"),
+            tax_withholding_amount=Decimal("0"),
+            fee_event_count=True,  # type: ignore[arg-type]
+            tax_withholding_event_count=0,
+        )
+
+
+@pytest.mark.parametrize("invalid_input", [
+    None,
+    [],
+    (),
+    {},
+    "string",
+    123,
+    True,
+    False,
+])
+def test_aggregation_builder_rejects_invalid_types(invalid_input: object) -> None:
+    with pytest.raises(TypeError, match="observed must be an instance of ObservedFeeTaxProjection"):
+        build_observed_fee_tax_aggregation(invalid_input)  # type: ignore[arg-type]
+
+
+def test_final_red_team_scenario() -> None:
+    """
+    Final Red-Team scenario (Section 66):
+    Account A / USD: FEE 1.20, TAX 3.400, FEE 2.300
+    Account A / TRY: FEE 10
+    Account B / USD: TAX 5
+    """
+    portfolio = _make_portfolio()
+    account_a = uuid4()
+    account_b = uuid4()
+
+    t1 = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 6, 1, 11, 0, 0, tzinfo=timezone.utc)
+    t3 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    t4 = datetime(2026, 6, 1, 13, 0, 0, tzinfo=timezone.utc)
+    t5 = datetime(2026, 6, 1, 14, 0, 0, tzinfo=timezone.utc)
+
+    tx_a_usd_fee1 = _make_tx(portfolio.id, account_a, TransactionType.FEE, recorded_at=t1, cash_amount=Decimal("1.20"), cash_currency=Currency.USD)
+    tx_a_usd_tax1 = _make_tx(portfolio.id, account_a, TransactionType.TAX_WITHHOLDING, recorded_at=t2, cash_amount=Decimal("3.400"), cash_currency=Currency.USD)
+    tx_a_usd_fee2 = _make_tx(portfolio.id, account_a, TransactionType.FEE, recorded_at=t3, cash_amount=Decimal("2.300"), cash_currency=Currency.USD)
+    tx_a_try_fee1 = _make_tx(portfolio.id, account_a, TransactionType.FEE, recorded_at=t4, cash_amount=Decimal("10"), cash_currency=Currency.TRY)
+    tx_b_usd_tax1 = _make_tx(portfolio.id, account_b, TransactionType.TAX_WITHHOLDING, recorded_at=t5, cash_amount=Decimal("5"), cash_currency=Currency.USD)
+
+    ledger_view = build_ledger_projection_view(
+        portfolio,
+        [tx_a_usd_fee1, tx_a_usd_tax1, tx_a_usd_fee2, tx_a_try_fee1, tx_b_usd_tax1],
+    )
+    proj = build_observed_fee_tax_projection(ledger_view)
+    agg = build_observed_fee_tax_aggregation(proj)
+
+    # 1. Verify 3 states in first-seen order: A/USD, A/TRY, B/USD
+    assert agg.state_count == 3
+    assert agg.states[0].account_id == account_a and agg.states[0].currency == Currency.USD
+    assert agg.states[1].account_id == account_a and agg.states[1].currency == Currency.TRY
+    assert agg.states[2].account_id == account_b and agg.states[2].currency == Currency.USD
+
+    # 2. Verify A/USD state
+    s_a_usd = agg.states[0]
+    assert s_a_usd.fee_event_count == 2
+    assert s_a_usd.fee_amount == Decimal("3.500")
+    assert s_a_usd.fee_amount.as_tuple() == Decimal("3.500").as_tuple()
+    assert s_a_usd.tax_withholding_event_count == 1
+    assert s_a_usd.tax_withholding_amount == Decimal("3.400")
+    assert s_a_usd.tax_withholding_amount.as_tuple() == Decimal("3.400").as_tuple()
+    assert s_a_usd.total_observed_charge == Decimal("6.900")
+    assert s_a_usd.total_observed_charge.as_tuple() == Decimal("6.900").as_tuple()
+
+    # 3. Verify A/TRY state
+    s_a_try = agg.states[1]
+    assert s_a_try.fee_event_count == 1
+    assert s_a_try.fee_amount == Decimal("10")
+    assert s_a_try.tax_withholding_event_count == 0
+    assert s_a_try.tax_withholding_amount == Decimal("0")
+    assert s_a_try.total_observed_charge == Decimal("10")
+
+    # 4. Verify B/USD state
+    s_b_usd = agg.states[2]
+    assert s_b_usd.fee_event_count == 0
+    assert s_b_usd.fee_amount == Decimal("0")
+    assert s_b_usd.tax_withholding_event_count == 1
+    assert s_b_usd.tax_withholding_amount == Decimal("5")
+    assert s_b_usd.total_observed_charge == Decimal("5")
+
+    # 5. Low ambient precision test
+    original_prec = decimal.getcontext().prec
+    try:
+        decimal.getcontext().prec = 2
+        agg_low_prec = build_observed_fee_tax_aggregation(proj)
+        assert agg_low_prec.states[0].fee_amount == Decimal("3.500")
+        assert agg_low_prec.states[0].fee_amount.as_tuple() == Decimal("3.500").as_tuple()
+    finally:
+        decimal.getcontext().prec = original_prec
+
+    # 6. Representation tamper check: Decimal("3.5") vs Decimal("3.500")
+    tampered_a_usd = ObservedFeeTaxAggregateState(
+        portfolio_id=portfolio.id,
+        account_id=account_a,
+        currency=Currency.USD,
+        fee_amount=Decimal("3.5"),
+        tax_withholding_amount=Decimal("3.400"),
+        fee_event_count=2,
+        tax_withholding_event_count=1,
+    )
+    with pytest.raises(FeeTaxProjectionError, match="fee_amount representation .* does not match"):
+        ObservedFeeTaxAggregation(
+            portfolio_id=proj.portfolio_id,
+            mode=proj.mode,
+            as_of_recorded_at=proj.as_of_recorded_at,
+            observed_projection=proj,
+            states=(tampered_a_usd, s_a_try, s_b_usd),
+        )
+

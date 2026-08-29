@@ -178,10 +178,11 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 
 ---
 
-## 12. Deferred Scope (Phase 12C.6+ & Phase 14B+)
+## 12. Deferred Scope (Phase 12C.6+ & Phase 14C+)
 - **Phase 12C.6+:** Lot matching engines (FIFO/LIFO/Average Cost), cash bucket attribution, realized/unrealized P&L, portfolio valuations.
 - **Phase 14A:** Observed explicit fee & tax-withholding event projection foundation (completed).
-- **Phase 14B+:** Turkish and international tax rules, withholding calculations, tax liability estimation, and fee optimization.
+- **Phase 14B:** Exact per-account / per-currency observed fee & tax-withholding aggregation (completed).
+- **Phase 14C+:** Turkish and international tax rules, withholding calculations, tax liability estimation, and fee optimization.
 
 ---
 
@@ -452,3 +453,23 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Zero tax withholding inference from dividend, interest, or sale events.
   - Zero causal trade-attribution heuristics (matching by date, nearest timestamp, or account).
 - **Observed Charges as Evidence Layer:** Observed charges establish a trustworthy factual evidence foundation before later tax/fee calculation engines (Phase 14B+).
+
+---
+
+## 15. Exact Observed Fee & Tax-Withholding Aggregation (Phase 14B)
+- **Input Authority:** Sole input authority is `ObservedFeeTaxProjection` (Phase 14A) exclusively. Does NOT independently read raw ledger transactions.
+- **Aggregation Key:** Aggregation identity is strictly `(account_id, cash_currency)`.
+- **Category Separation:** `fee_amount` and `tax_withholding_amount` are aggregated separately along with respective counts (`fee_event_count`, `tax_withholding_event_count`).
+- **Context-Independent Exact Decimal Summation:** Monetary totals are computed via arbitrary-precision integer coefficient and exponent alignment, completely immune to ambient `decimal.Context` precision.
+- **Exact Decimal Representation Preservation:** Aggregation preserves exact scale representation without normalization or rounding (e.g. `1.20 + 2.300 = 3.500`).
+- **First-Seen Canonical State Ordering:** Aggregate states are canonically ordered by first appearance of each `(account_id, currency)` key in `observed_projection.events`.
+- **No Cross-Account or Cross-Currency Aggregation:** Currencies (USD, TRY, EUR, etc.) and accounts remain strictly distinct.
+- **Instrument-Linked and Account-Level Coexistence:** Events with or without `instrument_id` belonging to the same account and currency combine into the same aggregate state without splitting or attribution heuristics.
+- **Total Observed Charge Property:** `total_observed_charge` provides the exact within-state sum of fees and taxes as historical factual cost evidence.
+- **Zero Tax Law / Liability / Inference:**
+  - No tax rate or withholding expectation calculations.
+  - No tax liability, refund, or credit estimates.
+  - No broker commission schedule or fee inference.
+  - No FX conversion or base-currency rollup.
+  - No cost-basis or tax-lot modification.
+
