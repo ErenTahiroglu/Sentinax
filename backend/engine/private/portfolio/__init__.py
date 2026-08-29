@@ -223,6 +223,11 @@ from backend.engine.private.portfolio.fee_tax_attribution_service import (
     PortfolioFeeTaxAttributionQueryService,
     PortfolioFeeTaxAttributionRepositoryPort,
 )
+from backend.engine.private.portfolio.fee_tax_attribution_command import (
+    PortfolioFeeTaxAttributionCommandError,
+    PortfolioFeeTaxAttributionCommandRepositoryPort,
+    PortfolioFeeTaxAttributionCommandService,
+)
 from backend.engine.private.portfolio.repository import PortfolioRepository
 
 
@@ -283,6 +288,9 @@ __all__ = [
     "PortfolioFeeTaxAttributionQueryError",
     "PortfolioFeeTaxAttributionRepositoryPort",
     "PortfolioFeeTaxAttributionQueryService",
+    "PortfolioFeeTaxAttributionCommandError",
+    "PortfolioFeeTaxAttributionCommandRepositoryPort",
+    "PortfolioFeeTaxAttributionCommandService",
     "PortfolioAccountingError",
 
 

@@ -677,6 +677,21 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Trigger & Operational Error Transparency:** Database trigger exceptions (over-allocation, active duplicates, inactive charges/targets, backdating) propagate unchanged without client-side financial interpretation.
 - **Zero Clock / UUID Mutation:** Preserves caller-supplied event IDs and knowledge timestamps verbatim without system-time capture or UUID regeneration.
 
+---
+
+## 28. Owner-Bound Explicit Attribution Allocation Command (Phase 14M)
+- **Explicit Application-Command Layer:** `PortfolioFeeTaxAttributionCommandService.allocate` coordinates explicit allocation of a `FEE` or `TAX_WITHHOLDING` charge to an active economic target transaction (`BUY`, `SELL`, `DIVIDEND`, `INTEREST`, `CASH_DEPOSIT`, `CASH_WITHDRAWAL`, `FX_CONVERSION`).
+- **Single Clock & Event ID Resolution:**
+  - Captures the command clock exactly once and normalizes to UTC (`recorded_at = T`).
+  - Generates a unique event UUID exactly once via injected factory.
+- **As-Of Semantic Preflight (Phase 14K):** Queries authoritative semantic view `get_attribution_view_as_of(portfolio_id, T)`, guaranteeing common point-in-time snapshot across ledger state and persisted attribution history.
+- **Full Intent-Set Revalidation (Phase 14D):** Appends candidate `FeeTaxAttributionIntent` to existing active intents `semantic_view.attribution_set.intents` and revalidates the entire combined sequence via `build_observed_fee_tax_attribution_set` (enforcing active state, same account/portfolio, target allowlists, single allocation caps, cumulative capacity, and duplicate pair prevention).
+- **Canonical Event Construction & Persistence (Phase 14E & 14L):**
+  - Builds immutable `ALLOCATION` persistence event via `build_allocation_persistence_event`.
+  - Persists directly via `PortfolioRepository.append_fee_tax_attribution_event` (Phase 14L) and validates returned persisted event identity and economics.
+- **Race-Safe Authority & Purity:** Database triggers remain final race authority; zero heuristic matching, zero tax-law interpretation, zero FX/cost-basis mutation, and zero attribution reversal commands.
+
+
 
 
 
