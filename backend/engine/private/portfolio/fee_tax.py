@@ -44,6 +44,50 @@ def _is_aware_datetime(dt: Optional[datetime]) -> bool:
     return dt.tzinfo is not None and dt.tzinfo.utcoffset(dt) is not None
 
 
+def _is_exact_datetime_representation_equal(
+    dt1: Optional[datetime],
+    dt2: Optional[datetime],
+) -> bool:
+    """
+    Returns True if dt1 and dt2 have the exact same wall-clock and timezone representation
+    (year, month, day, hour, minute, second, microsecond, fold, and utcoffset).
+    Prevents different offsets representing the same physical instant from being considered equal.
+    """
+    if dt1 is None and dt2 is None:
+        return True
+    if dt1 is None or dt2 is None:
+        return False
+    if not _is_aware_datetime(dt1) or not _is_aware_datetime(dt2):
+        return False
+
+    offset1 = dt1.tzinfo.utcoffset(dt1) if dt1.tzinfo else None
+    offset2 = dt2.tzinfo.utcoffset(dt2) if dt2.tzinfo else None
+
+    rep1 = (
+        dt1.year,
+        dt1.month,
+        dt1.day,
+        dt1.hour,
+        dt1.minute,
+        dt1.second,
+        dt1.microsecond,
+        dt1.fold,
+        offset1,
+    )
+    rep2 = (
+        dt2.year,
+        dt2.month,
+        dt2.day,
+        dt2.hour,
+        dt2.minute,
+        dt2.second,
+        dt2.microsecond,
+        dt2.fold,
+        offset2,
+    )
+    return rep1 == rep2
+
+
 @dataclass(frozen=True)
 class ObservedFeeTaxProjection:
     """
@@ -96,7 +140,10 @@ class ObservedFeeTaxProjection:
             raise FeeTaxProjectionError(
                 f"mode {self.mode} does not match ledger_view.mode {self.ledger_view.mode}"
             )
-        if self.as_of_recorded_at != self.ledger_view.as_of_recorded_at:
+        if not _is_exact_datetime_representation_equal(
+            self.as_of_recorded_at,
+            self.ledger_view.as_of_recorded_at,
+        ):
             raise FeeTaxProjectionError(
                 f"as_of_recorded_at {self.as_of_recorded_at} does not match ledger_view.as_of_recorded_at {self.ledger_view.as_of_recorded_at}"
             )

@@ -7,7 +7,7 @@ Comprehensive test suite for Observed Fee and Tax-Withholding Event Projection (
 from __future__ import annotations
 
 import ast
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import inspect
 from uuid import UUID, uuid4
@@ -457,6 +457,132 @@ def test_tamper_metadata_mismatches_rejected() -> None:
             mode=ledger_view.mode,
             as_of_recorded_at=None,
             ledger_view=ledger_view,
+            events=(fee_tx,),
+        )
+
+
+def test_exact_datetime_representation_same_instant_different_offset_rejected() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    fee_tx = _make_tx(portfolio.id, account_id, TransactionType.FEE)
+
+    utc_cutoff = datetime(2026, 6, 2, 0, 0, 0, tzinfo=timezone.utc)
+    plus_three_cutoff = datetime(2026, 6, 2, 3, 0, 0, tzinfo=timezone(timedelta(hours=3)))
+
+    # Red-Team: Verify standard Python equality considers them the same physical instant
+    assert utc_cutoff == plus_three_cutoff
+
+    ledger_view = build_ledger_projection_view(portfolio, [fee_tx], as_of_recorded_at=utc_cutoff)
+
+    # Phase 14A.1 must reject direct construction using different offset representation
+    with pytest.raises(FeeTaxProjectionError, match="as_of_recorded_at .* does not match"):
+        ObservedFeeTaxProjection(
+            portfolio_id=ledger_view.portfolio_id,
+            mode=ledger_view.mode,
+            as_of_recorded_at=plus_three_cutoff,
+            ledger_view=ledger_view,
+            events=(fee_tx,),
+        )
+
+
+def test_exact_datetime_representation_matching_aware_accepted() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    fee_tx = _make_tx(portfolio.id, account_id, TransactionType.FEE)
+
+    cutoff_1 = datetime(2026, 6, 2, 0, 0, 0, 123456, tzinfo=timezone.utc)
+    cutoff_2 = datetime(2026, 6, 2, 0, 0, 0, 123456, tzinfo=timezone.utc)
+
+    # Distinct object instances but identical exact representation
+    assert cutoff_1 is not cutoff_2
+    assert cutoff_1 == cutoff_2
+
+    ledger_view = build_ledger_projection_view(portfolio, [fee_tx], as_of_recorded_at=cutoff_1)
+    proj = ObservedFeeTaxProjection(
+        portfolio_id=ledger_view.portfolio_id,
+        mode=ledger_view.mode,
+        as_of_recorded_at=cutoff_2,
+        ledger_view=ledger_view,
+        events=(fee_tx,),
+    )
+    assert proj.as_of_recorded_at == cutoff_1
+
+
+def test_exact_datetime_representation_different_microsecond_rejected() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    fee_tx = _make_tx(portfolio.id, account_id, TransactionType.FEE)
+
+    cutoff_1 = datetime(2026, 6, 2, 0, 0, 0, 1, tzinfo=timezone.utc)
+    cutoff_2 = datetime(2026, 6, 2, 0, 0, 0, 2, tzinfo=timezone.utc)
+
+    ledger_view = build_ledger_projection_view(portfolio, [fee_tx], as_of_recorded_at=cutoff_1)
+
+    with pytest.raises(FeeTaxProjectionError, match="as_of_recorded_at .* does not match"):
+        ObservedFeeTaxProjection(
+            portfolio_id=ledger_view.portfolio_id,
+            mode=ledger_view.mode,
+            as_of_recorded_at=cutoff_2,
+            ledger_view=ledger_view,
+            events=(fee_tx,),
+        )
+
+
+def test_exact_datetime_representation_different_fold_rejected() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    fee_tx = _make_tx(portfolio.id, account_id, TransactionType.FEE)
+
+    cutoff_fold_0 = datetime(2026, 6, 2, 0, 0, 0, fold=0, tzinfo=timezone.utc)
+    cutoff_fold_1 = datetime(2026, 6, 2, 0, 0, 0, fold=1, tzinfo=timezone.utc)
+
+    ledger_view = build_ledger_projection_view(portfolio, [fee_tx], as_of_recorded_at=cutoff_fold_0)
+
+    with pytest.raises(FeeTaxProjectionError, match="as_of_recorded_at .* does not match"):
+        ObservedFeeTaxProjection(
+            portfolio_id=ledger_view.portfolio_id,
+            mode=ledger_view.mode,
+            as_of_recorded_at=cutoff_fold_1,
+            ledger_view=ledger_view,
+            events=(fee_tx,),
+        )
+
+
+def test_exact_datetime_representation_none_semantics() -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    fee_tx = _make_tx(portfolio.id, account_id, TransactionType.FEE)
+
+    # Both None (Current non-PIT view)
+    ledger_view_none = build_ledger_projection_view(portfolio, [fee_tx], as_of_recorded_at=None)
+    proj_none = ObservedFeeTaxProjection(
+        portfolio_id=ledger_view_none.portfolio_id,
+        mode=ledger_view_none.mode,
+        as_of_recorded_at=None,
+        ledger_view=ledger_view_none,
+        events=(fee_tx,),
+    )
+    assert proj_none.as_of_recorded_at is None
+
+    # View has None, projection has aware datetime -> reject
+    aware_dt = datetime(2026, 6, 2, 0, 0, 0, tzinfo=timezone.utc)
+    with pytest.raises(FeeTaxProjectionError, match="as_of_recorded_at .* does not match"):
+        ObservedFeeTaxProjection(
+            portfolio_id=ledger_view_none.portfolio_id,
+            mode=ledger_view_none.mode,
+            as_of_recorded_at=aware_dt,
+            ledger_view=ledger_view_none,
+            events=(fee_tx,),
+        )
+
+    # View has aware datetime, projection has None -> reject
+    ledger_view_aware = build_ledger_projection_view(portfolio, [fee_tx], as_of_recorded_at=aware_dt)
+    with pytest.raises(FeeTaxProjectionError, match="as_of_recorded_at .* does not match"):
+        ObservedFeeTaxProjection(
+            portfolio_id=ledger_view_aware.portfolio_id,
+            mode=ledger_view_aware.mode,
+            as_of_recorded_at=None,
+            ledger_view=ledger_view_aware,
             events=(fee_tx,),
         )
 
