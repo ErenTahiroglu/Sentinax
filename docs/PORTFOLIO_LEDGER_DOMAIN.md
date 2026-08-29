@@ -679,17 +679,28 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 
 ---
 
-## 28. Owner-Bound Explicit Attribution Allocation Command (Phase 14M)
+## 28. Owner-Bound Explicit Attribution Allocation Command & Retry-Safe Idempotency (Phase 14M / 14M.1)
 - **Explicit Application-Command Layer:** `PortfolioFeeTaxAttributionCommandService.allocate` coordinates explicit allocation of a `FEE` or `TAX_WITHHOLDING` charge to an active economic target transaction (`BUY`, `SELL`, `DIVIDEND`, `INTEREST`, `CASH_DEPOSIT`, `CASH_WITHDRAWAL`, `FX_CONVERSION`).
-- **Single Clock & Event ID Resolution:**
-  - Captures the command clock exactly once and normalizes to UTC (`recorded_at = T`).
-  - Generates a unique event UUID exactly once via injected factory.
-- **As-Of Semantic Preflight (Phase 14K):** Queries authoritative semantic view `get_attribution_view_as_of(portfolio_id, T)`, guaranteeing common point-in-time snapshot across ledger state and persisted attribution history.
-- **Full Intent-Set Revalidation (Phase 14D):** Appends candidate `FeeTaxAttributionIntent` to existing active intents `semantic_view.attribution_set.intents` and revalidates the entire combined sequence via `build_observed_fee_tax_attribution_set` (enforcing active state, same account/portfolio, target allowlists, single allocation caps, cumulative capacity, and duplicate pair prevention).
-- **Canonical Event Construction & Persistence (Phase 14E & 14L):**
-  - Builds immutable `ALLOCATION` persistence event via `build_allocation_persistence_event`.
-  - Persists directly via `PortfolioRepository.append_fee_tax_attribution_event` (Phase 14L) and validates returned persisted event identity and economics.
-- **Race-Safe Authority & Purity:** Database triggers remain final race authority; zero heuristic matching, zero tax-law interpretation, zero FX/cost-basis mutation, and zero attribution reversal commands.
+- **Caller-Supplied Stable Command Identity (Phase 14M.1):**
+  - Requires non-bool `command_id: UUID` identifying one logical allocation command.
+  - Zero UUID generation in command service; `command_id` serves directly as the physical attribution event ID.
+- **Pre-Read Exact Idempotency (First-Commit-Wins):**
+  - Calls `get_fee_tax_attribution_event(portfolio_id, command_id)` before clock invocation.
+  - If exact logical command matches (`command_id`, `portfolio_id`, `charge_id`, `target_id`, `.as_tuple()` exact Decimal representation, non-reversal `ALLOCATION`), returns the existing event immediately with zero clock, zero semantic query, and zero append calls.
+  - First successful commit owns `recorded_at`, derived `account_id`, and durable event identity.
+  - Replay after subsequent attribution reversals, target ledger reversals, or charge ledger reversals continues returning the original durable allocation event (replay represents what happened to command $C$, not a request for a new active allocation).
+  - Conflicting command-ID reuse (different charge, target, amount, or representation drift) fails closed with `PortfolioFeeTaxAttributionCommandError`.
+- **Single Clock & As-Of Semantic Preflight (New Commands Only):**
+  - When no matching event exists, captures clock once and normalizes to UTC (`recorded_at = T`).
+  - Queries authoritative semantic view `get_attribution_view_as_of(portfolio_id, T)` (Phase 14K).
+  - Combines candidate `FeeTaxAttributionIntent` with existing active intents and revalidates via `build_observed_fee_tax_attribution_set` (Phase 14D).
+  - Builds immutable event via `build_allocation_persistence_event(event_id=command_id, recorded_at=T, attribution=...)` (Phase 14E).
+- **Post-Error Idempotency Recovery for Concurrent Races:**
+  - On any append exception, re-queries `get_fee_tax_attribution_event(portfolio_id, command_id)`.
+  - Recovers safely if a concurrent worker committed the same logical command first (handling trigger-before-PK ordering where `active duplicate pair` precedes SQLSTATE `23505`).
+  - Real database errors (over-allocation, inactive charge/target, outages) propagate unchanged when no matching event was committed.
+- **Race-Safe Authority & Purity:** Database triggers remain final race authority; zero heuristic matching, zero tax-law interpretation, zero FX/cost-basis mutation, zero manual math/allowlists, and zero attribution reversal commands.
+
 
 
 

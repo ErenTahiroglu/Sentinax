@@ -1,22 +1,25 @@
 """
 backend/engine/private/portfolio/fee_tax_attribution_command.py
 ===============================================================
-Owner-Bound Explicit Fee/Tax Allocation Command Service (Phase 14M).
+Owner-Bound Explicit Fee/Tax Allocation Command Service (Phase 14M / 14M.1).
 
 This module implements the application-command orchestration layer for explicit
-user/system fee and tax charge allocations.
+user/system fee and tax charge allocations with retry-safe command idempotency.
 
 Workflow:
-1. Validates explicit charge ID, target ID, and exact Decimal allocated amount.
+1. Validates caller-supplied stable command_id (UUID), charge ID, target ID, and exact Decimal allocated amount.
 2. Rejects self-attribution immediately (charge_id == target_id).
-3. Captures the command clock once and normalizes to UTC (T).
-4. Generates a unique persistence event UUID once.
+3. Pre-reads existing event by (portfolio_id, command_id) before clock invocation.
+   - If exact logical command matches existing persisted event, returns it immediately (safe sequential retry).
+   - If existing event has different semantics or family, fails closed with command conflict.
+4. For genuinely new commands, captures command clock once and normalizes to UTC (T).
 5. Queries authoritative semantic state AS OF T via Phase 14K (PortfolioFeeTaxAttributionQueryService).
 6. Constructs candidate FeeTaxAttributionIntent and combines with existing active intents.
 7. Revalidates entire active intent set via canonical Phase 14D build_observed_fee_tax_attribution_set.
-8. Constructs canonical immutable Phase 14E ALLOCATION persistence event via build_allocation_persistence_event.
+8. Constructs canonical immutable Phase 14E ALLOCATION persistence event with event_id=command_id.
 9. Appends the event via Phase 14L PortfolioRepository.append_fee_tax_attribution_event.
-10. Returns the verified persisted FeeTaxAttributionPersistenceEvent instance.
+   - On error, executes post-error idempotency recovery against (portfolio_id, command_id) to handle concurrent same-command races.
+10. Validates and returns the durable persisted FeeTaxAttributionPersistenceEvent instance.
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable, Optional, Protocol, Sequence
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from backend.engine.private.portfolio.fee_tax_attribution import (
     FeeTaxAttributionIntent,
@@ -69,6 +72,13 @@ class PortfolioFeeTaxAttributionCommandRepositoryPort(Protocol):
     ) -> Sequence[FeeTaxAttributionPersistenceEvent]:
         ...
 
+    def get_fee_tax_attribution_event(
+        self,
+        portfolio_id: UUID,
+        event_id: UUID,
+    ) -> Optional[FeeTaxAttributionPersistenceEvent]:
+        ...
+
     def append_fee_tax_attribution_event(
         self,
         event: FeeTaxAttributionPersistenceEvent,
@@ -84,6 +94,7 @@ def _validate_repository_dependency(repo: Any) -> PortfolioFeeTaxAttributionComm
         "get_portfolio",
         "list_transactions",
         "list_fee_tax_attribution_events",
+        "get_fee_tax_attribution_event",
         "append_fee_tax_attribution_event",
     ):
         if not hasattr(repo, method) or not callable(getattr(repo, method)):
@@ -100,15 +111,6 @@ def _validate_clock_dependency(clock: Optional[Callable[[], datetime]]) -> Calla
     if not callable(clock):
         raise PortfolioFeeTaxAttributionCommandError("clock must be a callable returning an aware datetime")
     return clock
-
-
-def _validate_event_id_factory_dependency(factory: Optional[Callable[[], UUID]]) -> Callable[[], UUID]:
-    """Validates that event_id_factory dependency is callable or defaults to uuid4."""
-    if factory is None:
-        return uuid4
-    if not callable(factory):
-        raise PortfolioFeeTaxAttributionCommandError("event_id_factory must be a callable returning a UUID")
-    return factory
 
 
 def _validate_uuid_argument(val: Any, field_name: str) -> UUID:
@@ -157,25 +159,45 @@ def _resolve_command_clock(clock: Callable[[], datetime]) -> datetime:
     return raw_clock.astimezone(timezone.utc)
 
 
-def _resolve_event_id(factory: Callable[[], UUID]) -> UUID:
-    """Invokes event-ID factory once and validates UUID return."""
-    try:
-        val = factory()
-    except Exception as e:
-        if isinstance(e, PortfolioFeeTaxAttributionCommandError):
-            raise
-        raise PortfolioFeeTaxAttributionCommandError(f"Event ID factory invocation failed: {e}") from e
-
-    if val is None or isinstance(val, bool) or not isinstance(val, UUID):
-        raise PortfolioFeeTaxAttributionCommandError(
-            f"Event ID factory must return a non-bool UUID instance, got {type(val).__name__}: {val!r}"
-        )
-    return val
+def _allocation_event_matches_command(
+    event: Any,
+    *,
+    command_id: UUID,
+    portfolio_id: UUID,
+    charge_transaction_id: UUID,
+    target_transaction_id: UUID,
+    allocated_amount: Decimal,
+) -> bool:
+    """
+    Checks whether an existing persisted event represents the exact logical ALLOCATION command.
+    Matches physical command ID, portfolio ID, charge ID, target ID, exact Decimal representation (.as_tuple()),
+    and ensures it is a non-reversal ALLOCATION event.
+    Note: recorded_at and account_id are owned by the first durable commit and are not part of retry matching.
+    """
+    if event is None or isinstance(event, bool) or not isinstance(event, FeeTaxAttributionPersistenceEvent):
+        return False
+    if event.id != command_id:
+        return False
+    if event.portfolio_id != portfolio_id:
+        return False
+    if event.event_type != FeeTaxAttributionEventType.ALLOCATION:
+        return False
+    if event.charge_transaction_id != charge_transaction_id:
+        return False
+    if event.target_transaction_id != target_transaction_id:
+        return False
+    if event.allocated_amount is None or isinstance(event.allocated_amount, bool) or not isinstance(event.allocated_amount, Decimal):
+        return False
+    if event.allocated_amount.as_tuple() != allocated_amount.as_tuple():
+        return False
+    if event.reverses_attribution_event_id is not None:
+        return False
+    return True
 
 
 class PortfolioFeeTaxAttributionCommandService:
     """
-    Owner-bound application-command service for explicit fee/tax charge allocation.
+    Owner-bound application-command service for explicit fee/tax charge allocation with retry-safe idempotency.
     Revalidates candidate allocation against authoritative current ledger & attribution state,
     builds canonical immutable Phase 14E ALLOCATION persistence event, and persists it via Phase 14L repository.
     """
@@ -184,15 +206,14 @@ class PortfolioFeeTaxAttributionCommandService:
         self,
         repository: PortfolioFeeTaxAttributionCommandRepositoryPort,
         clock: Optional[Callable[[], datetime]] = None,
-        event_id_factory: Optional[Callable[[], UUID]] = None,
     ) -> None:
         self._repo = _validate_repository_dependency(repository)
         self._clock = _validate_clock_dependency(clock)
-        self._event_id_factory = _validate_event_id_factory_dependency(event_id_factory)
         self._query_service = PortfolioFeeTaxAttributionQueryService(self._repo)
 
     def allocate(
         self,
+        command_id: UUID,
         portfolio_id: UUID,
         charge_transaction_id: UUID,
         target_transaction_id: UUID,
@@ -202,16 +223,19 @@ class PortfolioFeeTaxAttributionCommandService:
         Executes an explicit fee/tax allocation command:
         1. Validates public arguments strictly.
         2. Rejects self-attribution immediately (charge_id == target_id).
-        3. Captures command clock once and normalizes to UTC (T).
-        4. Generates unique event ID once.
+        3. Pre-reads existing event by (portfolio_id, command_id) before clock invocation.
+           - If exact logical command match: returns existing event immediately (first commit wins).
+           - If command conflict: raises PortfolioFeeTaxAttributionCommandError.
+        4. Captures command clock once and normalizes to UTC (T).
         5. Queries semantic attribution view AS OF T via Phase 14K.
         6. Constructs candidate FeeTaxAttributionIntent.
         7. Revalidates complete intent set (existing active + candidate) via Phase 14D build_observed_fee_tax_attribution_set.
-        8. Builds canonical FeeTaxAttributionPersistenceEvent via Phase 14E build_allocation_persistence_event.
-        9. Appends event via Phase 14L append_fee_tax_attribution_event.
+        8. Builds canonical FeeTaxAttributionPersistenceEvent with event_id=command_id.
+        9. Appends event via Phase 14L append_fee_tax_attribution_event with post-error race recovery.
         10. Validates returned persisted event and returns it.
         """
         # Step 1 & 2: Public argument strictness
+        cmd_id = _validate_uuid_argument(command_id, "command_id")
         p_id = _validate_uuid_argument(portfolio_id, "portfolio_id")
         c_id = _validate_uuid_argument(charge_transaction_id, "charge_transaction_id")
         t_id = _validate_uuid_argument(target_transaction_id, "target_transaction_id")
@@ -222,11 +246,24 @@ class PortfolioFeeTaxAttributionCommandService:
                 f"Self-attribution rejected: charge_transaction_id {c_id} equals target_transaction_id {t_id}"
             )
 
-        # Step 3: Capture single command clock and normalize to UTC
-        recorded_at = _resolve_command_clock(self._clock)
+        # Step 3: Pre-read idempotency check before clock
+        existing = self._repo.get_fee_tax_attribution_event(p_id, cmd_id)
+        if existing is not None:
+            if _allocation_event_matches_command(
+                existing,
+                command_id=cmd_id,
+                portfolio_id=p_id,
+                charge_transaction_id=c_id,
+                target_transaction_id=t_id,
+                allocated_amount=amount,
+            ):
+                return existing
+            raise PortfolioFeeTaxAttributionCommandError(
+                f"Command ID conflict: Fee/tax attribution event {cmd_id} already exists with different semantics."
+            )
 
-        # Step 4: Generate event ID once
-        event_id = _resolve_event_id(self._event_id_factory)
+        # Step 4: Capture single command clock and normalize to UTC
+        recorded_at = _resolve_command_clock(self._clock)
 
         # Step 5: Query authoritative semantic view AS OF T (Phase 14K)
         semantic_view = self._query_service.get_attribution_view_as_of(p_id, recorded_at)
@@ -264,15 +301,37 @@ class PortfolioFeeTaxAttributionCommandService:
                 "Resolved candidate attribution does not match requested charge, target, or allocated amount."
             )
 
-        # Step 8: Build canonical Phase 14E ALLOCATION persistence event
+        # Step 8: Build canonical Phase 14E ALLOCATION persistence event with event_id=command_id
         candidate_event = build_allocation_persistence_event(
-            event_id=event_id,
+            event_id=cmd_id,
             recorded_at=recorded_at,
             attribution=resolved_candidate,
         )
 
-        # Step 9: Append through Phase 14L repository write primitive
-        persisted = self._repo.append_fee_tax_attribution_event(candidate_event)
+        # Step 9: Append through Phase 14L with post-error idempotency recovery
+        try:
+            persisted = self._repo.append_fee_tax_attribution_event(candidate_event)
+        except Exception as orig_exc:
+            try:
+                existing_after_error = self._repo.get_fee_tax_attribution_event(p_id, cmd_id)
+            except Exception:
+                raise orig_exc from None
+
+            if existing_after_error is not None:
+                if _allocation_event_matches_command(
+                    existing_after_error,
+                    command_id=cmd_id,
+                    portfolio_id=p_id,
+                    charge_transaction_id=c_id,
+                    target_transaction_id=t_id,
+                    allocated_amount=amount,
+                ):
+                    return existing_after_error
+                raise PortfolioFeeTaxAttributionCommandError(
+                    f"Command ID conflict: Fee/tax attribution event {cmd_id} already exists with different semantics."
+                ) from orig_exc
+
+            raise orig_exc
 
         # Step 10: Defense-in-depth verification of returned persisted event
         if isinstance(persisted, bool) or not isinstance(persisted, FeeTaxAttributionPersistenceEvent):
@@ -283,9 +342,9 @@ class PortfolioFeeTaxAttributionCommandService:
             raise PortfolioFeeTaxAttributionCommandError(
                 f"Repository returned wrong event type: {persisted.event_type}"
             )
-        if persisted.id != event_id:
+        if persisted.id != cmd_id:
             raise PortfolioFeeTaxAttributionCommandError(
-                f"Repository returned mismatched event ID: expected {event_id}, got {persisted.id}"
+                f"Repository returned mismatched event ID: expected {cmd_id}, got {persisted.id}"
             )
         if (
             persisted.portfolio_id != candidate_event.portfolio_id
