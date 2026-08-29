@@ -547,6 +547,34 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **No Durability Write RPC or Query Service Yet:** Phase 14F provides table storage and DB invariants only. No RPCs or repository write methods are created in this phase.
 - **No Data Denormalization & No Tax Rules:** Zero denormalized currency, instrument, or transaction date fields; zero tax calculation or cost basis adjustments.
 
+---
+
+## 20. Persisted Attribution History & Concurrency Hardening (Phase 14G)
+- **Per-Charge Serialization Mutex:** All history-changing attribution operations (`ALLOCATION` and `REVERSAL`) serialize by acquiring a row lock (`FOR UPDATE`) on the referenced immutable charge row in `public.portfolio_transactions`.
+- **Capacity & Over-Allocation Invariants:**
+  - Single allocation amount cannot exceed charge `cash_amount` (`allocated_amount <= charge.cash_amount`).
+  - Cumulative active allocation sum for the charge plus new allocation amount cannot exceed charge `cash_amount` (`active_total + NEW.allocated_amount <= charge.cash_amount`).
+  - Exact PostgreSQL `NUMERIC` arithmetic used with zero floating-point operations.
+- **Derived Active Status & Capacity Release:**
+  - Active status is derived strictly from append-only history via `NOT EXISTS` reversal referencing `allocation.id`.
+  - Zero mutable status or balance columns (`is_active`, `is_reversed`, `status`, `allocated_total`).
+  - Reversed allocations release capacity for future allocations without mutating historical rows.
+- **Active Duplicate-Pair Rejection:**
+  - At most one ACTIVE allocation may exist simultaneously for the exact same `(portfolio_id, account_id, charge_tx, target_tx)` pair.
+  - Reversed pairs may be re-attributed through new evidence events.
+- **Knowledge-Time Causality & Monotonicity:**
+  - `ALLOCATION` knowledge timestamp cannot precede referenced transactions (`recorded_at >= charge.recorded_at` and `recorded_at >= target.recorded_at`).
+  - `REVERSAL` knowledge timestamp cannot precede the referenced allocation (`recorded_at >= allocation.recorded_at`).
+  - Per-charge attribution knowledge time is append-monotonic (`NEW.recorded_at >= MAX(prior recorded_at for charge)`), preventing retroactive historical PIT backdating.
+  - Same-timestamp events permitted (`>=` non-strict comparison).
+- **Preservation of Phase 14F Constraints:**
+  - Charge types strictly `fee` and `tax_withholding`.
+  - Target types strictly the 7 non-charge, non-reversal economic transaction types.
+  - Reversal target must be an `allocation` (anti-reversal-of-reversal).
+  - Single-reversal partial unique index remains race-safe final authority.
+- **No Durability Write RPC or Query Service Yet:** Table trigger hardens storage invariants for trusted service-role access; repository integration deferred to future phases.
+
+
 
 
 
