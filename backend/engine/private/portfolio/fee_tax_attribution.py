@@ -158,21 +158,24 @@ def _exact_decimal_sub(a: Decimal, b: Decimal) -> Decimal:
     return _exact_decimal_sum([a, neg_b])
 
 
-_VALID_TARGET_TYPES = {
-    TransactionType.BUY,
-    TransactionType.SELL,
-    TransactionType.DIVIDEND,
-    TransactionType.INTEREST,
-    TransactionType.CASH_DEPOSIT,
-    TransactionType.CASH_WITHDRAWAL,
-    TransactionType.FX_CONVERSION,
-}
-
-_PROHIBITED_TARGET_TYPES = {
-    TransactionType.FEE,
-    TransactionType.TAX_WITHHOLDING,
-    TransactionType.REVERSAL,
-}
+def _is_valid_attribution_target_type(transaction_type: TransactionType) -> bool:
+    """
+    Pure fail-closed positive allowlist for valid attribution target types.
+    Only explicit economic transactions (BUY, SELL, DIVIDEND, INTEREST, CASH_DEPOSIT,
+    CASH_WITHDRAWAL, FX_CONVERSION) are permitted. Charges and REVERSAL are forbidden.
+    Any unknown or future transaction types fail closed.
+    """
+    if isinstance(transaction_type, bool) or not isinstance(transaction_type, TransactionType):
+        return False
+    return transaction_type in (
+        TransactionType.BUY,
+        TransactionType.SELL,
+        TransactionType.DIVIDEND,
+        TransactionType.INTEREST,
+        TransactionType.CASH_DEPOSIT,
+        TransactionType.CASH_WITHDRAWAL,
+        TransactionType.FX_CONVERSION,
+    )
 
 
 @dataclass(frozen=True)
@@ -247,8 +250,8 @@ class ResolvedFeeTaxAttribution:
                 f"charge_transaction {self.charge_transaction.id} must have non-null cash_amount and cash_currency"
             )
 
-        # Target side validation
-        if self.target_transaction.transaction_type in _PROHIBITED_TARGET_TYPES or self.target_transaction.transaction_type not in _VALID_TARGET_TYPES:
+        # Target side validation (positive fail-closed allowlist)
+        if not _is_valid_attribution_target_type(self.target_transaction.transaction_type):
             raise FeeTaxAttributionError(
                 f"target_transaction cannot be of type {self.target_transaction.transaction_type.name}"
             )

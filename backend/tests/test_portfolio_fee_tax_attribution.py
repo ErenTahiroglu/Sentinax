@@ -323,6 +323,33 @@ def test_resolved_rejects_invalid_charge_type(invalid_charge_type: TransactionTy
 
 
 @pytest.mark.parametrize(
+    "valid_target_type",
+    [
+        TransactionType.BUY,
+        TransactionType.SELL,
+        TransactionType.DIVIDEND,
+        TransactionType.INTEREST,
+        TransactionType.CASH_DEPOSIT,
+        TransactionType.CASH_WITHDRAWAL,
+        TransactionType.FX_CONVERSION,
+    ],
+)
+def test_resolved_accepts_all_seven_valid_target_types(valid_target_type: TransactionType) -> None:
+    portfolio = _make_portfolio()
+    account_id = uuid4()
+    fee_tx = _make_tx(portfolio.id, account_id, TransactionType.FEE, cash_amount=Decimal("10.00"))
+    target_tx = _make_tx(portfolio.id, account_id, valid_target_type)
+
+    resolved = ResolvedFeeTaxAttribution(
+        charge_transaction=fee_tx,
+        target_transaction=target_tx,
+        allocated_amount=Decimal("5.00"),
+    )
+    assert resolved.target_transaction.transaction_type == valid_target_type
+    assert resolved.charge_transaction is fee_tx
+
+
+@pytest.mark.parametrize(
     "prohibited_target_type",
     [
         TransactionType.FEE,
@@ -1267,3 +1294,42 @@ def test_static_purity_ast_checks() -> None:
                 assert node.func.id not in prohibited_names, f"Prohibited call '{node.func.id}()' found in {source_path}"
             elif isinstance(node.func, ast.Attribute):
                 assert node.func.attr not in prohibited_names, f"Prohibited method call '.{node.func.attr}()' found in {source_path}"
+
+
+def test_target_policy_immutability_and_no_mutable_module_sets() -> None:
+    """
+    Red-Team validation: Production module must NOT define or expose mutable
+    _VALID_TARGET_TYPES or _PROHIBITED_TARGET_TYPES sets/dicts at module level.
+    """
+    source_path = inspect.getfile(attribution_module)
+    with open(source_path, "r", encoding="utf-8") as f:
+        content = f.read()
+        tree = ast.parse(content, filename=source_path)
+
+    # 1. Text checks
+    assert "_VALID_TARGET_TYPES = {" not in content
+    assert "_PROHIBITED_TARGET_TYPES = {" not in content
+
+    # 2. Module namespace checks
+    assert not hasattr(attribution_module, "_VALID_TARGET_TYPES")
+    assert not hasattr(attribution_module, "_PROHIBITED_TARGET_TYPES")
+
+    # 3. AST check: no module-level Assign of Set or Dict literal
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Assign):
+            for target in stmt.targets:
+                if isinstance(target, ast.Name):
+                    assert not isinstance(stmt.value, (ast.Set, ast.Dict, ast.List)), (
+                        f"Found mutable collection assigned to module-level variable '{target.id}' in {source_path}"
+                    )
+
+
+def test_future_or_unknown_enum_fails_closed() -> None:
+    """
+    If an unknown or future TransactionType is passed, it must fail closed.
+    """
+    assert attribution_module._is_valid_attribution_target_type(None) is False
+    assert attribution_module._is_valid_attribution_target_type(True) is False
+    assert attribution_module._is_valid_attribution_target_type(False) is False
+    assert attribution_module._is_valid_attribution_target_type("BUY") is False
+    assert attribution_module._is_valid_attribution_target_type(123) is False
