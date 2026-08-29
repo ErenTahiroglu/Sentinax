@@ -192,6 +192,13 @@ from backend.engine.private.portfolio.fee_tax_service import (
     PortfolioFeeTaxQueryError,
     PortfolioFeeTaxQueryService,
 )
+from backend.engine.private.portfolio.fee_tax_attribution import (
+    FeeTaxAttributionError,
+    FeeTaxAttributionIntent,
+    ObservedFeeTaxAttributionSet,
+    ResolvedFeeTaxAttribution,
+    build_observed_fee_tax_attribution_set,
+)
 from backend.engine.private.portfolio.repository import PortfolioRepository
 
 __all__ = [
@@ -229,6 +236,11 @@ __all__ = [
     "build_observed_fee_tax_aggregation",
     "PortfolioFeeTaxQueryError",
     "PortfolioFeeTaxQueryService",
+    "FeeTaxAttributionError",
+    "FeeTaxAttributionIntent",
+    "ResolvedFeeTaxAttribution",
+    "ObservedFeeTaxAttributionSet",
+    "build_observed_fee_tax_attribution_set",
     "PortfolioAccountingError",
     "PortfolioAccountingSnapshot",
     "build_portfolio_accounting_snapshot",

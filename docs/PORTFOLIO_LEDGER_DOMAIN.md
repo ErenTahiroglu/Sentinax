@@ -178,12 +178,13 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 
 ---
 
-## 12. Deferred Scope (Phase 12C.6+ & Phase 14D+)
+## 12. Deferred Scope (Phase 12C.6+ & Phase 14E+)
 - **Phase 12C.6+:** Lot matching engines (FIFO/LIFO/Average Cost), cash bucket attribution, realized/unrealized P&L, portfolio valuations.
 - **Phase 14A:** Observed explicit fee & tax-withholding event projection foundation (completed).
 - **Phase 14B:** Exact per-account / per-currency observed fee & tax-withholding aggregation (completed).
 - **Phase 14C:** Owner-bound persisted observed fee/tax evidence query service (completed).
-- **Phase 14D+:** Turkish and international tax rules, withholding calculations, tax liability estimation, and fee optimization.
+- **Phase 14D:** Explicit fee/tax charge-to-transaction attribution evidence foundation (completed).
+- **Phase 14E+:** Turkish and international tax rules, withholding calculations, tax liability estimation, and fee optimization.
 
 ---
 
@@ -492,5 +493,20 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - No FX conversion or base-currency rollup.
   - No tax law, liability estimates, or heuristic trade attribution.
   - Fail-closed error propagation for lower-layer projection and operational repository exceptions.
+
+---
+
+## 17. Explicit Fee/Tax Charge Attribution Evidence (Phase 14D)
+- **Explicit Caller-Supplied Evidence Only:** Charge-to-transaction linkage is never inferred from shared instruments, matching dates, nearby timestamps, matching amounts, or shared accounts.
+- **Input Authority:** Validates explicit intents against `ObservedFeeTaxProjection` (Phase 14A) active charge events and `ObservedFeeTaxProjection.ledger_view.active_transactions` (Phase 12C.1) active economic targets.
+- **Multi-Target Allocation:** A single charge event may be explicitly split across multiple active economic targets.
+- **Partial Allocation Allowed:** Allocations do not need to cover 100% of the charge amount; unallocated remainders are explicitly tracked.
+- **Over-Allocation Rejected:** Exact context-independent Decimal sum of allocations across targets cannot exceed the charge's `cash_amount`.
+- **Target Restrictions:** Valid targets are active non-reversal economic events (`BUY`, `SELL`, `DIVIDEND`, `INTEREST`, `CASH_DEPOSIT`, `CASH_WITHDRAWAL`, `FX_CONVERSION`). Charges (`FEE`, `TAX_WITHHOLDING`) and `REVERSAL` events are strictly prohibited as attribution targets.
+- **Account & Portfolio Isolation:** Both charge and target must share the exact same `portfolio_id` and `account_id`. Cross-account attribution is rejected.
+- **Missing Attribution ≠ Zero Economic Relationship:** If no attribution intents are supplied for a charge, it remains 100% unallocated in evidence; this reflects lack of explicit evidence rather than proof of no relationship.
+- **Zero Ledger Modification & Zero Persistence:** Attribution evidence is an independent factual layer; no fields are added to `PortfolioTransaction`, and no database tables/RPCs are introduced in Phase 14D.
+- **Zero Tax Law / Cost Basis Effect:** Does not modify `PositionLot`, unit cost, realized/unrealized P&L, or tax liabilities.
+
 
 
