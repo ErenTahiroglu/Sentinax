@@ -574,6 +574,22 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Single-reversal partial unique index remains race-safe final authority.
 - **No Durability Write RPC or Query Service Yet:** Table trigger hardens storage invariants for trusted service-role access; repository integration deferred to future phases.
 
+---
+
+## 21. Active Ledger Reference & Reversal-Race Hardening (Phase 14G.1)
+- **Active-at-PIT Ledger References:** An attribution `ALLOCATION` is valid if and only if both the referenced charge transaction and target transaction were active in the ledger at the attribution event's knowledge cutoff (`recorded_at`).
+  - If a ledger `REVERSAL` transaction exists for the charge with `recorded_at <= attribution.recorded_at`, attribution is rejected.
+  - If a ledger `REVERSAL` transaction exists for the target with `recorded_at <= attribution.recorded_at`, attribution is rejected.
+  - Future ledger reversals (`reversal.recorded_at > attribution.recorded_at`) do NOT invalidate historical attribution events created when the transactions were active.
+- **Dual Ledger Row Locking:** `ALLOCATION` validation acquires row locks (`FOR UPDATE`) on both the charge transaction and the target transaction in deterministic order (`charge` -> `target`), before querying attribution history.
+- **Ledger Reversal Synchronization Trigger (`lock_portfolio_transaction_reversal_target`):**
+  - Added a narrow synchronization trigger on `public.portfolio_transactions` (before insert of `reversal` rows).
+  - Acquires a row lock (`FOR UPDATE`) on the transaction being reversed (`NEW.reverses_transaction_id`).
+  - Ensures atomic, race-free serialization between concurrent attribution insertion and ledger reversal insertion on the same transaction.
+- **No Ledger Semantic or Schema Mutation:** Zero alterations to ledger table columns, constraints, or the closed `validate_portfolio_transaction_integrity` business logic.
+- **Zero Tax Law / Cost Basis Effect:** Does not alter cost basis, tax calculations, or tax liabilities.
+
+
 
 
 
