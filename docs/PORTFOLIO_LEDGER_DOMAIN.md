@@ -524,6 +524,30 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **No Durability or Write Path Yet:** Phase 14E defines only the domain event contract, pure builders, serializer, and hydrator. No database schema, migration, RPC, or repository write methods exist yet (durability is deferred to Phase 14F+).
 - **Storage-History Validation Deferred:** Verification of whether referenced original events exist or have already been reversed is intentionally deferred to future persistence service layers.
 
+---
+
+## 19. Fee/Tax Attribution Event Persistence Schema & DB Invariants (Phase 14F)
+- **Dedicated Persistence Table:** Created `public.portfolio_fee_tax_attribution_events` via migration `018_fee_tax_attribution_events.sql` as a separate append-only table without modifying `portfolio_transactions`.
+- **Append-Only Evidence Stream:** Immutability trigger (`prevent_fee_tax_attribution_event_tamper`) strictly prevents `UPDATE` and `DELETE` on attribution events.
+- **Relational Consistency:**
+  - `(portfolio_id, owner_id) -> portfolios(id, owner_id)` with `ON DELETE RESTRICT`.
+  - `(account_id, portfolio_id) -> portfolio_accounts(id, portfolio_id)` with `ON DELETE RESTRICT`.
+  - `(charge_transaction_id, portfolio_id, account_id) -> portfolio_transactions(id, portfolio_id, account_id)` with `ON DELETE RESTRICT`.
+  - `(target_transaction_id, portfolio_id, account_id) -> portfolio_transactions(id, portfolio_id, account_id)` with `ON DELETE RESTRICT`.
+  - `(reverses_attribution_event_id, portfolio_id, account_id) -> portfolio_fee_tax_attribution_events(id, portfolio_id, account_id)` with `ON DELETE RESTRICT`.
+- **Relational Integrity Validation Trigger (`validate_fee_tax_attribution_event_integrity`):**
+  - For `ALLOCATION`: Validates that the referenced charge transaction is strictly `fee` or `tax_withholding`, and that the target transaction is one of the 7 allowed economic types (`buy`, `sell`, `dividend`, `interest`, `cash_deposit`, `cash_withdrawal`, `fx_conversion`).
+  - For `REVERSAL`: Validates that the referenced attribution event exists and is strictly an `allocation` (anti-reversal-of-reversal).
+- **Single Reversal Uniqueness:** Partial unique index on `reverses_attribution_event_id` (`WHERE event_type = 'reversal'`) prevents double reversal of an attribution event.
+- **No Database Defaults:** Both `id` and `recorded_at` have zero database defaults; backend ownership and system-knowledge clock authority are preserved.
+- **Row-Level Security & Write-Surface Exclusivity:**
+  - RLS enabled with owner-scoped `SELECT` for authenticated users.
+  - Direct `INSERT`, `UPDATE`, `DELETE` revoked from `PUBLIC`, `anon`, and `authenticated`.
+  - `service_role` granted `SELECT` and `INSERT` only (no `UPDATE` or `DELETE`).
+- **No Durability Write RPC or Query Service Yet:** Phase 14F provides table storage and DB invariants only. No RPCs or repository write methods are created in this phase.
+- **No Data Denormalization & No Tax Rules:** Zero denormalized currency, instrument, or transaction date fields; zero tax calculation or cost basis adjustments.
+
+
 
 
 
