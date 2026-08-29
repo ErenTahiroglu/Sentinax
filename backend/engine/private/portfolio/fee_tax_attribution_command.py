@@ -1,12 +1,12 @@
 """
 backend/engine/private/portfolio/fee_tax_attribution_command.py
 ===============================================================
-Owner-Bound Explicit Fee/Tax Allocation Command Service (Phase 14M / 14M.1).
+Owner-Bound Explicit Fee/Tax Allocation & Reversal Command Service (Phase 14M / 14M.1 / 14N).
 
 This module implements the application-command orchestration layer for explicit
-user/system fee and tax charge allocations with retry-safe command idempotency.
+user/system fee and tax charge allocations and attribution reversals with retry-safe command idempotency.
 
-Workflow:
+Allocation Workflow (Phase 14M / 14M.1):
 1. Validates caller-supplied stable command_id (UUID), charge ID, target ID, and exact Decimal allocated amount.
 2. Rejects self-attribution immediately (charge_id == target_id).
 3. Pre-reads existing event by (portfolio_id, command_id) before clock invocation.
@@ -20,6 +20,23 @@ Workflow:
 9. Appends the event via Phase 14L PortfolioRepository.append_fee_tax_attribution_event.
    - On error, executes post-error idempotency recovery against (portfolio_id, command_id) to handle concurrent same-command races.
 10. Validates and returns the durable persisted FeeTaxAttributionPersistenceEvent instance.
+
+Reversal Workflow (Phase 14N):
+1. Validates caller-supplied stable command_id (UUID), portfolio ID, and allocation_event_id.
+2. Rejects self-reversal immediately (command_id == allocation_event_id).
+3. Pre-reads existing event by (portfolio_id, command_id) before clock invocation.
+   - If exact logical reversal matches existing persisted event, returns it immediately (safe sequential retry).
+   - If existing event has different semantics or family, fails closed with command conflict.
+4. For genuinely new reversals, captures command clock once and normalizes to UTC (T).
+5. Queries authoritative semantic state AS OF T via Phase 14K (PortfolioFeeTaxAttributionQueryService).
+6. Locates referenced allocation event in Phase 14I history:
+   - Proves referenced allocation exists and was recorded at or before T.
+   - Proves referenced allocation is an ALLOCATION event and is currently ACTIVE.
+   - Verifies one-to-one correspondence against Phase 14J authoritative semantic attribution binding.
+7. Constructs canonical immutable Phase 14E REVERSAL persistence event with event_id=command_id.
+8. Appends the event via Phase 14L PortfolioRepository.append_fee_tax_attribution_event.
+   - On error, executes post-error idempotency recovery against (portfolio_id, command_id) to handle concurrent same-command races.
+9. Validates and returns the durable persisted FeeTaxAttributionPersistenceEvent instance.
 """
 
 from __future__ import annotations
@@ -37,6 +54,7 @@ from backend.engine.private.portfolio.fee_tax_attribution_persistence import (
     FeeTaxAttributionEventType,
     FeeTaxAttributionPersistenceEvent,
     build_allocation_persistence_event,
+    build_attribution_reversal_persistence_event,
 )
 from backend.engine.private.portfolio.fee_tax_attribution_service import (
     PortfolioFeeTaxAttributionQueryService,
@@ -195,11 +213,42 @@ def _allocation_event_matches_command(
     return True
 
 
+def _reversal_event_matches_command(
+    event: Any,
+    *,
+    command_id: UUID,
+    portfolio_id: UUID,
+    allocation_event_id: UUID,
+) -> bool:
+    """
+    Checks whether an existing persisted event represents the exact logical REVERSAL command.
+    Matches physical command ID, portfolio ID, referenced allocation ID, and ensures it is a valid REVERSAL event.
+    Note: recorded_at and account_id are owned by the first durable commit and are not part of retry matching.
+    """
+    if event is None or isinstance(event, bool) or not isinstance(event, FeeTaxAttributionPersistenceEvent):
+        return False
+    if event.id != command_id:
+        return False
+    if event.portfolio_id != portfolio_id:
+        return False
+    if event.event_type != FeeTaxAttributionEventType.REVERSAL:
+        return False
+    if event.charge_transaction_id is not None:
+        return False
+    if event.target_transaction_id is not None:
+        return False
+    if event.allocated_amount is not None:
+        return False
+    if event.reverses_attribution_event_id != allocation_event_id:
+        return False
+    return True
+
+
 class PortfolioFeeTaxAttributionCommandService:
     """
-    Owner-bound application-command service for explicit fee/tax charge allocation with retry-safe idempotency.
-    Revalidates candidate allocation against authoritative current ledger & attribution state,
-    builds canonical immutable Phase 14E ALLOCATION persistence event, and persists it via Phase 14L repository.
+    Owner-bound application-command service for explicit fee/tax charge allocation and reversal with retry-safe idempotency.
+    Revalidates candidate allocation/reversal against authoritative current ledger & attribution state,
+    builds canonical immutable Phase 14E persistence events, and persists them via Phase 14L repository.
     """
 
     def __init__(
@@ -357,6 +406,179 @@ class PortfolioFeeTaxAttributionCommandService:
                 "Persisted event economic contents do not match candidate allocation."
             )
         if persisted.recorded_at.astimezone(timezone.utc) != candidate_event.recorded_at.astimezone(timezone.utc):
+            raise PortfolioFeeTaxAttributionCommandError(
+                "Persisted event physical timestamp does not match command recorded_at."
+            )
+
+        return persisted
+
+    def reverse_allocation(
+        self,
+        command_id: UUID,
+        portfolio_id: UUID,
+        allocation_event_id: UUID,
+    ) -> FeeTaxAttributionPersistenceEvent:
+        """
+        Executes an explicit fee/tax attribution reversal command (Phase 14N):
+        1. Validates public arguments strictly.
+        2. Rejects self-reversal immediately (command_id == allocation_event_id).
+        3. Pre-reads existing event by (portfolio_id, command_id) before clock invocation.
+           - If exact logical reversal match: returns existing event immediately (first commit wins).
+           - If command conflict: raises PortfolioFeeTaxAttributionCommandError.
+        4. Captures command clock once and normalizes to UTC (T).
+        5. Queries semantic attribution view AS OF T via Phase 14K.
+        6. Locates referenced allocation event in Phase 14I history:
+           - Verifies allocation exists and was recorded at or before T.
+           - Verifies allocation is an ALLOCATION event and is currently ACTIVE.
+           - Defensively verifies active correspondence against Phase 14J semantic attribution graph.
+        7. Builds canonical Phase 14E REVERSAL persistence event with event_id=command_id.
+        8. Appends event via Phase 14L append_fee_tax_attribution_event with post-error race recovery.
+        9. Validates returned persisted event and returns it.
+        """
+        # Step 1 & 2: Public argument strictness
+        cmd_id = _validate_uuid_argument(command_id, "command_id")
+        p_id = _validate_uuid_argument(portfolio_id, "portfolio_id")
+        alloc_id = _validate_uuid_argument(allocation_event_id, "allocation_event_id")
+
+        if cmd_id == alloc_id:
+            raise PortfolioFeeTaxAttributionCommandError(
+                f"Self-reversal rejected: command_id {cmd_id} equals allocation_event_id {alloc_id}"
+            )
+
+        # Step 3: Pre-read idempotency check before clock
+        existing = self._repo.get_fee_tax_attribution_event(p_id, cmd_id)
+        if existing is not None:
+            if _reversal_event_matches_command(
+                existing,
+                command_id=cmd_id,
+                portfolio_id=p_id,
+                allocation_event_id=alloc_id,
+            ):
+                return existing
+            raise PortfolioFeeTaxAttributionCommandError(
+                f"Command ID conflict: Fee/tax attribution event {cmd_id} already exists with different semantics."
+            )
+
+        # Step 4: Capture single command clock and normalize to UTC
+        recorded_at = _resolve_command_clock(self._clock)
+
+        # Step 5: Query authoritative semantic view AS OF T (Phase 14K)
+        semantic_view = self._query_service.get_attribution_view_as_of(p_id, recorded_at)
+
+        # Step 6: Locate referenced allocation event in Phase 14I history
+        history = semantic_view.persisted_history
+        alloc_event: Optional[FeeTaxAttributionPersistenceEvent] = None
+        for ev in history.allocation_events:
+            if ev.id == alloc_id:
+                alloc_event = ev
+                break
+
+        if alloc_event is None:
+            raise PortfolioFeeTaxAttributionCommandError(
+                f"Allocation event {alloc_id} not found in persisted attribution history as of {recorded_at.isoformat()}"
+            )
+
+        if alloc_event.event_type != FeeTaxAttributionEventType.ALLOCATION:
+            raise PortfolioFeeTaxAttributionCommandError(
+                f"Target event {alloc_id} is not an ALLOCATION event (got {alloc_event.event_type})"
+            )
+
+        # Step 7: Check allocation is currently active in history
+        if not history.is_allocation_active(alloc_id):
+            existing_rev = history.reversal_for_allocation(alloc_id)
+            rev_info = f" (reversed by event {existing_rev.id})" if existing_rev is not None else ""
+            raise PortfolioFeeTaxAttributionCommandError(
+                f"Allocation event {alloc_id} is not active at PIT cutoff {recorded_at.isoformat()}{rev_info}"
+            )
+
+        # Step 8: Defense-in-depth: one-to-one active history and semantic attribution correspondence
+        active_allocs = history.active_allocation_events
+        try:
+            active_idx = active_allocs.index(alloc_event)
+        except ValueError:
+            raise PortfolioFeeTaxAttributionCommandError(
+                f"Active allocation event {alloc_id} missing from active allocation list."
+            )
+
+        if active_idx >= len(semantic_view.attribution_set.attributions):
+            raise PortfolioFeeTaxAttributionCommandError(
+                "Semantic attribution index out of bounds for active allocation event."
+            )
+
+        resolved_attr = semantic_view.attribution_set.attributions[active_idx]
+        if (
+            resolved_attr.charge_transaction.id != alloc_event.charge_transaction_id
+            or resolved_attr.target_transaction.id != alloc_event.target_transaction_id
+            or (
+                alloc_event.allocated_amount is not None
+                and resolved_attr.allocated_amount.as_tuple() != alloc_event.allocated_amount.as_tuple()
+            )
+            or resolved_attr.charge_transaction.portfolio_id != alloc_event.portfolio_id
+            or resolved_attr.charge_transaction.account_id != alloc_event.account_id
+            or resolved_attr.target_transaction.portfolio_id != alloc_event.portfolio_id
+            or resolved_attr.target_transaction.account_id != alloc_event.account_id
+        ):
+            raise PortfolioFeeTaxAttributionCommandError(
+                "Authoritative semantic attribution binding mismatch for allocation event."
+            )
+
+        # Step 9: Build canonical Phase 14E REVERSAL persistence event
+        candidate_reversal = build_attribution_reversal_persistence_event(
+            event_id=cmd_id,
+            portfolio_id=alloc_event.portfolio_id,
+            account_id=alloc_event.account_id,
+            recorded_at=recorded_at,
+            reverses_attribution_event_id=alloc_event.id,
+        )
+
+        # Step 10: Append through Phase 14L with post-error race recovery
+        try:
+            persisted = self._repo.append_fee_tax_attribution_event(candidate_reversal)
+        except Exception as orig_exc:
+            try:
+                existing_after_error = self._repo.get_fee_tax_attribution_event(p_id, cmd_id)
+            except Exception:
+                raise orig_exc from None
+
+            if existing_after_error is not None:
+                if _reversal_event_matches_command(
+                    existing_after_error,
+                    command_id=cmd_id,
+                    portfolio_id=p_id,
+                    allocation_event_id=alloc_id,
+                ):
+                    return existing_after_error
+                raise PortfolioFeeTaxAttributionCommandError(
+                    f"Command ID conflict: Fee/tax attribution event {cmd_id} already exists with different semantics."
+                ) from orig_exc
+
+            raise orig_exc
+
+        # Step 11: Defense-in-depth verification of returned persisted event
+        if isinstance(persisted, bool) or not isinstance(persisted, FeeTaxAttributionPersistenceEvent):
+            raise PortfolioFeeTaxAttributionCommandError(
+                f"Repository returned invalid event type: {type(persisted).__name__}"
+            )
+        if persisted.event_type != FeeTaxAttributionEventType.REVERSAL:
+            raise PortfolioFeeTaxAttributionCommandError(
+                f"Repository returned wrong event type: {persisted.event_type}"
+            )
+        if persisted.id != cmd_id:
+            raise PortfolioFeeTaxAttributionCommandError(
+                f"Repository returned mismatched event ID: expected {cmd_id}, got {persisted.id}"
+            )
+        if (
+            persisted.portfolio_id != candidate_reversal.portfolio_id
+            or persisted.account_id != candidate_reversal.account_id
+            or persisted.reverses_attribution_event_id != candidate_reversal.reverses_attribution_event_id
+            or persisted.charge_transaction_id is not None
+            or persisted.target_transaction_id is not None
+            or persisted.allocated_amount is not None
+        ):
+            raise PortfolioFeeTaxAttributionCommandError(
+                "Persisted event contents do not match candidate reversal."
+            )
+        if persisted.recorded_at.astimezone(timezone.utc) != candidate_reversal.recorded_at.astimezone(timezone.utc):
             raise PortfolioFeeTaxAttributionCommandError(
                 "Persisted event physical timestamp does not match command recorded_at."
             )

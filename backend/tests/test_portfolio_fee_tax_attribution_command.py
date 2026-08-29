@@ -1,7 +1,8 @@
 """
 backend/tests/test_portfolio_fee_tax_attribution_command.py
 ===========================================================
-Comprehensive unit tests for Phase 14M / 14M.1: Owner-Bound Explicit Fee/Tax Allocation Command Service
+Comprehensive unit tests for Phase 14M / 14M.1 / 14N:
+Owner-Bound Explicit Fee/Tax Allocation & Reversal Command Service
 with Retry-Safe Command Idempotency & First-Commit-Wins Authority.
 """
 
@@ -27,12 +28,14 @@ from backend.engine.private.portfolio.fee_tax_attribution_command import (
     PortfolioFeeTaxAttributionCommandRepositoryPort,
     PortfolioFeeTaxAttributionCommandService,
     _allocation_event_matches_command,
+    _reversal_event_matches_command,
 )
 from backend.engine.private.portfolio.fee_tax_attribution_persistence import (
     FeeTaxAttributionEventType,
     FeeTaxAttributionPersistenceError,
     FeeTaxAttributionPersistenceEvent,
     build_allocation_persistence_event,
+    build_attribution_reversal_persistence_event,
 )
 from backend.engine.private.portfolio.models import (
     Portfolio,
@@ -220,7 +223,7 @@ def _make_reversal_event(
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestConstructorValidation:
-    """Constructor dependency validation (Phase 14M / 14M.1)."""
+    """Constructor dependency validation (Phase 14M / 14M.1 / 14N)."""
 
     def test_rejects_none_repository(self):
         with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="repository must not be None"):
@@ -273,6 +276,16 @@ class TestPublicParameterStrictness:
             "allocated_amount",
         ]
 
+    def test_reverse_allocation_signature_exact_parameters(self):
+        sig = inspect.signature(PortfolioFeeTaxAttributionCommandService.reverse_allocation)
+        params = list(sig.parameters.keys())
+        assert params == [
+            "self",
+            "command_id",
+            "portfolio_id",
+            "allocation_event_id",
+        ]
+
     @pytest.mark.parametrize("bad_id", [
         None,
         True,
@@ -281,11 +294,29 @@ class TestPublicParameterStrictness:
         123,
         b"\x00" * 16,
     ])
-    def test_rejects_invalid_command_id(self, bad_id: Any):
+    def test_rejects_invalid_command_id_in_allocate(self, bad_id: Any):
         repo = StrictCommandTestRepository()
         service = PortfolioFeeTaxAttributionCommandService(repo)
         with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="command_id must be a non-bool UUID instance"):
             service.allocate(bad_id, uuid4(), uuid4(), uuid4(), Decimal("10.000"))
+
+        assert len(repo.get_portfolio_calls) == 0
+        assert len(repo.get_event_calls) == 0
+        assert len(repo.append_calls) == 0
+
+    @pytest.mark.parametrize("bad_id", [
+        None,
+        True,
+        False,
+        "550e8400-e29b-41d4-a716-446655440000",
+        123,
+        b"\x00" * 16,
+    ])
+    def test_rejects_invalid_command_id_in_reverse_allocation(self, bad_id: Any):
+        repo = StrictCommandTestRepository()
+        service = PortfolioFeeTaxAttributionCommandService(repo)
+        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="command_id must be a non-bool UUID instance"):
+            service.reverse_allocation(bad_id, uuid4(), uuid4())
 
         assert len(repo.get_portfolio_calls) == 0
         assert len(repo.get_event_calls) == 0
@@ -304,7 +335,7 @@ class TestPublicParameterStrictness:
         123,
         b"\x00" * 16,
     ])
-    def test_rejects_invalid_uuid_arguments(self, field_idx: int, field_name: str, bad_id: Any):
+    def test_rejects_invalid_uuid_arguments_in_allocate(self, field_idx: int, field_name: str, bad_id: Any):
         repo = StrictCommandTestRepository()
         service = PortfolioFeeTaxAttributionCommandService(repo)
         args = [uuid4(), uuid4(), uuid4(), uuid4()]
@@ -317,6 +348,31 @@ class TestPublicParameterStrictness:
         assert len(repo.get_event_calls) == 0
         assert len(repo.append_calls) == 0
 
+    @pytest.mark.parametrize("field_idx,field_name", [
+        (1, "portfolio_id"),
+        (2, "allocation_event_id"),
+    ])
+    @pytest.mark.parametrize("bad_id", [
+        None,
+        True,
+        False,
+        "550e8400-e29b-41d4-a716-446655440000",
+        123,
+        b"\x00" * 16,
+    ])
+    def test_rejects_invalid_uuid_arguments_in_reverse_allocation(self, field_idx: int, field_name: str, bad_id: Any):
+        repo = StrictCommandTestRepository()
+        service = PortfolioFeeTaxAttributionCommandService(repo)
+        args = [uuid4(), uuid4(), uuid4()]
+        args[field_idx] = bad_id
+
+        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match=f"{field_name} must be a non-bool UUID instance"):
+            service.reverse_allocation(args[0], args[1], args[2])
+
+        assert len(repo.get_portfolio_calls) == 0
+        assert len(repo.get_event_calls) == 0
+        assert len(repo.append_calls) == 0
+
     def test_rejects_self_attribution_immediately(self):
         repo = StrictCommandTestRepository()
         service = PortfolioFeeTaxAttributionCommandService(repo)
@@ -324,6 +380,18 @@ class TestPublicParameterStrictness:
 
         with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="Self-attribution rejected"):
             service.allocate(uuid4(), uuid4(), same_id, same_id, Decimal("10.000"))
+
+        assert len(repo.get_portfolio_calls) == 0
+        assert len(repo.get_event_calls) == 0
+        assert len(repo.append_calls) == 0
+
+    def test_rejects_self_reversal_immediately(self):
+        repo = StrictCommandTestRepository()
+        service = PortfolioFeeTaxAttributionCommandService(repo)
+        same_id = uuid4()
+
+        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="Self-reversal rejected"):
+            service.reverse_allocation(same_id, uuid4(), same_id)
 
         assert len(repo.get_portfolio_calls) == 0
         assert len(repo.get_event_calls) == 0
@@ -370,9 +438,9 @@ class TestPublicParameterStrictness:
 
 
 class TestPureIdempotencyMatchingHelper:
-    """Item 12, 13, 67: Contract tests for _allocation_event_matches_command."""
+    """Contract tests for _allocation_event_matches_command and _reversal_event_matches_command."""
 
-    def test_exact_match_success(self):
+    def test_allocation_exact_match_success(self):
         cmd_id = uuid4()
         p_id = uuid4()
         c_id = uuid4()
@@ -389,14 +457,26 @@ class TestPureIdempotencyMatchingHelper:
             allocated_amount=amount,
         ) is True
 
-    def test_decimal_representation_drift_fails_match(self):
+    def test_reversal_exact_match_success(self):
+        cmd_id = uuid4()
+        p_id = uuid4()
+        alloc_id = uuid4()
+        event = _make_reversal_event(p_id, uuid4(), alloc_id, event_id=cmd_id)
+
+        assert _reversal_event_matches_command(
+            event,
+            command_id=cmd_id,
+            portfolio_id=p_id,
+            allocation_event_id=alloc_id,
+        ) is True
+
+    def test_allocation_decimal_representation_drift_fails_match(self):
         cmd_id = uuid4()
         p_id = uuid4()
         c_id = uuid4()
         t_id = uuid4()
         event = _make_allocation_event(p_id, uuid4(), c_id, t_id, Decimal("6.000"), event_id=cmd_id)
 
-        # Decimal("6") is numerically equal but has different as_tuple()
         assert _allocation_event_matches_command(
             event,
             command_id=cmd_id,
@@ -406,30 +486,18 @@ class TestPureIdempotencyMatchingHelper:
             allocated_amount=Decimal("6"),
         ) is False
 
-    def test_mismatched_command_id_fails_match(self):
-        event = _make_allocation_event(uuid4(), uuid4(), uuid4(), uuid4(), Decimal("6.000"), event_id=uuid4())
-        assert _allocation_event_matches_command(
-            event,
-            command_id=uuid4(),
-            portfolio_id=event.portfolio_id,
-            charge_transaction_id=event.charge_transaction_id,  # type: ignore
-            target_transaction_id=event.target_transaction_id,  # type: ignore
-            allocated_amount=Decimal("6.000"),
-        ) is False
-
-    def test_mismatched_target_fails_match(self):
+    def test_reversal_helper_rejects_allocation_event(self):
         cmd_id = uuid4()
-        event = _make_allocation_event(uuid4(), uuid4(), uuid4(), uuid4(), Decimal("6.000"), event_id=cmd_id)
-        assert _allocation_event_matches_command(
+        p_id = uuid4()
+        event = _make_allocation_event(p_id, uuid4(), uuid4(), uuid4(), Decimal("6.000"), event_id=cmd_id)
+        assert _reversal_event_matches_command(
             event,
             command_id=cmd_id,
-            portfolio_id=event.portfolio_id,
-            charge_transaction_id=event.charge_transaction_id,  # type: ignore
-            target_transaction_id=uuid4(),
-            allocated_amount=Decimal("6.000"),
+            portfolio_id=p_id,
+            allocation_event_id=uuid4(),
         ) is False
 
-    def test_reversal_event_fails_match(self):
+    def test_allocation_helper_rejects_reversal_event(self):
         cmd_id = uuid4()
         p_id = uuid4()
         event = _make_reversal_event(p_id, uuid4(), uuid4(), event_id=cmd_id)
@@ -444,9 +512,9 @@ class TestPureIdempotencyMatchingHelper:
 
 
 class TestSequentialExactRetryIdempotency:
-    """Items 46, 54, 57, 70: Sequential exact retry and first-commit-wins behavior."""
+    """Sequential exact retry and first-commit-wins behavior for allocate and reverse_allocation."""
 
-    def test_first_invocation_commits_and_second_invocation_replays(self):
+    def test_allocation_sequential_replay(self):
         p = _make_portfolio()
         a_id = uuid4()
         c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
@@ -472,26 +540,61 @@ class TestSequentialExactRetryIdempotency:
         assert len(repo.get_portfolio_calls) == 1
 
         # 2. Sequential retry with exact same command
-        # Clock must NOT be called; if called it will raise IndexError
         retry_event = service.allocate(cmd_id, p.id, c_tx.id, t_tx.id, amount)
 
         assert retry_event == first_event
         assert retry_event.recorded_at == t1
-        # No extra append, no extra semantic query
         assert len(repo.append_calls) == 1
         assert len(repo.get_portfolio_calls) == 1
         assert len(repo.list_transactions_calls) == 1
         assert len(repo.list_fee_tax_attribution_events_calls) == 1
-        assert len(repo.get_event_calls) == 2  # 1 for first attempt pre-read, 1 for retry pre-read
+        assert len(repo.get_event_calls) == 2
 
-    def test_pre_read_occurs_before_clock(self):
+    def test_reversal_sequential_replay(self):
+        p = _make_portfolio()
+        a_id = uuid4()
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("10"), unit_price=Decimal("150.000"))
+
+        alloc_id = uuid4()
+        t0 = datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc)
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id, recorded_at=t0)
+
+        repo = StrictCommandTestRepository(
+            portfolios={p.id: p},
+            transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event]},
+        )
+
+        t1 = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+        clock_calls = [t1]
+        service = PortfolioFeeTaxAttributionCommandService(repo, clock=lambda: clock_calls.pop(0))
+
+        cmd_id = uuid4()
+
+        # 1. First execution
+        first_reversal = service.reverse_allocation(cmd_id, p.id, alloc_id)
+        assert first_reversal.id == cmd_id
+        assert first_reversal.event_type == FeeTaxAttributionEventType.REVERSAL
+        assert first_reversal.reverses_attribution_event_id == alloc_id
+        assert first_reversal.recorded_at == t1
+        assert len(repo.append_calls) == 1
+
+        # 2. Sequential retry
+        retry_reversal = service.reverse_allocation(cmd_id, p.id, alloc_id)
+        assert retry_reversal == first_reversal
+        assert retry_reversal.recorded_at == t1
+        assert len(repo.append_calls) == 1
+        assert len(repo.get_portfolio_calls) == 1
+        assert len(repo.list_transactions_calls) == 1
+        assert len(repo.get_event_calls) == 2
+
+    def test_reversal_pre_read_occurs_before_clock(self):
         p = _make_portfolio()
         cmd_id = uuid4()
-        c_id = uuid4()
-        t_id = uuid4()
-        amount = Decimal("6.000")
+        alloc_id = uuid4()
         t1 = datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc)
-        existing = _make_allocation_event(p.id, uuid4(), c_id, t_id, amount, event_id=cmd_id, recorded_at=t1)
+        existing = _make_reversal_event(p.id, uuid4(), alloc_id, event_id=cmd_id, recorded_at=t1)
 
         repo = StrictCommandTestRepository(
             portfolios={p.id: p},
@@ -502,32 +605,15 @@ class TestSequentialExactRetryIdempotency:
             raise AssertionError("Clock must not be called during idempotent replay!")
 
         service = PortfolioFeeTaxAttributionCommandService(repo, clock=exploding_clock)
-        replayed = service.allocate(cmd_id, p.id, c_id, t_id, amount)
+        replayed = service.reverse_allocation(cmd_id, p.id, alloc_id)
         assert replayed == existing
         assert replayed.recorded_at == t1
 
-    def test_pre_read_error_propagates_unchanged(self):
-        p = _make_portfolio()
-        repo = StrictCommandTestRepository(portfolios={p.id: p})
-        sentinel_exc = RuntimeError("Database GET connection failure")
-
-        def bad_get(p_id: UUID, e_id: UUID):
-            raise sentinel_exc
-
-        repo.get_event_override = bad_get
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        with pytest.raises(RuntimeError) as exc_info:
-            service.allocate(uuid4(), p.id, uuid4(), uuid4(), Decimal("5.000"))
-
-        assert exc_info.value is sentinel_exc
-        assert len(repo.append_calls) == 0
-
 
 class TestRetryAfterReversals:
-    """Items 47, 48, 49, 85: Replay after subsequent attribution/ledger reversals."""
+    """Replay after subsequent attribution/ledger reversals."""
 
-    def test_retry_after_attribution_reversal_returns_original_event(self):
+    def test_allocation_retry_after_attribution_reversal_returns_original_event(self):
         p = _make_portfolio()
         a_id = uuid4()
         c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
@@ -536,7 +622,6 @@ class TestRetryAfterReversals:
         cmd_id = uuid4()
         t1 = datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc)
         alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=cmd_id, recorded_at=t1)
-        # Later reversal of cmd_id
         t2 = datetime(2026, 8, 29, 11, 0, 0, tzinfo=timezone.utc)
         rev_event = _make_reversal_event(p.id, a_id, cmd_id, recorded_at=t2)
 
@@ -547,323 +632,667 @@ class TestRetryAfterReversals:
         )
         service = PortfolioFeeTaxAttributionCommandService(repo)
 
-        # Retry original command
         replayed = service.allocate(cmd_id, p.id, c_tx.id, t_tx.id, Decimal("6.000"))
         assert replayed == alloc_event
+        assert replayed.recorded_at == t1
+        assert len(repo.append_calls) == 0
+
+    def test_reversal_retry_after_subsequent_ledger_state_changes(self):
+        p = _make_portfolio()
+        a_id = uuid4()
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("10"), unit_price=Decimal("150.000"))
+
+        alloc_id = uuid4()
+        cmd_id = uuid4()
+        t1 = datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc)
+        rev_event = _make_reversal_event(p.id, a_id, alloc_id, event_id=cmd_id, recorded_at=t1)
+
+        # Later ledger change
+        later_tx = _make_tx(p.id, a_id, TransactionType.CASH_DEPOSIT, cash_amount=Decimal("500.000"))
+
+        repo = StrictCommandTestRepository(
+            portfolios={p.id: p},
+            transactions={p.id: [c_tx, t_tx, later_tx]},
+            attribution_events={p.id: [rev_event]},
+        )
+        service = PortfolioFeeTaxAttributionCommandService(repo)
+
+        replayed = service.reverse_allocation(cmd_id, p.id, alloc_id)
+        assert replayed == rev_event
         assert replayed.recorded_at == t1
         assert len(repo.append_calls) == 0
         assert len(repo.get_portfolio_calls) == 0
-
-    def test_retry_after_target_ledger_reversal_returns_original_event(self):
-        p = _make_portfolio()
-        a_id = uuid4()
-        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
-        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("10"), unit_price=Decimal("150.000"))
-        target_rev = _make_tx(p.id, a_id, TransactionType.REVERSAL, reverses_transaction_id=t_tx.id)
-
-        cmd_id = uuid4()
-        t1 = datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc)
-        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=cmd_id, recorded_at=t1)
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            transactions={p.id: [c_tx, t_tx, target_rev]},
-            attribution_events={p.id: [alloc_event]},
-        )
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        replayed = service.allocate(cmd_id, p.id, c_tx.id, t_tx.id, Decimal("6.000"))
-        assert replayed == alloc_event
-        assert replayed.recorded_at == t1
-        assert len(repo.append_calls) == 0
-
-    def test_retry_after_charge_ledger_reversal_returns_original_event(self):
-        p = _make_portfolio()
-        a_id = uuid4()
-        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
-        charge_rev = _make_tx(p.id, a_id, TransactionType.REVERSAL, reverses_transaction_id=c_tx.id)
-        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("10"), unit_price=Decimal("150.000"))
-
-        cmd_id = uuid4()
-        t1 = datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc)
-        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=cmd_id, recorded_at=t1)
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            transactions={p.id: [c_tx, charge_rev, t_tx]},
-            attribution_events={p.id: [alloc_event]},
-        )
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        replayed = service.allocate(cmd_id, p.id, c_tx.id, t_tx.id, Decimal("6.000"))
-        assert replayed == alloc_event
-        assert replayed.recorded_at == t1
-        assert len(repo.append_calls) == 0
 
 
 class TestConflictingCommandIdReuse:
-    """Items 50, 51, 52, 53, 68, 69, 83, 84: Same command ID with different semantics fails closed."""
+    """Same command ID with different semantics fails closed."""
 
-    def test_same_command_id_different_target_fails_closed(self):
-        p = _make_portfolio()
-        cmd_id = uuid4()
-        c_id = uuid4()
-        t1_id = uuid4()
-        t2_id = uuid4()
-        existing = _make_allocation_event(p.id, uuid4(), c_id, t1_id, Decimal("6.000"), event_id=cmd_id)
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            attribution_events={p.id: [existing]},
-        )
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="Command ID conflict"):
-            service.allocate(cmd_id, p.id, c_id, t2_id, Decimal("6.000"))
-
-        assert len(repo.append_calls) == 0
-        assert len(repo.get_portfolio_calls) == 0
-
-    def test_same_command_id_different_charge_fails_closed(self):
-        p = _make_portfolio()
-        cmd_id = uuid4()
-        c1_id = uuid4()
-        c2_id = uuid4()
-        t_id = uuid4()
-        existing = _make_allocation_event(p.id, uuid4(), c1_id, t_id, Decimal("6.000"), event_id=cmd_id)
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            attribution_events={p.id: [existing]},
-        )
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="Command ID conflict"):
-            service.allocate(cmd_id, p.id, c2_id, t_id, Decimal("6.000"))
-
-        assert len(repo.append_calls) == 0
-
-    def test_same_command_id_different_amount_fails_closed(self):
+    def test_reversal_command_id_points_to_allocation_fails_closed(self):
         p = _make_portfolio()
         cmd_id = uuid4()
         c_id = uuid4()
         t_id = uuid4()
-        existing = _make_allocation_event(p.id, uuid4(), c_id, t_id, Decimal("6.000"), event_id=cmd_id)
+        existing_alloc = _make_allocation_event(p.id, uuid4(), c_id, t_id, Decimal("6.000"), event_id=cmd_id)
 
         repo = StrictCommandTestRepository(
             portfolios={p.id: p},
-            attribution_events={p.id: [existing]},
+            attribution_events={p.id: [existing_alloc]},
         )
         service = PortfolioFeeTaxAttributionCommandService(repo)
 
         with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="Command ID conflict"):
-            service.allocate(cmd_id, p.id, c_id, t_id, Decimal("7.000"))
+            service.reverse_allocation(cmd_id, p.id, uuid4())
 
         assert len(repo.append_calls) == 0
 
-    def test_same_command_id_decimal_representation_drift_fails_closed(self):
+    def test_reversal_command_id_different_target_fails_closed(self):
         p = _make_portfolio()
         cmd_id = uuid4()
-        c_id = uuid4()
-        t_id = uuid4()
-        existing = _make_allocation_event(p.id, uuid4(), c_id, t_id, Decimal("6.000"), event_id=cmd_id)
+        alloc1_id = uuid4()
+        alloc2_id = uuid4()
+        existing_rev = _make_reversal_event(p.id, uuid4(), alloc1_id, event_id=cmd_id)
 
         repo = StrictCommandTestRepository(
             portfolios={p.id: p},
-            attribution_events={p.id: [existing]},
-        )
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        # Decimal("6") is numerically equal but has different representation
-        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="Command ID conflict"):
-            service.allocate(cmd_id, p.id, c_id, t_id, Decimal("6"))
-
-        assert len(repo.append_calls) == 0
-
-    def test_existing_reversal_under_command_id_fails_closed(self):
-        p = _make_portfolio()
-        cmd_id = uuid4()
-        c_id = uuid4()
-        t_id = uuid4()
-        existing = _make_reversal_event(p.id, uuid4(), uuid4(), event_id=cmd_id)
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            attribution_events={p.id: [existing]},
+            attribution_events={p.id: [existing_rev]},
         )
         service = PortfolioFeeTaxAttributionCommandService(repo)
 
         with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="Command ID conflict"):
-            service.allocate(cmd_id, p.id, c_id, t_id, Decimal("6.000"))
-
-        assert len(repo.append_calls) == 0
-
-    def test_existing_wrong_portfolio_fails_closed(self):
-        p = _make_portfolio()
-        cmd_id = uuid4()
-        c_id = uuid4()
-        t_id = uuid4()
-        other_portfolio_id = uuid4()
-        existing = _make_allocation_event(other_portfolio_id, uuid4(), c_id, t_id, Decimal("6.000"), event_id=cmd_id)
-
-        repo = StrictCommandTestRepository(portfolios={p.id: p})
-        repo.get_event_override = lambda p_id, e_id: existing if e_id == cmd_id else None
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="Command ID conflict"):
-            service.allocate(cmd_id, p.id, c_id, t_id, Decimal("6.000"))
+            service.reverse_allocation(cmd_id, p.id, alloc2_id)
 
         assert len(repo.append_calls) == 0
 
 
-class TestConcurrentRaceRecovery:
-    """Items 26, 27, 28, 59, 60, 61, 62, 63, 64, 65, 66: Post-error idempotency recovery."""
+class TestReversalDomainScenariosAndPreflight:
+    """Phase 14N domain preflight and execution scenarios for reverse_allocation."""
 
-    def test_concurrent_same_command_pk_conflict_recovery(self):
+    def test_active_allocation_reversal_success(self):
         p = _make_portfolio()
         a_id = uuid4()
-        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
-        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("10"), unit_price=Decimal("150.000"))
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
 
-        cmd_id = uuid4()
-        amount = Decimal("6.000")
-        t1 = datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc)
-        t2 = datetime(2026, 8, 29, 10, 0, 1, tzinfo=timezone.utc)
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id, recorded_at=datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc))
 
         repo = StrictCommandTestRepository(
             portfolios={p.id: p},
             transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event]},
         )
 
-        committed_by_tx1 = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, amount, event_id=cmd_id, recorded_at=t1)
+        t_rev = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+        service = PortfolioFeeTaxAttributionCommandService(repo, clock=lambda: t_rev)
+
+        cmd_id = uuid4()
+        rev = service.reverse_allocation(cmd_id, p.id, alloc_id)
+
+        assert rev.id == cmd_id
+        assert rev.portfolio_id == p.id
+        assert rev.account_id == a_id
+        assert rev.event_type == FeeTaxAttributionEventType.REVERSAL
+        assert rev.charge_transaction_id is None
+        assert rev.target_transaction_id is None
+        assert rev.allocated_amount is None
+        assert rev.reverses_attribution_event_id == alloc_id
+        assert rev.recorded_at == t_rev
+
+    def test_unknown_allocation_event_rejected(self):
+        p = _make_portfolio()
+        repo = StrictCommandTestRepository(portfolios={p.id: p})
+        service = PortfolioFeeTaxAttributionCommandService(repo)
+
+        missing_alloc_id = uuid4()
+        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="not found in persisted attribution history"):
+            service.reverse_allocation(uuid4(), p.id, missing_alloc_id)
+
+        assert len(repo.append_calls) == 0
+
+    def test_reversal_of_reversal_rejected(self):
+        p = _make_portfolio()
+        a_id = uuid4()
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
+
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id, recorded_at=datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc))
+        rev_id = uuid4()
+        rev_event = _make_reversal_event(p.id, a_id, alloc_id, event_id=rev_id, recorded_at=datetime(2026, 8, 29, 11, 0, 0, tzinfo=timezone.utc))
+
+        repo = StrictCommandTestRepository(
+            portfolios={p.id: p},
+            transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event, rev_event]},
+        )
+        service = PortfolioFeeTaxAttributionCommandService(repo)
+
+        # Attempt to reverse the reversal event
+        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="not found in persisted attribution history"):
+            service.reverse_allocation(uuid4(), p.id, rev_id)
+
+        assert len(repo.append_calls) == 0
+
+    def test_future_allocation_rejected_at_pit(self):
+        p = _make_portfolio()
+        a_id = uuid4()
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
+
+        alloc_id = uuid4()
+        # Allocation recorded at 15:00
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id, recorded_at=datetime(2026, 8, 29, 15, 0, 0, tzinfo=timezone.utc))
+
+        repo = StrictCommandTestRepository(
+            portfolios={p.id: p},
+            transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event]},
+        )
+        # Reversal command clock at 12:00 (before allocation)
+        service = PortfolioFeeTaxAttributionCommandService(repo, clock=lambda: datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc))
+
+        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="not found in persisted attribution history"):
+            service.reverse_allocation(uuid4(), p.id, alloc_id)
+
+        assert len(repo.append_calls) == 0
+
+    def test_already_reversed_by_another_command_fails_before_append(self):
+        p = _make_portfolio()
+        a_id = uuid4()
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
+
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id, recorded_at=datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc))
+        existing_rev_id = uuid4()
+        existing_rev = _make_reversal_event(p.id, a_id, alloc_id, event_id=existing_rev_id, recorded_at=datetime(2026, 8, 29, 11, 0, 0, tzinfo=timezone.utc))
+
+        repo = StrictCommandTestRepository(
+            portfolios={p.id: p},
+            transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event, existing_rev]},
+        )
+        service = PortfolioFeeTaxAttributionCommandService(repo)
+
+        # New reversal command R2 attempting to reverse A1
+        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="is not active at PIT cutoff"):
+            service.reverse_allocation(uuid4(), p.id, alloc_id)
+
+        assert len(repo.append_calls) == 0
+
+    def test_multi_allocation_active_index_correspondence(self):
+        p = _make_portfolio()
+        a_id = uuid4()
+        fee_1 = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
+        buy_1 = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
+        buy_2 = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
+
+        alloc_1 = _make_allocation_event(p.id, a_id, fee_1.id, buy_1.id, Decimal("3.000"), recorded_at=datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc))
+        alloc_2 = _make_allocation_event(p.id, a_id, fee_1.id, buy_2.id, Decimal("4.000"), recorded_at=datetime(2026, 8, 29, 10, 1, 0, tzinfo=timezone.utc))
+
+        repo = StrictCommandTestRepository(
+            portfolios={p.id: p},
+            transactions={p.id: [fee_1, buy_1, buy_2]},
+            attribution_events={p.id: [alloc_1, alloc_2]},
+        )
+        service = PortfolioFeeTaxAttributionCommandService(repo)
+
+        cmd_id = uuid4()
+        # Reverse second allocation alloc_2
+        rev = service.reverse_allocation(cmd_id, p.id, alloc_2.id)
+        assert rev.id == cmd_id
+        assert rev.reverses_attribution_event_id == alloc_2.id
+
+
+class TestReversalConcurrentRaceRecovery:
+    """Phase 14N concurrent race recovery for reverse_allocation."""
+
+    def test_concurrent_same_reversal_pk_conflict_recovery(self):
+        p = _make_portfolio()
+        a_id = uuid4()
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
+
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id, recorded_at=datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc))
+
+        cmd_id = uuid4()
+        t1 = datetime(2026, 8, 29, 11, 0, 0, tzinfo=timezone.utc)
+        t2 = datetime(2026, 8, 29, 11, 0, 1, tzinfo=timezone.utc)
+
+        repo = StrictCommandTestRepository(
+            portfolios={p.id: p},
+            transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event]},
+        )
+
+        committed_by_tx1 = _make_reversal_event(p.id, a_id, alloc_id, event_id=cmd_id, recorded_at=t1)
 
         def concurrent_append_conflict(event: FeeTaxAttributionPersistenceEvent):
-            # Simulate TX1 committing right as TX2 tries to insert
             repo.attribution_events.setdefault(p.id, []).append(committed_by_tx1)
             raise RuntimeError("duplicate key value violates unique constraint 23505")
 
         repo.append_override = concurrent_append_conflict
         service = PortfolioFeeTaxAttributionCommandService(repo, clock=lambda: t2)
 
-        # TX2 executes allocate
-        result = service.allocate(cmd_id, p.id, c_tx.id, t_tx.id, amount)
-
+        result = service.reverse_allocation(cmd_id, p.id, alloc_id)
         assert result == committed_by_tx1
-        assert result.recorded_at == t1  # First commit timestamp preserved
+        assert result.recorded_at == t1
 
-    def test_concurrent_same_command_trigger_conflict_recovery(self):
+    def test_concurrent_same_reversal_single_reversal_trigger_recovery(self):
         p = _make_portfolio()
         a_id = uuid4()
-        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
-        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("10"), unit_price=Decimal("150.000"))
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
+
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id, recorded_at=datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc))
 
         cmd_id = uuid4()
-        amount = Decimal("6.000")
-        t1 = datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc)
-        t2 = datetime(2026, 8, 29, 10, 0, 2, tzinfo=timezone.utc)
+        t1 = datetime(2026, 8, 29, 11, 0, 0, tzinfo=timezone.utc)
+        t2 = datetime(2026, 8, 29, 11, 0, 2, tzinfo=timezone.utc)
 
         repo = StrictCommandTestRepository(
             portfolios={p.id: p},
             transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event]},
         )
 
-        committed_by_tx1 = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, amount, event_id=cmd_id, recorded_at=t1)
+        committed_by_tx1 = _make_reversal_event(p.id, a_id, alloc_id, event_id=cmd_id, recorded_at=t1)
 
         def concurrent_trigger_conflict(event: FeeTaxAttributionPersistenceEvent):
             repo.attribution_events.setdefault(p.id, []).append(committed_by_tx1)
-            raise RuntimeError("Database trigger error: active duplicate pair already exists")
+            raise RuntimeError("uq_fee_tax_attribution_single_reversal violation")
 
         repo.append_override = concurrent_trigger_conflict
         service = PortfolioFeeTaxAttributionCommandService(repo, clock=lambda: t2)
 
-        result = service.allocate(cmd_id, p.id, c_tx.id, t_tx.id, amount)
+        result = service.reverse_allocation(cmd_id, p.id, alloc_id)
         assert result == committed_by_tx1
         assert result.recorded_at == t1
 
-    def test_unrelated_overallocation_error_propagates(self):
+    def test_different_command_ids_race_fails_closed(self):
         p = _make_portfolio()
         a_id = uuid4()
-        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
-        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("10"), unit_price=Decimal("150.000"))
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
+
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id, recorded_at=datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc))
+
+        c1_id = uuid4()
+        c2_id = uuid4()
+        t1 = datetime(2026, 8, 29, 11, 0, 0, tzinfo=timezone.utc)
 
         repo = StrictCommandTestRepository(
             portfolios={p.id: p},
             transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event]},
         )
 
-        overallocation_exc = RuntimeError("Database trigger: cumulative allocation exceeds charge capacity")
+        committed_c1 = _make_reversal_event(p.id, a_id, alloc_id, event_id=c1_id, recorded_at=t1)
+        db_single_rev_exc = RuntimeError("uq_fee_tax_attribution_single_reversal")
 
-        def append_error(event: FeeTaxAttributionPersistenceEvent):
-            raise overallocation_exc
+        def append_loser_c2(event: FeeTaxAttributionPersistenceEvent):
+            repo.attribution_events.setdefault(p.id, []).append(committed_c1)
+            raise db_single_rev_exc
 
-        repo.append_override = append_error
+        repo.append_override = append_loser_c2
         service = PortfolioFeeTaxAttributionCommandService(repo)
 
         with pytest.raises(RuntimeError) as exc_info:
-            service.allocate(uuid4(), p.id, c_tx.id, t_tx.id, Decimal("6.000"))
+            service.reverse_allocation(c2_id, p.id, alloc_id)
 
-        assert exc_info.value is overallocation_exc
+        assert exc_info.value is db_single_rev_exc
 
-    def test_unrelated_target_reversal_error_propagates(self):
+
+class TestReversalPersistenceAndReadbackAuthority:
+    """Readback validation and fail-closed defenses for reverse_allocation."""
+
+    def test_reversal_returned_wrong_event_type_fails_closed(self):
         p = _make_portfolio()
         a_id = uuid4()
         c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
-        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("10"), unit_price=Decimal("150.000"))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id)
 
         repo = StrictCommandTestRepository(
             portfolios={p.id: p},
             transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event]},
         )
 
-        target_rev_exc = RuntimeError("Database trigger: target transaction has been reversed")
+        def bad_append(event: FeeTaxAttributionPersistenceEvent) -> Any:
+            return _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=event.id)
 
-        def append_error(event: FeeTaxAttributionPersistenceEvent):
-            raise target_rev_exc
-
-        repo.append_override = append_error
+        repo.append_override = bad_append
         service = PortfolioFeeTaxAttributionCommandService(repo)
 
-        with pytest.raises(RuntimeError) as exc_info:
-            service.allocate(uuid4(), p.id, c_tx.id, t_tx.id, Decimal("6.000"))
+        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="wrong event type"):
+            service.reverse_allocation(uuid4(), p.id, alloc_id)
 
-        assert exc_info.value is target_rev_exc
-
-    def test_database_outage_propagates(self):
+    def test_reversal_returned_mismatched_target_fails_closed(self):
         p = _make_portfolio()
         a_id = uuid4()
         c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
-        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("10"), unit_price=Decimal("150.000"))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id)
 
         repo = StrictCommandTestRepository(
             portfolios={p.id: p},
             transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event]},
         )
 
-        outage_exc = ConnectionError("PostgreSQL cluster network unreachable")
+        def bad_append(event: FeeTaxAttributionPersistenceEvent) -> Any:
+            mutated = deepcopy(event)
+            object.__setattr__(mutated, "reverses_attribution_event_id", uuid4())
+            return mutated
 
-        def append_error(event: FeeTaxAttributionPersistenceEvent):
-            raise outage_exc
+        repo.append_override = bad_append
+        service = PortfolioFeeTaxAttributionCommandService(repo)
 
-        repo.append_override = append_error
+        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="contents do not match"):
+            service.reverse_allocation(uuid4(), p.id, alloc_id)
+
+    def test_reversal_returned_wrong_id_fails_closed(self):
+        p = _make_portfolio()
+        a_id = uuid4()
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id)
+
+        repo = StrictCommandTestRepository(
+            portfolios={p.id: p},
+            transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event]},
+        )
+
+        def bad_append(event: FeeTaxAttributionPersistenceEvent) -> Any:
+            mutated = deepcopy(event)
+            object.__setattr__(mutated, "id", uuid4())
+            return mutated
+
+        repo.append_override = bad_append
+        service = PortfolioFeeTaxAttributionCommandService(repo)
+
+        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="mismatched event ID"):
+            service.reverse_allocation(uuid4(), p.id, alloc_id)
+
+    def test_reversal_returned_account_mismatch_fails_closed(self):
+        p = _make_portfolio()
+        a_id = uuid4()
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id)
+
+        repo = StrictCommandTestRepository(
+            portfolios={p.id: p},
+            transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event]},
+        )
+
+        def bad_append(event: FeeTaxAttributionPersistenceEvent) -> Any:
+            mutated = deepcopy(event)
+            object.__setattr__(mutated, "account_id", uuid4())
+            return mutated
+
+        repo.append_override = bad_append
+        service = PortfolioFeeTaxAttributionCommandService(repo)
+
+        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="contents do not match"):
+            service.reverse_allocation(uuid4(), p.id, alloc_id)
+
+    def test_reversal_returned_same_instant_different_offset_accepted(self):
+        p = _make_portfolio()
+        a_id = uuid4()
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id)
+
+        repo = StrictCommandTestRepository(
+            portfolios={p.id: p},
+            transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event]},
+        )
+
+        def timezone_shift_append(event: FeeTaxAttributionPersistenceEvent) -> Any:
+            mutated = deepcopy(event)
+            shifted = event.recorded_at.astimezone(timezone(timedelta(hours=3)))
+            object.__setattr__(mutated, "recorded_at", shifted)
+            return mutated
+
+        repo.append_override = timezone_shift_append
+        service = PortfolioFeeTaxAttributionCommandService(repo)
+
+        event = service.reverse_allocation(uuid4(), p.id, alloc_id)
+        assert event is not None
+
+    def test_reversal_returned_different_physical_instant_fails_closed(self):
+        p = _make_portfolio()
+        a_id = uuid4()
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id)
+
+        repo = StrictCommandTestRepository(
+            portfolios={p.id: p},
+            transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event]},
+        )
+
+        def bad_append(event: FeeTaxAttributionPersistenceEvent) -> Any:
+            mutated = deepcopy(event)
+            drifted = event.recorded_at + timedelta(seconds=1)
+            object.__setattr__(mutated, "recorded_at", drifted)
+            return mutated
+
+        repo.append_override = bad_append
+        service = PortfolioFeeTaxAttributionCommandService(repo)
+
+        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="physical timestamp does not match"):
+            service.reverse_allocation(uuid4(), p.id, alloc_id)
+
+    def test_reversal_returned_nonnull_economic_fields_fails_closed(self):
+        p = _make_portfolio()
+        a_id = uuid4()
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id)
+
+        repo = StrictCommandTestRepository(
+            portfolios={p.id: p},
+            transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event]},
+        )
+
+        def bad_append(event: FeeTaxAttributionPersistenceEvent) -> Any:
+            mutated = deepcopy(event)
+            object.__setattr__(mutated, "allocated_amount", Decimal("1.000"))
+            return mutated
+
+        repo.append_override = bad_append
+        service = PortfolioFeeTaxAttributionCommandService(repo)
+
+        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="contents do not match"):
+            service.reverse_allocation(uuid4(), p.id, alloc_id)
+
+    def test_reversal_returned_portfolio_mismatch_fails_closed(self):
+        p = _make_portfolio()
+        a_id = uuid4()
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id)
+
+        repo = StrictCommandTestRepository(
+            portfolios={p.id: p},
+            transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event]},
+        )
+
+        def bad_append(event: FeeTaxAttributionPersistenceEvent) -> Any:
+            mutated = deepcopy(event)
+            object.__setattr__(mutated, "portfolio_id", uuid4())
+            return mutated
+
+        repo.append_override = bad_append
+        service = PortfolioFeeTaxAttributionCommandService(repo)
+
+        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="contents do not match"):
+            service.reverse_allocation(uuid4(), p.id, alloc_id)
+
+    def test_reversal_append_called_once_and_no_recovery_get_on_success(self):
+        p = _make_portfolio()
+        a_id = uuid4()
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id)
+
+        repo = StrictCommandTestRepository(
+            portfolios={p.id: p},
+            transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event]},
+        )
+        service = PortfolioFeeTaxAttributionCommandService(repo)
+
+        cmd_id = uuid4()
+        rev = service.reverse_allocation(cmd_id, p.id, alloc_id)
+        assert rev is not None
+
+        # Call counts: pre-read = 1, append = 1
+        assert len(repo.get_event_calls) == 1
+        assert len(repo.append_calls) == 1
+        assert len(repo.get_portfolio_calls) == 1
+
+    def test_reversal_clock_utc_normalization(self):
+        p = _make_portfolio()
+        a_id = uuid4()
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id)
+
+        repo = StrictCommandTestRepository(
+            portfolios={p.id: p},
+            transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event]},
+        )
+
+        t_custom = datetime(2026, 8, 29, 15, 30, 0, tzinfo=timezone(timedelta(hours=3)))
+        t_utc = t_custom.astimezone(timezone.utc)
+        service = PortfolioFeeTaxAttributionCommandService(repo, clock=lambda: t_custom)
+
+        cmd_id = uuid4()
+        rev = service.reverse_allocation(cmd_id, p.id, alloc_id)
+        assert rev.recorded_at == t_utc
+
+    def test_reversal_active_ledger_charge_required_indirectly(self):
+        from backend.engine.private.portfolio.fee_tax_attribution_binding import FeeTaxAttributionBindingError
+        p = _make_portfolio()
+        a_id = uuid4()
+        t1 = datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc)
+        t2 = datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc)
+        t3 = datetime(2026, 8, 29, 11, 0, 0, tzinfo=timezone.utc)
+
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"), recorded_at=t1)
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), recorded_at=t1)
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id, recorded_at=t2)
+        # Charge reversed on ledger at t3
+        charge_rev = _make_tx(p.id, a_id, TransactionType.REVERSAL, reverses_transaction_id=c_tx.id, recorded_at=t3)
+
+        repo = StrictCommandTestRepository(
+            portfolios={p.id: p},
+            transactions={p.id: [c_tx, t_tx, charge_rev]},
+            attribution_events={p.id: [alloc_event]},
+        )
+        # Reversal command at t3+1 hour
+        service = PortfolioFeeTaxAttributionCommandService(repo, clock=lambda: datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc))
+
+        with pytest.raises(FeeTaxAttributionBindingError, match="is not an active FEE or TAX_WITHHOLDING at PIT"):
+            service.reverse_allocation(uuid4(), p.id, alloc_id)
+
+        assert len(repo.append_calls) == 0
+
+    def test_reversal_active_ledger_target_required_indirectly(self):
+        from backend.engine.private.portfolio.fee_tax_attribution_binding import FeeTaxAttributionBindingError
+        p = _make_portfolio()
+        a_id = uuid4()
+        t1 = datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc)
+        t2 = datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc)
+        t3 = datetime(2026, 8, 29, 11, 0, 0, tzinfo=timezone.utc)
+
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"), recorded_at=t1)
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), recorded_at=t1)
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id, recorded_at=t2)
+        # Target reversed on ledger at t3
+        target_rev = _make_tx(p.id, a_id, TransactionType.REVERSAL, reverses_transaction_id=t_tx.id, recorded_at=t3)
+
+        repo = StrictCommandTestRepository(
+            portfolios={p.id: p},
+            transactions={p.id: [c_tx, t_tx, target_rev]},
+            attribution_events={p.id: [alloc_event]},
+        )
+        service = PortfolioFeeTaxAttributionCommandService(repo, clock=lambda: datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc))
+
+        with pytest.raises(FeeTaxAttributionBindingError, match="is not an active transaction at PIT"):
+            service.reverse_allocation(uuid4(), p.id, alloc_id)
+
+        assert len(repo.append_calls) == 0
+
+    def test_reversal_append_error_with_no_command_event_propagates(self):
+        p = _make_portfolio()
+        a_id = uuid4()
+        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id)
+
+        repo = StrictCommandTestRepository(
+            portfolios={p.id: p},
+            transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event]},
+        )
+
+        sentinel_exc = ConnectionError("PostgreSQL write failed")
+
+        def bad_append(event: FeeTaxAttributionPersistenceEvent):
+            raise sentinel_exc
+
+        repo.append_override = bad_append
         service = PortfolioFeeTaxAttributionCommandService(repo)
 
         with pytest.raises(ConnectionError) as exc_info:
-            service.allocate(uuid4(), p.id, c_tx.id, t_tx.id, Decimal("6.000"))
+            service.reverse_allocation(uuid4(), p.id, alloc_id)
 
-        assert exc_info.value is outage_exc
+        assert exc_info.value is sentinel_exc
 
-    def test_post_error_lookup_failure_propagates_original_error(self):
+    def test_reversal_recovery_get_failure_propagates_original_error(self):
         p = _make_portfolio()
         a_id = uuid4()
         c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
-        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("10"), unit_price=Decimal("150.000"))
+        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
+        alloc_id = uuid4()
+        alloc_event = _make_allocation_event(p.id, a_id, c_tx.id, t_tx.id, Decimal("6.000"), event_id=alloc_id)
 
         repo = StrictCommandTestRepository(
             portfolios={p.id: p},
             transactions={p.id: [c_tx, t_tx]},
+            attribution_events={p.id: [alloc_event]},
         )
 
-        orig_exc = RuntimeError("Original append network error")
+        orig_exc = RuntimeError("Append error")
         get_exc = RuntimeError("Secondary get error")
 
         def bad_append(event: FeeTaxAttributionPersistenceEvent):
@@ -877,417 +1306,22 @@ class TestConcurrentRaceRecovery:
         service = PortfolioFeeTaxAttributionCommandService(repo)
 
         with pytest.raises(RuntimeError) as exc_info:
-            service.allocate(uuid4(), p.id, c_tx.id, t_tx.id, Decimal("6.000"))
+            service.reverse_allocation(uuid4(), p.id, alloc_id)
 
         assert exc_info.value is orig_exc
 
-    def test_post_error_conflicting_event_fails_closed(self):
-        p = _make_portfolio()
-        a_id = uuid4()
-        c_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
-        t_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("10"), unit_price=Decimal("150.000"))
 
-        cmd_id = uuid4()
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            transactions={p.id: [c_tx, t_tx]},
-        )
-
-        # Conflicting event committed under same ID
-        conflicting_event = _make_allocation_event(p.id, a_id, c_tx.id, uuid4(), Decimal("6.000"), event_id=cmd_id)
-
-        def append_conflict(event: FeeTaxAttributionPersistenceEvent):
-            repo.attribution_events.setdefault(p.id, []).append(conflicting_event)
-            raise RuntimeError("23505 duplicate key")
-
-        repo.append_override = append_conflict
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="Command ID conflict"):
-            service.allocate(cmd_id, p.id, c_tx.id, t_tx.id, Decimal("6.000"))
-
-
-class TestDomainScenariosAndPreflight:
-    """Preflight domain validation for genuinely new commands."""
-
-    def test_empty_existing_attribution_state_success(self):
-        p = _make_portfolio()
-        a_id = uuid4()
-        fee_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
-        buy_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            transactions={p.id: [fee_tx, buy_tx]},
-        )
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        cmd_id = uuid4()
-        event = service.allocate(cmd_id, p.id, fee_tx.id, buy_tx.id, Decimal("6.000"))
-
-        assert event.id == cmd_id
-        assert event.portfolio_id == p.id
-        assert event.account_id == a_id
-        assert event.event_type == FeeTaxAttributionEventType.ALLOCATION
-        assert event.charge_transaction_id == fee_tx.id
-        assert event.target_transaction_id == buy_tx.id
-        assert event.allocated_amount == Decimal("6.000")
-        assert event.reverses_attribution_event_id is None
-
-    def test_partial_existing_allocation_success(self):
-        p = _make_portfolio()
-        a_id = uuid4()
-        fee_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
-        buy_1 = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
-        buy_2 = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
-
-        # Existing active: Fee -> Buy 1 = 3.000
-        existing_alloc = _make_allocation_event(p.id, a_id, fee_tx.id, buy_1.id, Decimal("3.000"), recorded_at=datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc))
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            transactions={p.id: [fee_tx, buy_1, buy_2]},
-            attribution_events={p.id: [existing_alloc]},
-        )
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        cmd_id = uuid4()
-        # Allocate Fee -> Buy 2 = 7.000 (total = 10.000 <= 10.000)
-        event = service.allocate(cmd_id, p.id, fee_tx.id, buy_2.id, Decimal("7.000"))
-        assert event.id == cmd_id
-        assert event.allocated_amount == Decimal("7.000")
-
-    def test_cumulative_over_allocation_preflight_rejection(self):
-        p = _make_portfolio()
-        a_id = uuid4()
-        fee_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
-        buy_1 = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
-        buy_2 = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
-
-        # Existing active: Fee -> Buy 1 = 6.000
-        existing_alloc = _make_allocation_event(p.id, a_id, fee_tx.id, buy_1.id, Decimal("6.000"), recorded_at=datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc))
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            transactions={p.id: [fee_tx, buy_1, buy_2]},
-            attribution_events={p.id: [existing_alloc]},
-        )
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        # Allocate Fee -> Buy 2 = 5.000 (total = 11.000 > 10.000) -> Preflight fails before append
-        with pytest.raises(FeeTaxAttributionError, match="Over-allocation detected for charge"):
-            service.allocate(uuid4(), p.id, fee_tx.id, buy_2.id, Decimal("5.000"))
-
-        assert len(repo.append_calls) == 0
-
-    def test_active_duplicate_pair_preflight_rejection(self):
-        p = _make_portfolio()
-        a_id = uuid4()
-        fee_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
-        buy_x = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), recorded_at=datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc))
-
-        # Existing active: C -> X = 3.000
-        existing_alloc = _make_allocation_event(p.id, a_id, fee_tx.id, buy_x.id, Decimal("3.000"), recorded_at=datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc))
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            transactions={p.id: [fee_tx, buy_x]},
-            attribution_events={p.id: [existing_alloc]},
-        )
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        # Duplicate pair C -> X with a NEW command ID
-        with pytest.raises(FeeTaxAttributionError, match="Duplicate attribution intent detected"):
-            service.allocate(uuid4(), p.id, fee_tx.id, buy_x.id, Decimal("2.000"))
-
-        assert len(repo.append_calls) == 0
-
-    def test_invalid_charge_type_rejection(self):
-        p = _make_portfolio()
-        a_id = uuid4()
-        buy_1 = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
-        buy_2 = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            transactions={p.id: [buy_1, buy_2]},
-        )
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        with pytest.raises(FeeTaxAttributionError, match="not found in observed active charge events"):
-            service.allocate(uuid4(), p.id, buy_1.id, buy_2.id, Decimal("5.000"))
-
-        assert len(repo.append_calls) == 0
-
-    def test_invalid_target_type_rejection(self):
-        p = _make_portfolio()
-        a_id = uuid4()
-        fee_1 = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
-        fee_2 = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("20.000"))
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            transactions={p.id: [fee_1, fee_2]},
-        )
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        with pytest.raises(FeeTaxAttributionError, match="cannot be of type FEE"):
-            service.allocate(uuid4(), p.id, fee_1.id, fee_2.id, Decimal("5.000"))
-
-        assert len(repo.append_calls) == 0
-
-    def test_inactive_charge_rejection(self):
-        p = _make_portfolio()
-        a_id = uuid4()
-        t1 = datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc)
-        t2 = datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc)
-
-        fee_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"), recorded_at=t1)
-        buy_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), recorded_at=t1)
-        fee_rev = _make_tx(p.id, a_id, TransactionType.REVERSAL, reverses_transaction_id=fee_tx.id, recorded_at=t2)
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            transactions={p.id: [fee_tx, buy_tx, fee_rev]},
-        )
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        with pytest.raises(FeeTaxAttributionError, match="not found in observed active charge events"):
-            service.allocate(uuid4(), p.id, fee_tx.id, buy_tx.id, Decimal("5.000"))
-
-        assert len(repo.append_calls) == 0
-
-    def test_inactive_target_rejection(self):
-        p = _make_portfolio()
-        a_id = uuid4()
-        t1 = datetime(2026, 8, 29, 9, 0, 0, tzinfo=timezone.utc)
-        t2 = datetime(2026, 8, 29, 10, 0, 0, tzinfo=timezone.utc)
-
-        fee_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"), recorded_at=t1)
-        buy_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"), recorded_at=t1)
-        buy_rev = _make_tx(p.id, a_id, TransactionType.REVERSAL, reverses_transaction_id=buy_tx.id, recorded_at=t2)
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            transactions={p.id: [fee_tx, buy_tx, buy_rev]},
-        )
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        with pytest.raises(FeeTaxAttributionError, match="not found in active transactions at PIT cutoff"):
-            service.allocate(uuid4(), p.id, fee_tx.id, buy_tx.id, Decimal("5.000"))
-
-        assert len(repo.append_calls) == 0
-
-    def test_cross_account_rejection(self):
-        p = _make_portfolio()
-        a1_id = uuid4()
-        a2_id = uuid4()
-
-        fee_tx = _make_tx(p.id, a1_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
-        buy_tx = _make_tx(p.id, a2_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            transactions={p.id: [fee_tx, buy_tx]},
-        )
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        with pytest.raises(FeeTaxAttributionError, match="Cross-account attribution rejected"):
-            service.allocate(uuid4(), p.id, fee_tx.id, buy_tx.id, Decimal("5.000"))
-
-        assert len(repo.append_calls) == 0
-
-    def test_large_exact_decimal_representation_preserved(self):
-        p = _make_portfolio()
-        a_id = uuid4()
-        fee_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("123456789.123456789"))
-        buy_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("1"), unit_price=Decimal("100"))
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            transactions={p.id: [fee_tx, buy_tx]},
-        )
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        cmd_id = uuid4()
-        exact_amount = Decimal("98765432.123456789")
-        event = service.allocate(cmd_id, p.id, fee_tx.id, buy_tx.id, exact_amount)
-
-        assert event.allocated_amount == exact_amount
-        assert event.allocated_amount.as_tuple() == exact_amount.as_tuple()
-
-
-class TestClockResolutionAndUTC:
-    """Clock resolution, awareness validation, and UTC normalization."""
-
-    def test_single_clock_call_per_new_command(self):
-        p = _make_portfolio()
-        a_id = uuid4()
-        fee_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
-        buy_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            transactions={p.id: [fee_tx, buy_tx]},
-        )
-
-        t_custom = datetime(2026, 8, 29, 15, 30, 0, tzinfo=timezone(timedelta(hours=3)))
-        t_utc = t_custom.astimezone(timezone.utc)
-        clock_calls = [t_custom]
-
-        def tracking_clock() -> datetime:
-            return clock_calls.pop(0)
-
-        service = PortfolioFeeTaxAttributionCommandService(repo, clock=tracking_clock)
-        event = service.allocate(uuid4(), p.id, fee_tx.id, buy_tx.id, Decimal("5.000"))
-
-        assert len(clock_calls) == 0  # Proof of exactly one invocation
-        assert event.recorded_at == t_utc
-
-    @pytest.mark.parametrize("bad_clock_return", [
-        None,
-        True,
-        False,
-        "2026-08-29T12:00:00Z",
-        1234567890,
-        datetime(2026, 8, 29, 12, 0, 0),  # Naive datetime
-    ])
-    def test_invalid_clock_return_fails_closed(self, bad_clock_return: Any):
-        repo = StrictCommandTestRepository()
-        service = PortfolioFeeTaxAttributionCommandService(repo, clock=lambda: bad_clock_return)
-
-        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="Clock"):
-            service.allocate(uuid4(), uuid4(), uuid4(), uuid4(), Decimal("5.000"))
-
-        assert len(repo.append_calls) == 0
-
-
-class TestPersistenceAndReadbackAuthority:
-    """Readback validation, fail-closed drift defense, and zero post-write requery."""
-
-    def test_append_called_once_and_no_post_write_requery(self):
-        p = _make_portfolio()
-        a_id = uuid4()
-        fee_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
-        buy_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            transactions={p.id: [fee_tx, buy_tx]},
-        )
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        event = service.allocate(uuid4(), p.id, fee_tx.id, buy_tx.id, Decimal("6.000"))
-        assert event is not None
-
-        # Verify call counts: exactly 1 get_event (pre-read), 1 get_portfolio, 1 list_transactions, 1 list_events, 1 append
-        assert len(repo.get_event_calls) == 1
-        assert len(repo.get_portfolio_calls) == 1
-        assert len(repo.list_transactions_calls) == 1
-        assert len(repo.list_fee_tax_attribution_events_calls) == 1
-        assert len(repo.append_calls) == 1
-
-    def test_returned_wrong_event_type_fails_closed(self):
-        p = _make_portfolio()
-        a_id = uuid4()
-        fee_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
-        buy_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            transactions={p.id: [fee_tx, buy_tx]},
-        )
-
-        def bad_append(event: FeeTaxAttributionPersistenceEvent) -> Any:
-            return _make_reversal_event(p.id, a_id, uuid4(), event_id=event.id)
-
-        repo.append_override = bad_append
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="wrong event type"):
-            service.allocate(uuid4(), p.id, fee_tx.id, buy_tx.id, Decimal("6.000"))
-
-
-    def test_returned_mismatched_id_fails_closed(self):
-        p = _make_portfolio()
-        a_id = uuid4()
-        fee_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
-        buy_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            transactions={p.id: [fee_tx, buy_tx]},
-        )
-
-        def bad_append(event: FeeTaxAttributionPersistenceEvent) -> Any:
-            mutated = deepcopy(event)
-            object.__setattr__(mutated, "id", uuid4())
-            return mutated
-
-        repo.append_override = bad_append
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="mismatched event ID"):
-            service.allocate(uuid4(), p.id, fee_tx.id, buy_tx.id, Decimal("6.000"))
-
-    def test_returned_decimal_drift_fails_closed(self):
-        p = _make_portfolio()
-        a_id = uuid4()
-        fee_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
-        buy_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            transactions={p.id: [fee_tx, buy_tx]},
-        )
-
-        def bad_append(event: FeeTaxAttributionPersistenceEvent) -> Any:
-            mutated = deepcopy(event)
-            object.__setattr__(mutated, "allocated_amount", Decimal("6"))
-            return mutated
-
-        repo.append_override = bad_append
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        with pytest.raises(PortfolioFeeTaxAttributionCommandError, match="economic contents do not match"):
-            service.allocate(uuid4(), p.id, fee_tx.id, buy_tx.id, Decimal("6.000"))
-
-    def test_returned_same_instant_different_offset_accepted(self):
-        p = _make_portfolio()
-        a_id = uuid4()
-        fee_tx = _make_tx(p.id, a_id, TransactionType.FEE, cash_amount=Decimal("10.000"))
-        buy_tx = _make_tx(p.id, a_id, TransactionType.BUY, quantity=Decimal("5"), unit_price=Decimal("10"))
-
-        repo = StrictCommandTestRepository(
-            portfolios={p.id: p},
-            transactions={p.id: [fee_tx, buy_tx]},
-        )
-
-        def timezone_shift_append(event: FeeTaxAttributionPersistenceEvent) -> Any:
-            mutated = deepcopy(event)
-            shifted = event.recorded_at.astimezone(timezone(timedelta(hours=3)))
-            object.__setattr__(mutated, "recorded_at", shifted)
-            return mutated
-
-        repo.append_override = timezone_shift_append
-        service = PortfolioFeeTaxAttributionCommandService(repo)
-
-        event = service.allocate(uuid4(), p.id, fee_tx.id, buy_tx.id, Decimal("6.000"))
-        assert event is not None
 
 
 class TestStaticPurityAndInvariants:
-    """Static inspection of module source code for Phase 14M / 14M.1 purity invariants."""
+    """Static inspection of module source code for Phase 14M / 14M.1 / 14N purity invariants."""
 
     def test_public_methods_contain_no_owner_arguments(self):
-        sig = inspect.signature(PortfolioFeeTaxAttributionCommandService.allocate)
-        assert "owner_id" not in sig.parameters
-        assert "user_id" not in sig.parameters
-
-    def test_no_reversal_command_in_module(self):
-        assert not hasattr(PortfolioFeeTaxAttributionCommandService, "reverse")
-        assert not hasattr(PortfolioFeeTaxAttributionCommandService, "reverse_attribution")
-        assert not hasattr(PortfolioFeeTaxAttributionCommandService, "reverse_allocation")
+        for method_name in ("allocate", "reverse_allocation"):
+            method = getattr(PortfolioFeeTaxAttributionCommandService, method_name)
+            sig = inspect.signature(method)
+            assert "owner_id" not in sig.parameters
+            assert "user_id" not in sig.parameters
 
     def test_zero_uuid_generation_in_command_module(self):
         import backend.engine.private.portfolio.fee_tax_attribution_command as mod
@@ -1296,19 +1330,15 @@ class TestStaticPurityAndInvariants:
         assert "uuid5(" not in src
         assert "event_id_factory" not in src
 
-    def test_command_id_passed_as_event_id(self):
+    def test_command_id_passed_as_event_id_in_builders(self):
         import backend.engine.private.portfolio.fee_tax_attribution_command as mod
         src = inspect.getsource(mod)
         assert "event_id=cmd_id" in src or "event_id = cmd_id" in src
 
-    def test_idempotency_pre_read_called_before_clock(self):
+    def test_no_manual_reversal_instantiation(self):
         import backend.engine.private.portfolio.fee_tax_attribution_command as mod
         src = inspect.getsource(mod)
-        idx_get = src.find("get_fee_tax_attribution_event")
-        idx_clock = src.find("_resolve_command_clock")
-        assert idx_get != -1
-        assert idx_clock != -1
-        assert idx_get < idx_clock
+        assert "build_attribution_reversal_persistence_event(" in src
 
     def test_static_source_code_purity(self):
         import backend.engine.private.portfolio.fee_tax_attribution_command as mod

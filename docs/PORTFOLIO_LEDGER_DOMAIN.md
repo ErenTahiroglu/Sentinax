@@ -701,6 +701,36 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Real database errors (over-allocation, inactive charge/target, outages) propagate unchanged when no matching event was committed.
 - **Race-Safe Authority & Purity:** Database triggers remain final race authority; zero heuristic matching, zero tax-law interpretation, zero FX/cost-basis mutation, zero manual math/allowlists, and zero attribution reversal commands.
 
+---
+
+## 29. Owner-Bound Explicit Attribution Reversal Command & Retry-Safe Idempotency (Phase 14N)
+- **Explicit Application-Command Layer:** `PortfolioFeeTaxAttributionCommandService.reverse_allocation` coordinates explicit cancellation/reversal of previously persisted `ALLOCATION` events through immutable `REVERSAL` persistence events.
+- **Append-Only Evidence Correction:** Attribution reversal creates append-only `REVERSAL` evidence; it never deletes or updates prior `ALLOCATION` rows and never mutates ledger transactions.
+- **Caller-Supplied Stable Command Identity:**
+  - Requires non-bool `command_id: UUID` identifying one logical reversal command.
+  - Zero UUID generation in command service; `command_id` serves directly as the physical persistence event ID.
+- **Pre-Read Exact Idempotency (First-Commit-Wins):**
+  - Calls `get_fee_tax_attribution_event(portfolio_id, command_id)` before clock invocation.
+  - If exact logical reversal matches (`command_id`, `portfolio_id`, `reverses_attribution_event_id`, `REVERSAL` event type, non-null fields checked), returns the existing event immediately with zero clock, zero semantic query, and zero append calls.
+  - First successful commit owns `recorded_at`, derived `account_id`, and durable event identity.
+  - Replay after subsequent state changes continues returning the original durable reversal event without semantic reauthorization.
+  - Conflicting command-ID reuse fails closed with `PortfolioFeeTaxAttributionCommandError`.
+- **Single Clock & As-Of Semantic Preflight (New Reversals Only):**
+  - When no matching event exists, captures clock once and normalizes to UTC (`recorded_at = T`).
+  - Queries authoritative semantic view `get_attribution_view_as_of(portfolio_id, T)` (Phase 14K).
+  - Proves referenced allocation event exists in Phase 14I history and was recorded at or before $T$.
+  - Proves referenced event is an `ALLOCATION` (reversal-of-reversal rejected) and is currently `ACTIVE` (not already reversed by another command).
+  - Defensively validates one-to-one active history index correspondence with authoritative Phase 14J semantic attribution graph (ensuring active ledger charge & target consistency).
+- **Canonical Event Construction & Persistence (Phase 14E & 14L):**
+  - Builds immutable event via `build_attribution_reversal_persistence_event(event_id=command_id, portfolio_id=..., account_id=..., recorded_at=T, reverses_attribution_event_id=...)` (Phase 14E).
+  - Persists directly via `PortfolioRepository.append_fee_tax_attribution_event` (Phase 14L) and validates returned persisted event identity and family.
+- **Post-Error Idempotency Recovery for Concurrent Races:**
+  - On any append exception, re-queries `get_fee_tax_attribution_event(portfolio_id, command_id)`.
+  - Recovers safely if a concurrent worker committed the same logical command first (handling trigger/constraint ordering where `uq_fee_tax_attribution_single_reversal` precedes SQLSTATE `23505`).
+  - Real database errors (single-reversal conflict by different command, cross-stream PIT, outages) propagate unchanged when no matching event was committed.
+- **Race-Safe Authority & Purity:** Database triggers and single-reversal unique index remain final race authority; zero heuristic target discovery, zero tax-law interpretation, zero FX/cost-basis mutation, and zero ledger reversal writes.
+
+
 
 
 
