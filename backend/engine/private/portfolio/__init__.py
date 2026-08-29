@@ -218,6 +218,11 @@ from backend.engine.private.portfolio.fee_tax_attribution_binding import (
     PersistedFeeTaxAttributionSemanticView,
     bind_persisted_fee_tax_attribution_history,
 )
+from backend.engine.private.portfolio.fee_tax_attribution_service import (
+    PortfolioFeeTaxAttributionQueryError,
+    PortfolioFeeTaxAttributionQueryService,
+    PortfolioFeeTaxAttributionRepositoryPort,
+)
 from backend.engine.private.portfolio.repository import PortfolioRepository
 
 
@@ -275,6 +280,9 @@ __all__ = [
     "FeeTaxAttributionBindingError",
     "PersistedFeeTaxAttributionSemanticView",
     "bind_persisted_fee_tax_attribution_history",
+    "PortfolioFeeTaxAttributionQueryError",
+    "PortfolioFeeTaxAttributionRepositoryPort",
+    "PortfolioFeeTaxAttributionQueryService",
     "PortfolioAccountingError",
 
 

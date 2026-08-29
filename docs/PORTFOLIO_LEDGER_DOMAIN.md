@@ -649,6 +649,21 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Object-Graph Authority Hardening (Phase 14J.1):** Direct-constructor `__post_init__` enforces strict object identity across the attached graph (`observed_projection.ledger_view is self.ledger_view` and `attribution_set.observed_projection is self.observed_projection`), alongside ordered intent validation (`charge_transaction_id`, `target_transaction_id`, `.as_tuple()` exact Decimal representation).
 - **Zero Database / Zero Tax-Law Semantics:** Pure domain composition with no repository lookups, no clock calls, no tax calculations, no FX conversions, and no cost-basis modifications.
 
+---
+
+## 26. Owner-Bound Persisted Attribution Semantic Query Service (Phase 14K)
+- **Owner-Scoped Orchestration:** `PortfolioFeeTaxAttributionQueryService` orchestrates read-only semantic binding between persisted ledger state and persisted fee/tax attribution events via the owner-bound `PortfolioFeeTaxAttributionRepositoryPort`.
+- **Single Capture Knowledge Cutoff:**
+  - `get_current_attribution_view`: captures the clock exactly once per query, validates timezone awareness, normalizes to UTC, and uses that exact instant across both ledger and attribution-history projection cutoffs.
+  - `get_attribution_view_as_of`: validates caller's timezone-aware datetime and preserves exact representation across ledger and attribution projections.
+- **Unified Query Pipeline:** Both query endpoints delegate to `_build_attribution_view`, executing a single `get_portfolio`, `list_transactions`, and `list_fee_tax_attribution_events` query (zero N+1 queries).
+- **Domain Composition & Authority Preservation:**
+  - Delegates ledger projection to `build_ledger_projection_view` (Phase 12C.1).
+  - Delegates attribution history projection to `build_persisted_fee_tax_attribution_history_view` (Phase 14I).
+  - Rebinds semantic active attributions via `bind_persisted_fee_tax_attribution_history` (Phase 14J).
+- **Strict Read-Only Purity:** No persistence writes, no state mutation or caching, no attribution inference, no tax-law calculation, no FX conversion, and no cost-basis modifications.
+
+
 
 
 
