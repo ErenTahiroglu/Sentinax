@@ -93,7 +93,7 @@ def _validate_optional_uuid_instance(val: Any, field_name: str) -> Optional[UUID
 
 
 def _validate_aware_datetime_instance(val: Any, field_name: str = "recorded_at") -> datetime:
-    """Validates that a field is an actual timezone-aware datetime instance."""
+    """Validates that a field is an actual timezone-aware datetime instance with fold=0."""
     if val is None:
         raise FeeTaxAttributionPersistenceError(f"Required datetime field '{field_name}' is missing or None.")
     if isinstance(val, bool) or not isinstance(val, datetime):
@@ -103,6 +103,10 @@ def _validate_aware_datetime_instance(val: Any, field_name: str = "recorded_at")
     if not _is_aware_datetime(val):
         raise FeeTaxAttributionPersistenceError(
             f"Datetime field '{field_name}' must be timezone-aware with non-null utcoffset, got {val}"
+        )
+    if val.fold != 0:
+        raise FeeTaxAttributionPersistenceError(
+            f"Datetime field '{field_name}' must have fold=0, got {val.fold}"
         )
     return val
 
@@ -175,6 +179,7 @@ def _parse_canonical_decimal_string(val: Any, field_name: str) -> Decimal:
 def _parse_canonical_datetime_string(val: Any, field_name: str = "recorded_at") -> datetime:
     """
     Parses an ISO-8601 timezone-aware datetime string from persisted row without normalization.
+    Enforces canonical representation matching parsed.isoformat() == val and fold == 0.
     """
     if val is None:
         raise FeeTaxAttributionPersistenceError(f"Required datetime string field '{field_name}' is missing or None.")
@@ -194,6 +199,14 @@ def _parse_canonical_datetime_string(val: Any, field_name: str = "recorded_at") 
     if not _is_aware_datetime(dt):
         raise FeeTaxAttributionPersistenceError(
             f"Datetime field '{field_name}' must be timezone-aware, got naive: {val!r}"
+        )
+    if dt.fold != 0:
+        raise FeeTaxAttributionPersistenceError(
+            f"Datetime field '{field_name}' must have fold=0, got {dt.fold}"
+        )
+    if dt.isoformat() != val:
+        raise FeeTaxAttributionPersistenceError(
+            f"Non-canonical datetime string representation for '{field_name}': {val!r}"
         )
     return dt
 
@@ -386,6 +399,7 @@ def serialize_fee_tax_attribution_persistence_event(
             f"event must be a FeeTaxAttributionPersistenceEvent instance, got {type(event).__name__}: {event!r}"
         )
     _validate_uuid_instance(owner_id, "owner_id")
+    _validate_aware_datetime_instance(event.recorded_at, "recorded_at")
 
     return {
         "id": str(event.id),

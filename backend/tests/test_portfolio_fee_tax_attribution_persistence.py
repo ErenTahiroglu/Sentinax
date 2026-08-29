@@ -259,6 +259,54 @@ def test_event_rejects_invalid_recorded_at(invalid_dt: Any) -> None:
         )
 
 
+def test_event_rejects_fold_1() -> None:
+    fold_1_dt = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc, fold=1)
+    with pytest.raises(FeeTaxAttributionPersistenceError, match="fold=0"):
+        FeeTaxAttributionPersistenceEvent(
+            id=uuid4(),
+            portfolio_id=uuid4(),
+            account_id=uuid4(),
+            event_type=FeeTaxAttributionEventType.ALLOCATION,
+            recorded_at=fold_1_dt,
+            charge_transaction_id=uuid4(),
+            target_transaction_id=uuid4(),
+            allocated_amount=Decimal("5.00"),
+        )
+
+    with pytest.raises(FeeTaxAttributionPersistenceError, match="fold=0"):
+        FeeTaxAttributionPersistenceEvent(
+            id=uuid4(),
+            portfolio_id=uuid4(),
+            account_id=uuid4(),
+            event_type=FeeTaxAttributionEventType.REVERSAL,
+            recorded_at=fold_1_dt,
+            reverses_attribution_event_id=uuid4(),
+        )
+
+
+def test_allocation_builder_rejects_fold_1() -> None:
+    attribution = _make_resolved_attribution()
+    fold_1_dt = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc, fold=1)
+    with pytest.raises(FeeTaxAttributionPersistenceError, match="fold=0"):
+        build_allocation_persistence_event(
+            event_id=uuid4(),
+            recorded_at=fold_1_dt,
+            attribution=attribution,
+        )
+
+
+def test_reversal_builder_rejects_fold_1() -> None:
+    fold_1_dt = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc, fold=1)
+    with pytest.raises(FeeTaxAttributionPersistenceError, match="fold=0"):
+        build_attribution_reversal_persistence_event(
+            event_id=uuid4(),
+            portfolio_id=uuid4(),
+            account_id=uuid4(),
+            recorded_at=fold_1_dt,
+            reverses_attribution_event_id=uuid4(),
+        )
+
+
 def test_event_rejects_raw_string_event_type() -> None:
     with pytest.raises(FeeTaxAttributionPersistenceError, match="FeeTaxAttributionEventType"):
         FeeTaxAttributionPersistenceEvent(
@@ -830,8 +878,39 @@ def test_hydrator_rejects_malformed_decimal_in_row(malformed_decimal: Any) -> No
 
 
 @pytest.mark.parametrize(
+    "canonical_dt_str",
+    [
+        "2026-08-29T12:00:00+03:00",
+        "2026-08-29T09:00:00+00:00",
+        "2026-08-29T12:00:00.123456+03:00",
+        "2026-08-29T05:00:00-04:00",
+    ],
+)
+def test_canonical_datetime_representations_round_trip(canonical_dt_str: str) -> None:
+    owner_id = uuid4()
+    attribution = _make_resolved_attribution()
+    event = build_allocation_persistence_event(
+        event_id=uuid4(),
+        recorded_at=datetime.fromisoformat(canonical_dt_str),
+        attribution=attribution,
+    )
+    row = serialize_fee_tax_attribution_persistence_event(event, owner_id)
+    assert row["recorded_at"] == canonical_dt_str
+
+    hydrated = hydrate_fee_tax_attribution_persistence_event(row, expected_owner_id=owner_id)
+    assert hydrated.recorded_at.isoformat() == canonical_dt_str
+
+    re_serialized = serialize_fee_tax_attribution_persistence_event(hydrated, owner_id)
+    assert re_serialized["recorded_at"] == canonical_dt_str
+
+
+@pytest.mark.parametrize(
     "malformed_dt",
     [
+        "2026-08-29 12:00:00+03:00",  # space separator
+        "2026-08-29T12:00+03:00",  # reduced time precision
+        "2026-08-29T09:00:00Z",  # Z representation
+        "20260829T120000+03:00",  # basic ISO
         "2026-06-01T12:00:00",  # naive ISO
         "2026-06-01",  # date-only
         "",  # empty
