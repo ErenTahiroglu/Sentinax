@@ -208,7 +208,13 @@ from backend.engine.private.portfolio.fee_tax_attribution_persistence import (
     hydrate_fee_tax_attribution_persistence_event,
     serialize_fee_tax_attribution_persistence_event,
 )
+from backend.engine.private.portfolio.fee_tax_attribution_history import (
+    FeeTaxAttributionHistoryError,
+    PersistedFeeTaxAttributionHistoryView,
+    build_persisted_fee_tax_attribution_history_view,
+)
 from backend.engine.private.portfolio.repository import PortfolioRepository
+
 
 __all__ = [
     "Portfolio",
@@ -257,7 +263,11 @@ __all__ = [
     "build_attribution_reversal_persistence_event",
     "serialize_fee_tax_attribution_persistence_event",
     "hydrate_fee_tax_attribution_persistence_event",
+    "FeeTaxAttributionHistoryError",
+    "PersistedFeeTaxAttributionHistoryView",
+    "build_persisted_fee_tax_attribution_history_view",
     "PortfolioAccountingError",
+
     "PortfolioAccountingSnapshot",
     "build_portfolio_accounting_snapshot",
     "PortfolioAccountingQueryError",

@@ -615,6 +615,23 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Deterministic Pagination & Ordering:** `list_fee_tax_attribution_events` pages across all available records via `PAGE_SIZE = 1000` and orders deterministically by `(recorded_at, id)`.
 - **Raw Evidence History Read-Only:** Exposes raw append-only persisted events without active-state projection, without mutating or dropping reversed allocations, without ledger transaction joins, and without financial aggregation or tax rules.
 
+---
+
+## 24. Persisted Fee/Tax Attribution History Projection (Phase 14I)
+- **Pure In-Memory History Projection:** `PersistedFeeTaxAttributionHistoryView` projects append-only persisted `FeeTaxAttributionPersistenceEvent` records (`ALLOCATION` and `REVERSAL`) into deterministic point-in-time partitions without database or ledger access.
+- **Physical PIT Cutoff & Metadata Representation:**
+  - Events are filtered by physical knowledge instant (`recorded_at <= as_of_recorded_at`).
+  - Caller-supplied `as_of_recorded_at` metadata representation (e.g. `+03:00`) is preserved verbatim in `view.as_of_recorded_at`.
+- **Deterministic Canonical Ordering:** All event collections (`events`, `allocation_events`, `reversal_events`, `active_allocation_events`) are strictly ordered by `(recorded_at UTC instant ASC, id ASC)`.
+- **Derived Active Allocation State:**
+  - An included `ALLOCATION` event is active if and only if no included `REVERSAL` references `allocation.id`.
+  - Future-recorded reversals (`reversal.recorded_at > cutoff`) do NOT alter historical active state at earlier PIT cutoffs.
+  - Same-timestamp reversals are included at the cutoff instant and mark the allocation inactive.
+- **Structural Integrity Enforcement:** Rejects cross-portfolio events, duplicate physical event IDs, missing reversal targets, reversals of reversals, cross-account reversals, backdated reversals, and duplicate reversals for the same allocation.
+- **Authoritative Object Identity Preservation:** Derived partition tuples retain exact event object instances (`is` comparison), preventing forged, copied, or reordered view states.
+- **Zero Ledger Rebinding & Zero Financial Aggregation:** Phase 14I operates purely on attribution event IDs without ledger transaction joins, currency conversions, decimal balance aggregations, or tax-law rules.
+
+
 
 
 
