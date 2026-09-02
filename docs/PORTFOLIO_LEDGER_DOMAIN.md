@@ -806,3 +806,27 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - No temporal policy or suitability rules are applied in this foundational domain layer.
 - **Non-Cash Planning Information:**
   - Planned contributions remain forward-looking planning information only and never affect ledger cash or accounting balances.
+
+---
+
+## 33. Pure Goal Calendar-Date Context (Phase 15A.3)
+- **`GoalDateContext` Primitive:**
+  - Immutable, frozen evaluation context binding an `InvestmentGoal` instance with an explicit `as_of_date: date`.
+  - Pure domain value object; zero system clock calls (`date.today()`, `datetime.now()`), zero network, zero persistence.
+  - Preserves `goal` instance by object identity (`context.goal is goal`).
+  - Fails closed on invalid inputs: rejects `datetime` (naive/aware), `bool`, `str`, `int`, `float`, `None`, and non-`InvestmentGoal` objects.
+- **Derived Properties:**
+  - `target_date`: Passes through `goal.target_date` unchanged (`date` or `None`).
+  - `state` (`GoalDateState` string enum):
+    - `TARGET_DATE_MISSING`: `goal.target_date is None`
+    - `OVERDUE`: `target_date < as_of_date`
+    - `DUE_TODAY`: `target_date == as_of_date`
+    - `FUTURE`: `target_date > as_of_date`
+  - `day_offset`:
+    - Exact integer day difference `(target_date - as_of_date).days`.
+    - `None` when `target_date` is missing (distinct from zero).
+    - `0` when due today (genuine zero).
+    - Negative integer when overdue, positive integer when future.
+- **Strict Boundary Non-Goals:**
+  - Zero `Horizon` or `HorizonFamily` inference or rounding.
+  - Zero risk scoring, goal suitability, optimization, recommendations, or order execution.

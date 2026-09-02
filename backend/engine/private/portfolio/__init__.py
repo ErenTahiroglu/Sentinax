@@ -12,6 +12,10 @@ from backend.engine.private.portfolio.ledger import (
     PortfolioLedger,
     PortfolioLedgerValidator,
 )
+from backend.engine.private.portfolio.goal_date import (
+    GoalDateContext,
+    GoalDateState,
+)
 from backend.engine.private.portfolio.models import (
     CashBucket,
     InvestmentGoal,
@@ -233,6 +237,8 @@ from backend.engine.private.portfolio.repository import PortfolioRepository
 
 
 __all__ = [
+    "GoalDateContext",
+    "GoalDateState",
     "Portfolio",
     "PortfolioAccount",
     "PortfolioTransaction",
