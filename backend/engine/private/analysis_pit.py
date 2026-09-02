@@ -44,11 +44,12 @@ class AnalysisPITContext:
             raise TypeError(f"knowledge_cutoff must be a timezone-aware datetime, got naive: {self.knowledge_cutoff!r}")
 
         try:
-            offset = self.knowledge_cutoff.tzinfo.utcoffset(self.knowledge_cutoff)
+            offset = self.knowledge_cutoff.utcoffset()
             if offset is None:
                 raise TypeError(
                     f"knowledge_cutoff must be a timezone-aware datetime with a valid UTC offset, got: {self.knowledge_cutoff!r}"
                 )
+            self.knowledge_cutoff.astimezone(timezone.utc)
         except TypeError:
             raise
         except Exception as e:

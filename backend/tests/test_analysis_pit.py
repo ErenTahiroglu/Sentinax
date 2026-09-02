@@ -12,7 +12,13 @@ Covers:
 - Accepts UTC, positive-offset, and negative-offset aware datetimes
 - Preserves original datetime object, timezone offset, fold, and microseconds
 - Derived property `knowledge_cutoff_utc` matches exact same instant in UTC
-- Rejects naive datetime, date, None, bool, str, int, float, arbitrary objects, tzinfo returning None, and tzinfo raising error
+- Rejects naive datetime, date, None, bool, str, int, float, arbitrary objects
+- Adversarial tzinfo hardening:
+  * Rejects non-timedelta offset returns (str, int, float, bool)
+  * Rejects boundary-invalid offsets (+24h, -24h) and beyond-boundary offsets (+25h, -25h)
+  * Rejects tzinfo raising TypeError, ValueError, RuntimeError
+  * Rejects tzinfo failing during UTC conversion
+- Valid near-boundary offsets strictly inside +-24h work
 - Arbitrary historical and future aware datetimes work without clock access
 - Zero as_of_date, horizon, target_date, effective_date, observation, resolver, or fallback properties
 - No implicit SOURCE_AS_OF <-> SYSTEM_AS_OF conversion
@@ -45,14 +51,49 @@ class NullOffsetTz(tzinfo):
 
 
 class ErrorOffsetTz(tzinfo):
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
     def utcoffset(self, dt):
-        raise RuntimeError("Malformed timezone implementation")
+        raise self._exc
 
     def dst(self, dt):
         return None
 
     def tzname(self, dt):
         return "ErrorTz"
+
+
+class CustomValOffsetTz(tzinfo):
+    def __init__(self, offset_val):
+        self._offset_val = offset_val
+
+    def utcoffset(self, dt):
+        return self._offset_val
+
+    def dst(self, dt):
+        return None
+
+    def tzname(self, dt):
+        return "CustomValOffsetTz"
+
+
+class ConversionFailingTz(tzinfo):
+    """Returns valid offset on initial query, but fails on subsequent conversion query."""
+    def __init__(self):
+        self._count = 0
+
+    def utcoffset(self, dt):
+        self._count += 1
+        if self._count > 1:
+            raise RuntimeError("Failed during UTC conversion utcoffset query")
+        return timedelta(hours=2)
+
+    def dst(self, dt):
+        return None
+
+    def tzname(self, dt):
+        return "ConversionFailingTz"
 
 
 class TestAnalysisPITContextContract:
@@ -108,6 +149,21 @@ class TestAnalysisPITContextContract:
         assert ctx.knowledge_cutoff is cutoff
         expected_utc = datetime(2026, 9, 2, 14, 0, 0, tzinfo=timezone.utc)
         assert ctx.knowledge_cutoff_utc == expected_utc
+
+    @pytest.mark.parametrize(
+        "valid_offset",
+        [
+            timedelta(hours=23, minutes=59),
+            timedelta(hours=-23, minutes=-59),
+            timedelta(seconds=1),
+        ],
+    )
+    def test_valid_near_boundary_offsets(self, valid_offset):
+        tz = timezone(valid_offset)
+        cutoff = datetime(2026, 9, 2, 12, 0, 0, tzinfo=tz)
+        ctx = AnalysisPITContext(mode=AsOfMode.SOURCE_AS_OF, knowledge_cutoff=cutoff)
+        assert ctx.knowledge_cutoff is cutoff
+        assert ctx.knowledge_cutoff_utc == cutoff.astimezone(timezone.utc)
 
     @pytest.mark.parametrize(
         "test_dt",
@@ -178,9 +234,56 @@ class TestAnalysisPITContextKnowledgeCutoffValidation:
         with pytest.raises(TypeError, match="knowledge_cutoff must be a timezone-aware datetime"):
             AnalysisPITContext(mode=AsOfMode.SOURCE_AS_OF, knowledge_cutoff=dt)
 
-    def test_rejects_error_offset_tzinfo(self):
-        dt = datetime(2026, 8, 28, 10, 0, 0, tzinfo=ErrorOffsetTz())
-        with pytest.raises(TypeError, match="knowledge_cutoff must be a timezone-aware datetime"):
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            TypeError("Custom type error in utcoffset"),
+            ValueError("Custom value error in utcoffset"),
+            RuntimeError("Custom runtime error in utcoffset"),
+        ],
+    )
+    def test_rejects_tzinfo_raising_exceptions(self, exc):
+        dt = datetime(2026, 8, 28, 10, 0, 0, tzinfo=ErrorOffsetTz(exc))
+        with pytest.raises(TypeError):
+            AnalysisPITContext(mode=AsOfMode.SOURCE_AS_OF, knowledge_cutoff=dt)
+
+    @pytest.mark.parametrize(
+        "bad_offset_val",
+        [
+            "UTC+3",
+            10800,
+            3.5,
+            True,
+            False,
+            object(),
+        ],
+    )
+    def test_rejects_wrong_type_utcoffset_returns(self, bad_offset_val):
+        """utcoffset() returning non-timedelta must fail at construction with TypeError."""
+        dt = datetime(2026, 8, 28, 10, 0, 0, tzinfo=CustomValOffsetTz(bad_offset_val))
+        with pytest.raises(TypeError):
+            AnalysisPITContext(mode=AsOfMode.SOURCE_AS_OF, knowledge_cutoff=dt)
+
+    @pytest.mark.parametrize(
+        "out_of_range_offset",
+        [
+            timedelta(hours=24),      # exactly +24h
+            timedelta(hours=-24),     # exactly -24h
+            timedelta(hours=25),      # +25h
+            timedelta(hours=-25),     # -25h
+            timedelta(days=2),
+        ],
+    )
+    def test_rejects_boundary_and_beyond_boundary_offsets(self, out_of_range_offset):
+        """Offsets >= +24h or <= -24h must fail at construction with TypeError."""
+        dt = datetime(2026, 8, 28, 10, 0, 0, tzinfo=CustomValOffsetTz(out_of_range_offset))
+        with pytest.raises(TypeError):
+            AnalysisPITContext(mode=AsOfMode.SOURCE_AS_OF, knowledge_cutoff=dt)
+
+    def test_rejects_timezone_failing_during_utc_conversion(self):
+        """A timezone that fails during astimezone(timezone.utc) must fail at construction with TypeError."""
+        dt = datetime(2026, 8, 28, 10, 0, 0, tzinfo=ConversionFailingTz())
+        with pytest.raises(TypeError):
             AnalysisPITContext(mode=AsOfMode.SOURCE_AS_OF, knowledge_cutoff=dt)
 
     @pytest.mark.parametrize(
