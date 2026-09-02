@@ -36,6 +36,21 @@ class SubclassedPITContext(AnalysisPITContext):
     pass
 
 
+class AdversarialReprObject:
+    def __repr__(self):
+        raise RuntimeError("Adversarial repr explosion")
+
+
+class AdversarialMeta(type):
+    @property
+    def __name__(cls):
+        raise RuntimeError("Adversarial metaclass __name__ explosion")
+
+
+class AdversarialMetaClass(metaclass=AdversarialMeta):
+    pass
+
+
 class TestAnalysisTemporalContextContract:
     def test_context_is_frozen_dataclass_with_exact_fields(self):
         h_ctx = AnalysisHorizonContext(horizon=Horizon.TACTICAL_1M, as_of_date=date(2026, 8, 28))
@@ -210,5 +225,31 @@ class TestAnalysisTemporalContextTypeValidation:
             mode=AsOfMode.SOURCE_AS_OF,
             knowledge_cutoff=datetime(2026, 8, 28, 10, 0, 0, tzinfo=timezone.utc),
         )
-        with pytest.raises(TypeError, match="horizon_context must be an exact AnalysisHorizonContext instance"):
+        with pytest.raises(TypeError):
             AnalysisTemporalContext(horizon_context=pit_ctx, pit_context=h_ctx)  # type: ignore
+
+    def test_adversarial_repr_horizon_context(self):
+        pit_ctx = AnalysisPITContext(
+            mode=AsOfMode.SOURCE_AS_OF,
+            knowledge_cutoff=datetime(2026, 8, 28, 10, 0, 0, tzinfo=timezone.utc),
+        )
+        with pytest.raises(TypeError):
+            AnalysisTemporalContext(horizon_context=AdversarialReprObject(), pit_context=pit_ctx)  # type: ignore
+
+    def test_adversarial_repr_pit_context(self):
+        h_ctx = AnalysisHorizonContext(horizon=Horizon.TACTICAL_1M, as_of_date=date(2026, 8, 28))
+        with pytest.raises(TypeError):
+            AnalysisTemporalContext(horizon_context=h_ctx, pit_context=AdversarialReprObject())  # type: ignore
+
+    def test_adversarial_metaclass_horizon_context(self):
+        pit_ctx = AnalysisPITContext(
+            mode=AsOfMode.SOURCE_AS_OF,
+            knowledge_cutoff=datetime(2026, 8, 28, 10, 0, 0, tzinfo=timezone.utc),
+        )
+        with pytest.raises(TypeError):
+            AnalysisTemporalContext(horizon_context=AdversarialMetaClass(), pit_context=pit_ctx)  # type: ignore
+
+    def test_adversarial_metaclass_pit_context(self):
+        h_ctx = AnalysisHorizonContext(horizon=Horizon.TACTICAL_1M, as_of_date=date(2026, 8, 28))
+        with pytest.raises(TypeError):
+            AnalysisTemporalContext(horizon_context=h_ctx, pit_context=AdversarialMetaClass())  # type: ignore

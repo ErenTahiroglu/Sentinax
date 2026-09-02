@@ -31,13 +31,7 @@ class AnalysisTemporalContext:
 
     def __post_init__(self) -> None:
         if type(self.horizon_context) is not AnalysisHorizonContext:
-            raise TypeError(
-                f"horizon_context must be an exact AnalysisHorizonContext instance, "
-                f"got {type(self.horizon_context).__name__}: {self.horizon_context!r}"
-            )
+            raise TypeError("horizon_context must be an exact AnalysisHorizonContext instance")
 
         if type(self.pit_context) is not AnalysisPITContext:
-            raise TypeError(
-                f"pit_context must be an exact AnalysisPITContext instance, "
-                f"got {type(self.pit_context).__name__}: {self.pit_context!r}"
-            )
+            raise TypeError("pit_context must be an exact AnalysisPITContext instance")
