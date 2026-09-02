@@ -907,3 +907,21 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Legacy public API strings (e.g. `"Orta"`, `"low"`, `"medium"`, `"high"`, `"conservative"`, `"aggressive"`) are non-canonical and must not be used as authoritative identifiers in the Private Engine domain.
 - **Strict Non-Goals:**
   - Zero profile/context dataclasses, parsers, adapters, persistence codecs, repository methods, API models, suitability verdicts, portfolio recommendations, optimizations, allocations, rebalancing, or order execution.
+
+---
+
+## 38. Explicit Per-Axis Temporal Context (Phase 15B.2)
+- **`RiskAxisContext` Primitive:**
+  - Immutable, frozen evaluation context binding exactly one canonical `axis: RiskAxis` with one `temporal_context: AnalysisTemporalContext`.
+  - Pure domain value object; zero system clock calls (`datetime.now()`, `date.today()`), zero network, zero filesystem, zero database, zero persistence.
+  - Strict concrete-type validation: `type(axis) is RiskAxis` and `type(temporal_context) is AnalysisTemporalContext` enforcement rejects raw strings, foreign enums, mappings, subclasses, and swapped arguments with static `TypeError` string literals (`"axis must be an exact RiskAxis instance"`, `"temporal_context must be an exact AnalysisTemporalContext instance"`).
+  - Callback safety: Error construction evaluates zero user-controlled callbacks (`__repr__`, `__str__`, metaclass attribute lookups).
+  - Identity preservation: Preserves the supplied `AnalysisTemporalContext` by reference (`context.temporal_context is supplied_temporal_context`) without mutation, cloning, normalization, or caching.
+- **Axis, Horizon Anchor, and PIT Cutoff Separation:**
+  - Composes independently across all 7 canonical Horizon members, both AsOfMode members, and arbitrary valid calendar-anchor/knowledge-cutoff relationships.
+  - Carries NO claim that risk evidence or an assessment exists.
+- **No Convenience Aliases or Owner Binding:**
+  - Zero convenience alias or decision properties (e.g. `tolerance`, `capacity`, `horizon`, `as_of_date`, `mode`, `knowledge_cutoff`, `score`, `level`, `value`, `status`, `available`, `suitability`, `overall_risk`, `required_risk`).
+  - Omits `owner_id`; owner authorization belongs to future owner-bound persistence/repository boundaries, not pure analysis context metadata.
+- **Strict Non-Goals:**
+  - Zero risk scoring, risk levels, tolerance/capacity aggregation, suitability verdicts, portfolio recommendations, optimizations, allocations, rebalancing, or order execution.
