@@ -850,3 +850,23 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Zero goal or target-date inference; arbitrary target dates are never converted or rounded to horizon buckets.
   - Zero implied `end_date` or month arithmetic properties.
   - Zero risk scoring, goal suitability, recommendations, portfolio optimization, asset allocation, rebalancing, or order execution.
+
+---
+
+## 35. Explicit Analysis PIT Knowledge-Cutoff Context (Phase 15A.5)
+- **`AnalysisPITContext` Primitive:**
+  - Immutable, frozen evaluation context binding an explicit canonical `mode: AsOfMode` with a `knowledge_cutoff: datetime`.
+  - Pure domain value object; zero system clock calls (`datetime.now()`, `date.today()`), zero network, zero filesystem, zero database, zero persistence.
+  - Strict canonical mode: `mode` must be an `AsOfMode` enum member (`SOURCE_AS_OF` or `SYSTEM_AS_OF`). Raw strings (`"source_as_of"`, `"system_as_of"`), foreign enums, and non-enums fail closed with `TypeError`.
+  - Strict timezone-aware cutoff: `knowledge_cutoff` must be a timezone-aware `datetime` with valid UTC offset; naive datetime, non-datetime objects, and malformed tzinfo fail closed with `TypeError`.
+- **Preservation & Derived UTC Instant:**
+  - Preserves the exact caller-supplied datetime object, offset, fold, and microsecond precision.
+  - `knowledge_cutoff_utc`: Derived property returning the exact same instant normalized via `astimezone(timezone.utc)`.
+- **Separation from Calendar/Horizon Anchor:**
+  - `knowledge_cutoff` is a knowledge instant, NOT a calendar date anchor (`AnalysisHorizonContext.as_of_date`), investment horizon, target date, or effective date.
+- **No Data-Availability Claim & Authoritative Resolver Requirement:**
+  - `AnalysisPITContext` carries an explicit request context only; it does NOT query, filter, fetch, select, or fabricate data.
+  - It does NOT claim that `SOURCE_AS_OF` data is available, nor does it silently fall back between `SOURCE_AS_OF` and `SYSTEM_AS_OF`.
+  - Downstream analyzers must use authoritative resolvers and return unavailable / fail closed when the requested PIT perspective cannot be proven.
+- **Strict Non-Goals:**
+  - Zero financial calculations, risk scoring, suitability verdicts, recommendations, portfolio optimization, asset allocation, rebalancing, or order execution.
