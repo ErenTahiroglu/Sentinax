@@ -890,3 +890,20 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Makes zero claim that underlying market data or observations exist or are eligible.
 - **Strict Non-Goals:**
   - Zero goal or target-date inference, financial calculations, risk scoring, suitability verdicts, recommendations, portfolio optimization, asset allocation, rebalancing, or order execution.
+
+---
+
+## 37. Canonical Risk-Axis Taxonomy (Phase 15B.1)
+- **`RiskAxis` Taxonomy Enum:**
+  - `TOLERANCE ("tolerance")`: Subjective willingness of the investor to accept investment uncertainty, volatility, drawdown, or loss.
+  - `CAPACITY ("capacity")`: Objective financial ability of the investor to absorb loss without compromising liquidity needs, liabilities, cash reserves, or investment goals.
+- **Mandatory Independence & Separation:**
+  - The two axes represent fundamentally different dimensions (psychological willingness vs. balance-sheet capacity) and must never be silently collapsed, averaged, blended, or aggregated into a single legacy string or combined risk score.
+  - Absence of either axis must never be converted into a zero score or implicit default.
+- **Strict Taxonomy-Only Boundary:**
+  - Pure taxonomy primitive; contains NO levels (`LOW`, `MEDIUM`, `HIGH`), questionnaires, scores, weights, rankings, thresholds, or aggregations.
+  - Goal-implied required return/risk (`REQUIRED_RISK`) is explicitly excluded from the investor risk taxonomy and belongs strictly to downstream goal-suitability evaluation.
+- **Legacy String Rejection:**
+  - Legacy public API strings (e.g. `"Orta"`, `"low"`, `"medium"`, `"high"`, `"conservative"`, `"aggressive"`) are non-canonical and must not be used as authoritative identifiers in the Private Engine domain.
+- **Strict Non-Goals:**
+  - Zero profile/context dataclasses, parsers, adapters, persistence codecs, repository methods, API models, suitability verdicts, portfolio recommendations, optimizations, allocations, rebalancing, or order execution.

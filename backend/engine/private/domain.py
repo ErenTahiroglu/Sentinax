@@ -251,6 +251,25 @@ class Horizon(Enum):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Risk Taxonomy
+# ─────────────────────────────────────────────────────────────────────────────
+
+class RiskAxis(Enum):
+    """
+    Canonical risk axes for the Private Engine investor profile.
+
+    TOLERANCE:
+        Subjective willingness to accept investment uncertainty, volatility,
+        drawdown, or loss.
+    CAPACITY:
+        Objective financial ability to absorb loss without compromising
+        liquidity needs, liabilities, reserves, or investment goals.
+    """
+    TOLERANCE = "tolerance"
+    CAPACITY = "capacity"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Currency
 # ─────────────────────────────────────────────────────────────────────────────
 

@@ -30,6 +30,7 @@ from backend.engine.private.domain import (
     Horizon,
     Currency,
     TaxConfidenceClass,
+    RiskAxis,
 )
 from backend.engine.private.result import DataResult, AnalysisResult
 from backend.engine.private.provider_contract import (
@@ -135,6 +136,77 @@ class TestHorizonTaxonomy:
     def test_unsupported_labels_fail_closed(self, invalid_val):
         with pytest.raises(ValueError):
             Horizon(invalid_val)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RiskAxis — Canonical Phase 15B.1 Taxonomy
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestRiskAxisTaxonomy:
+    def test_exact_ordered_members(self):
+        assert list(RiskAxis) == [RiskAxis.TOLERANCE, RiskAxis.CAPACITY]
+
+    def test_exact_members_and_values(self):
+        assert RiskAxis.TOLERANCE.value == "tolerance"
+        assert RiskAxis.CAPACITY.value == "capacity"
+        assert {m.name: m.value for m in RiskAxis} == {
+            "TOLERANCE": "tolerance",
+            "CAPACITY": "capacity",
+        }
+        assert len(RiskAxis) == 2
+
+    def test_no_aliases_or_duplicate_values(self):
+        assert len(RiskAxis.__members__) == 2
+        assert set(RiskAxis.__members__.keys()) == {"TOLERANCE", "CAPACITY"}
+        assert len(set(m.value for m in RiskAxis)) == 2
+
+    @pytest.mark.parametrize(
+        "invalid_val",
+        [
+            "low",
+            "medium",
+            "high",
+            "Orta",
+            "conservative",
+            "aggressive",
+            "appetite",
+            "overall",
+            "required",
+            "risk_score",
+            "LOW",
+            "MEDIUM",
+            "HIGH",
+            "ORTA",
+            "REQUIRED",
+            "tolerance_score",
+            "capacity_score",
+            "",
+            1,
+            0,
+            None,
+        ],
+    )
+    def test_undefined_and_legacy_values_raise_value_error(self, invalid_val):
+        with pytest.raises(ValueError):
+            RiskAxis(invalid_val)
+
+    def test_no_numeric_ordering_score_or_aggregation_properties(self):
+        prohibited_attrs = [
+            "score",
+            "weight",
+            "rank",
+            "severity",
+            "threshold",
+            "order",
+            "level",
+            "combined_risk",
+            "required_risk",
+            "suitability",
+            "aggregate",
+        ]
+        for member in RiskAxis:
+            for attr in prohibited_attrs:
+                assert not hasattr(member, attr), f"RiskAxis.{member.name} must not have property '{attr}'"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
