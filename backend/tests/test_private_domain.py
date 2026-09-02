@@ -26,6 +26,7 @@ from backend.engine.private.domain import (
     DataStatus,
     DataConfidenceLevel,
     SourceTier,
+    HorizonFamily,
     Horizon,
     Currency,
     TaxConfidenceClass,
@@ -71,6 +72,69 @@ class TestDomainEnums:
     def test_currency_includes_gold_and_silver(self):
         assert Currency.XAU in Currency
         assert Currency.XAG in Currency
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Horizon & HorizonFamily — Canonical Phase 15 Taxonomy
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestHorizonTaxonomy:
+    def test_horizon_family_exact_members(self):
+        expected = {
+            "TACTICAL": "tactical",
+            "ALLOCATION": "allocation",
+            "STRATEGIC": "strategic",
+        }
+        assert {m.name: m.value for m in HorizonFamily} == expected
+
+    def test_horizon_exact_members_and_values(self):
+        expected = {
+            "TACTICAL_1M": "1M",
+            "TACTICAL_3M": "3M",
+            "ALLOCATION_6M": "6M",
+            "ALLOCATION_12M": "12M",
+            "ALLOCATION_24M": "24M",
+            "STRATEGIC_3Y": "3Y",
+            "STRATEGIC_5Y": "5Y",
+        }
+        assert {m.name: m.value for m in Horizon} == expected
+        assert len(Horizon) == 7
+
+    @pytest.mark.parametrize(
+        "horizon,expected_family,expected_months",
+        [
+            (Horizon.TACTICAL_1M, HorizonFamily.TACTICAL, 1),
+            (Horizon.TACTICAL_3M, HorizonFamily.TACTICAL, 3),
+            (Horizon.ALLOCATION_6M, HorizonFamily.ALLOCATION, 6),
+            (Horizon.ALLOCATION_12M, HorizonFamily.ALLOCATION, 12),
+            (Horizon.ALLOCATION_24M, HorizonFamily.ALLOCATION, 24),
+            (Horizon.STRATEGIC_3Y, HorizonFamily.STRATEGIC, 36),
+            (Horizon.STRATEGIC_5Y, HorizonFamily.STRATEGIC, 60),
+        ],
+    )
+    def test_horizon_properties(self, horizon, expected_family, expected_months):
+        assert horizon.family == expected_family
+        assert horizon.months == expected_months
+        assert isinstance(horizon.months, int)
+        assert not isinstance(horizon.months, bool)
+
+    @pytest.mark.parametrize("legacy_val", ["short", "medium", "long", "undefined", "SHORT", "MEDIUM", "LONG", "UNDEFINED"])
+    def test_legacy_horizon_values_rejected(self, legacy_val):
+        with pytest.raises(ValueError):
+            Horizon(legacy_val)
+        assert not hasattr(Horizon, legacy_val)
+
+    def test_no_undefined_or_catchall_member(self):
+        names = {m.name for m in Horizon}
+        assert "UNDEFINED" not in names
+        assert "ALL" not in names
+        assert "OTHER" not in names
+        assert "UNKNOWN" not in names
+
+    @pytest.mark.parametrize("invalid_val", ["", "1m", "3m", "2Y", "10Y", "arbitrary", 1, 12, None])
+    def test_unsupported_labels_fail_closed(self, invalid_val):
+        with pytest.raises(ValueError):
+            Horizon(invalid_val)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -775,6 +775,26 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Zero heuristic or fuzzy attribution matching (all linkages are strictly explicit).
   - Zero lossy floating-point math.
 
+---
+
+## 31. Canonical Analysis Horizon Taxonomy Foundation (Phase 15A.1)
+- **Binding Supported Analysis Horizons:**
+  - **Tactical:** `TACTICAL_1M` ("1M", 1 month), `TACTICAL_3M` ("3M", 3 months)
+  - **Allocation:** `ALLOCATION_6M` ("6M", 6 months), `ALLOCATION_12M` ("12M", 12 months), `ALLOCATION_24M` ("24M", 24 months)
+  - **Strategic:** `STRATEGIC_3Y` ("3Y", 36 months), `STRATEGIC_5Y` ("5Y", 60 months)
+- **Categorization Families (`HorizonFamily`):** `TACTICAL`, `ALLOCATION`, `STRATEGIC`.
+- **Target Date vs. Horizon Separation:**
+  - `InvestmentGoal.target_date` remains an arbitrary calendar date.
+  - Arbitrary target dates are **not** silently rounded, clamped, inferred, or coerced into supported horizon buckets.
+- **Fail-Closed Taxonomy Boundary:**
+  - Unknown, missing, or unsupported horizon strings fail closed via enum construction.
+  - No `UNDEFINED` or catch-all bucket exists.
+  - Only genuinely supported horizons may later produce analysis results.
+- **Strict Scope Boundary:**
+  - Phase 15A.1 defines pure taxonomy metadata only.
+  - Does not implement risk scoring, suitability, optimization, shortfall calculations, or decision logic.
+
+
 
 
 

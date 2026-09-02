@@ -199,16 +199,55 @@ class AsOfMode(Enum):
 # Time / Horizon
 # ─────────────────────────────────────────────────────────────────────────────
 
-class Horizon(Enum):
-
+class HorizonFamily(Enum):
     """
-    Investment or analysis horizon.
+    Broad categorization family for supported investment/analysis horizons.
+    """
+    TACTICAL = "tactical"
+    ALLOCATION = "allocation"
+    STRATEGIC = "strategic"
+
+
+class Horizon(Enum):
+    """
+    Canonical fixed analysis horizon buckets.
     Does NOT imply any trading or execution timeframe.
     """
-    SHORT = "short"     # 0–3 months
-    MEDIUM = "medium"   # 3–18 months
-    LONG = "long"       # 18 months+
-    UNDEFINED = "undefined"
+    TACTICAL_1M = "1M"
+    TACTICAL_3M = "3M"
+    ALLOCATION_6M = "6M"
+    ALLOCATION_12M = "12M"
+    ALLOCATION_24M = "24M"
+    STRATEGIC_3Y = "3Y"
+    STRATEGIC_5Y = "5Y"
+
+    @property
+    def family(self) -> HorizonFamily:
+        """Explicit mapping from Horizon bucket to its HorizonFamily."""
+        mapping = {
+            Horizon.TACTICAL_1M: HorizonFamily.TACTICAL,
+            Horizon.TACTICAL_3M: HorizonFamily.TACTICAL,
+            Horizon.ALLOCATION_6M: HorizonFamily.ALLOCATION,
+            Horizon.ALLOCATION_12M: HorizonFamily.ALLOCATION,
+            Horizon.ALLOCATION_24M: HorizonFamily.ALLOCATION,
+            Horizon.STRATEGIC_3Y: HorizonFamily.STRATEGIC,
+            Horizon.STRATEGIC_5Y: HorizonFamily.STRATEGIC,
+        }
+        return mapping[self]
+
+    @property
+    def months(self) -> int:
+        """Exact integer month count represented by this horizon."""
+        mapping = {
+            Horizon.TACTICAL_1M: 1,
+            Horizon.TACTICAL_3M: 3,
+            Horizon.ALLOCATION_6M: 6,
+            Horizon.ALLOCATION_12M: 12,
+            Horizon.ALLOCATION_24M: 24,
+            Horizon.STRATEGIC_3Y: 36,
+            Horizon.STRATEGIC_5Y: 60,
+        }
+        return mapping[self]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
