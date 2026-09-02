@@ -756,6 +756,77 @@ def test_investment_goal_model():
     assert d["target_date"] == "2035-12-31"
 
 
+def test_investment_goal_accepts_valid_dates():
+    """InvestmentGoal accepts None, arbitrary non-bucket date, and historical/overdue date without clock."""
+    p_id = uuid4()
+    now = datetime(2026, 8, 27, 10, 0, 0, tzinfo=timezone.utc)
+
+    # 1. target_date=None
+    g_none = InvestmentGoal(
+        portfolio_id=p_id,
+        name="No Date Goal",
+        target_amount=Decimal("1000.00"),
+        target_currency=Currency.USD,
+        created_at=now,
+        target_date=None,
+    )
+    assert g_none.target_date is None
+    assert g_none.to_dict()["target_date"] is None
+
+    # 2. Arbitrary non-bucket aligned date
+    g_arb = InvestmentGoal(
+        portfolio_id=p_id,
+        name="Arbitrary Date Goal",
+        target_amount=Decimal("1000.00"),
+        target_currency=Currency.USD,
+        created_at=now,
+        target_date=date(2027, 7, 19),
+    )
+    assert g_arb.target_date == date(2027, 7, 19)
+    assert g_arb.to_dict()["target_date"] == "2027-07-19"
+
+    # 3. Historical / overdue date (e.g. 1999-01-01) without consulting a clock
+    g_past = InvestmentGoal(
+        portfolio_id=p_id,
+        name="Past Goal",
+        target_amount=Decimal("1000.00"),
+        target_currency=Currency.USD,
+        created_at=now,
+        target_date=date(1999, 1, 1),
+    )
+    assert g_past.target_date == date(1999, 1, 1)
+    assert g_past.to_dict()["target_date"] == "1999-01-01"
+
+
+@pytest.mark.parametrize(
+    "bad_date",
+    [
+        datetime(2028, 5, 10, 12, 0, 0),  # Naive datetime
+        datetime(2028, 5, 10, 12, 0, 0, tzinfo=timezone.utc),  # Aware datetime
+        True,
+        False,
+        "2028-05-10",
+        12345678,
+        3.14,
+        object(),
+    ],
+)
+def test_investment_goal_rejects_non_date_types(bad_date):
+    """InvestmentGoal strictly rejects datetime (even though datetime issubclass date), scalars, and objects."""
+    p_id = uuid4()
+    now = datetime(2026, 8, 27, 10, 0, 0, tzinfo=timezone.utc)
+
+    with pytest.raises(TypeError):
+        InvestmentGoal(
+            portfolio_id=p_id,
+            name="Bad Date Goal",
+            target_amount=Decimal("1000.00"),
+            target_currency=Currency.USD,
+            created_at=now,
+            target_date=bad_date,
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. Planned Contribution Model Tests
 # ─────────────────────────────────────────────────────────────────────────────
@@ -777,6 +848,78 @@ def test_planned_contribution_model():
     d = pc.to_dict()
     assert d["amount"] == "25000.00"
     assert d["currency"] == "TRY"
+    assert d["expected_date"] == "2026-09-15"
+
+
+def test_planned_contribution_accepts_valid_dates():
+    """PlannedContribution accepts exact date and historical/overdue date without clock."""
+    p_id = uuid4()
+    now = datetime(2026, 8, 27, 10, 0, 0, tzinfo=timezone.utc)
+
+    # 1. Exact future date
+    pc_future = PlannedContribution(
+        portfolio_id=p_id,
+        expected_date=date(2030, 4, 1),
+        amount=Decimal("500.00"),
+        currency=Currency.EUR,
+        created_at=now,
+    )
+    assert pc_future.expected_date == date(2030, 4, 1)
+    assert pc_future.to_dict()["expected_date"] == "2030-04-01"
+
+    # 2. Historical date without clock
+    pc_past = PlannedContribution(
+        portfolio_id=p_id,
+        expected_date=date(2001, 9, 11),
+        amount=Decimal("500.00"),
+        currency=Currency.EUR,
+        created_at=now,
+    )
+    assert pc_past.expected_date == date(2001, 9, 11)
+    assert pc_past.to_dict()["expected_date"] == "2001-09-11"
+
+
+@pytest.mark.parametrize(
+    "bad_date",
+    [
+        datetime(2028, 5, 10, 12, 0, 0),  # Naive datetime
+        datetime(2028, 5, 10, 12, 0, 0, tzinfo=timezone.utc),  # Aware datetime
+        True,
+        False,
+        "2028-05-10",
+        12345678,
+        3.14,
+        object(),
+    ],
+)
+def test_planned_contribution_rejects_non_date_types(bad_date):
+    """PlannedContribution strictly rejects datetime, bool, string, scalar, and object types."""
+    p_id = uuid4()
+    now = datetime(2026, 8, 27, 10, 0, 0, tzinfo=timezone.utc)
+
+    with pytest.raises(TypeError):
+        PlannedContribution(
+            portfolio_id=p_id,
+            expected_date=bad_date,
+            amount=Decimal("500.00"),
+            currency=Currency.EUR,
+            created_at=now,
+        )
+
+
+def test_planned_contribution_rejects_none_date():
+    """PlannedContribution requires expected_date; None must fail."""
+    p_id = uuid4()
+    now = datetime(2026, 8, 27, 10, 0, 0, tzinfo=timezone.utc)
+
+    with pytest.raises((ValueError, TypeError)):
+        PlannedContribution(
+            portfolio_id=p_id,
+            expected_date=None,  # type: ignore
+            amount=Decimal("500.00"),
+            currency=Currency.EUR,
+            created_at=now,
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

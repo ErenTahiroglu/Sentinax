@@ -794,21 +794,15 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Phase 15A.1 defines pure taxonomy metadata only.
   - Does not implement risk scoring, suitability, optimization, shortfall calculations, or decision logic.
 
+---
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+## 32. Strict Goal & Planned Contribution Calendar-Date Boundary (Phase 15A.2)
+- **Strict Calendar Date Invariants:**
+  - `InvestmentGoal.target_date`: Optional, but strictly validated as a Python `date` when present. `datetime` (naive or aware), `bool`, `str`, `int`, `float`, and other scalar substitutes fail closed with `TypeError`.
+  - `PlannedContribution.expected_date`: Required, strictly validated as a Python `date`. `None` fails as missing; `datetime` (naive or aware), `bool`, `str`, `int`, `float`, and other types fail closed with `TypeError`.
+- **Arbitrary Date Preservation & No Auto-Classification:**
+  - Dates remain arbitrary calendar dates and are not automatically classified, rounded, or coerced into `Horizon` buckets.
+  - Historical and overdue dates are retained for audit and lifecycle purposes without consulting system clocks (`date.today()`, `datetime.now()`).
+  - No temporal policy or suitability rules are applied in this foundational domain layer.
+- **Non-Cash Planning Information:**
+  - Planned contributions remain forward-looking planning information only and never affect ledger cash or accounting balances.

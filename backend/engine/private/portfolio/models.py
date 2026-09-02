@@ -71,6 +71,22 @@ def _validate_aware_datetime(dt: Optional[datetime], field_name: str) -> None:
         raise ValueError(f"{field_name} must be a timezone-aware datetime, got naive: {dt}")
 
 
+def _validate_strict_calendar_date(d: Optional[date], field_name: str, required: bool = True) -> Optional[date]:
+    """
+    Validates that a value is strictly a Python date object (and not datetime, bool, str, int, etc.).
+    Preserves the date exactly without temporal-policy enforcement (historical/overdue dates valid).
+    """
+    if d is None:
+        if required:
+            raise ValueError(f"{field_name} is required and cannot be None.")
+        return None
+    if isinstance(d, datetime):
+        raise TypeError(f"{field_name} must be a strict date, not datetime: {d!r}")
+    if isinstance(d, bool) or not isinstance(d, date):
+        raise TypeError(f"{field_name} must be a date, got {type(d).__name__}: {d!r}")
+    return d
+
+
 def _canonical_decimal_str(d: Optional[Decimal]) -> Optional[str]:
     """
     Renders a finite Decimal in canonical text form for economic fingerprinting.
@@ -554,6 +570,7 @@ class InvestmentGoal:
         if not self.name or not self.name.strip():
             raise ValueError("Goal name cannot be empty.")
         _validate_decimal_positive(self.target_amount, "target_amount")
+        _validate_strict_calendar_date(self.target_date, "target_date", required=False)
         if self.created_at.tzinfo is None:
             raise ValueError(f"created_at must be timezone-aware, got naive: {self.created_at}")
         _validate_aware_datetime(self.archived_at, "archived_at")
@@ -594,6 +611,7 @@ class PlannedContribution:
     status: ContributionStatus = ContributionStatus.PLANNED
 
     def __post_init__(self) -> None:
+        _validate_strict_calendar_date(self.expected_date, "expected_date", required=True)
         _validate_decimal_positive(self.amount, "PlannedContribution amount")
         if self.created_at.tzinfo is None:
             raise ValueError(f"created_at must be timezone-aware, got naive: {self.created_at}")
