@@ -870,3 +870,23 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Downstream analyzers must use authoritative resolvers and return unavailable / fail closed when the requested PIT perspective cannot be proven.
 - **Strict Non-Goals:**
   - Zero financial calculations, risk scoring, suitability verdicts, recommendations, portfolio optimization, asset allocation, rebalancing, or order execution.
+
+---
+
+## 36. Composed Analysis Temporal Envelope (Phase 15A.6)
+- **`AnalysisTemporalContext` Primitive:**
+  - Immutable, frozen envelope binding exactly two mandatory canonical contexts:
+    - `horizon_context: AnalysisHorizonContext` (calendar analysis anchor)
+    - `pit_context: AnalysisPITContext` (timezone-aware knowledge instant)
+  - Pure domain value object; zero system clock calls (`datetime.now()`, `date.today()`), zero network, zero filesystem, zero database, zero persistence.
+  - Strict concrete-type validation: `type(x) is T` enforcement rejects subclasses, raw enums, strings, mappings, date, datetime, and swapped contexts with `TypeError`.
+  - Identity preservation: Preserves both supplied context objects by reference (`temporal.horizon_context is horizon_context`, `temporal.pit_context is pit_context`) without mutation, cloning, normalization, or caching.
+- **Strict Separation of Calendar Anchor and Knowledge Cutoff:**
+  - Does NOT compare calendar dates between `horizon_context.as_of_date` and `pit_context.knowledge_cutoff`.
+  - Does NOT enforce date-ordering, date-equality, or compatibility constraints between axes.
+  - Calendar anchors before, equal to, or after the UTC/local calendar date of the knowledge cutoff remain fully representable.
+- **No Data-Availability Claim & No Convenience Aliases:**
+  - Zero convenience alias properties (e.g. `horizon`, `family`, `months`, `as_of_date`, `mode`, `knowledge_cutoff`, `effective_date`, `target_date`); consumers must traverse explicit sub-contexts to prevent axis conflation.
+  - Makes zero claim that underlying market data or observations exist or are eligible.
+- **Strict Non-Goals:**
+  - Zero goal or target-date inference, financial calculations, risk scoring, suitability verdicts, recommendations, portfolio optimization, asset allocation, rebalancing, or order execution.
