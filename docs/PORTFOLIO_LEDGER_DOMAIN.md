@@ -830,3 +830,23 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Strict Boundary Non-Goals:**
   - Zero `Horizon` or `HorizonFamily` inference or rounding.
   - Zero risk scoring, goal suitability, optimization, recommendations, or order execution.
+
+---
+
+## 34. Explicit Analysis-Horizon Calendar Context (Phase 15A.4)
+- **`AnalysisHorizonContext` Primitive:**
+  - Immutable, frozen evaluation context binding an explicit canonical `horizon: Horizon` with an analysis `as_of_date: date`.
+  - Pure domain value object; zero system clock calls (`date.today()`, `datetime.now()`), zero network, zero database, zero persistence.
+  - Explicity required: `horizon` must be a canonical `Horizon` enum member; raw strings (e.g. `"1M"`, `"3M"`, `"6M"`, `"12M"`, `"24M"`, `"3Y"`, `"5Y"`), `HorizonFamily`, foreign enums, and non-enums fail closed with `TypeError`.
+  - Strict calendar date: `as_of_date` must be a Python `date`; `datetime` (naive or aware), `bool`, `str`, `int`, `float`, and arbitrary objects fail closed with `TypeError`.
+- **Derived Properties:**
+  - `family`: Returns canonical `horizon.family` (`HorizonFamily`).
+  - `months`: Returns canonical `horizon.months` (`int`).
+- **Calendar Anchor vs. PIT Knowledge Cutoff:**
+  - `as_of_date` serves exclusively as a calendar analysis anchor date.
+  - It does NOT represent a market-data knowledge cutoff, publication cutoff, ingestion cutoff, or authorization to read observations.
+  - Future analyzers must separately require authoritative PIT/provenance inputs before producing results.
+- **Strict Non-Goals & Purity:**
+  - Zero goal or target-date inference; arbitrary target dates are never converted or rounded to horizon buckets.
+  - Zero implied `end_date` or month arithmetic properties.
+  - Zero risk scoring, goal suitability, recommendations, portfolio optimization, asset allocation, rebalancing, or order execution.
