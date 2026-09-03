@@ -961,3 +961,22 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Enforces core Sentinax domain boundaries: missing != zero, fail-closed PIT/lookahead isolation, no synthetic evidence fabrication, and explicit provenance/audit trail requirements.
 - **Strict Non-Goals:**
   - Zero risk scoring, risk levels, tolerance/capacity aggregation, suitability verdicts, portfolio recommendations, optimizations, allocations, rebalancing, or order execution.
+
+---
+
+## 41. Risk-Evidence Knowledge-Availability Reference (Phase 15B.5)
+- **`RiskEvidenceAvailabilityRef` Primitive:**
+  - Immutable, frozen domain primitive binding `provenance_ref: RiskEvidenceProvenanceRef` and `available_at: datetime`.
+  - Pure domain value object; zero system clock calls (`datetime.now()`, `date.today()`), zero UUID generation, zero hashing, zero raw-byte storage, zero filesystem, zero database, zero persistence.
+  - Strict concrete-type validation: `type(provenance_ref) is RiskEvidenceProvenanceRef` and `type(available_at) is datetime` (rejects subclasses, non-datetimes, naive datetimes).
+  - Strict timezone-aware validation: `available_at.utcoffset()` must return an exact `timedelta` strictly inside `(-24h, +24h)` and pre-validate conversion via `available_at.astimezone(timezone.utc)` at construction time, failing closed with deterministic static `TypeError` string literals (`"provenance_ref must be an exact RiskEvidenceProvenanceRef instance"`, `"available_at must be an exact timezone-aware datetime with a valid UTC offset"`).
+  - Callback safety: Error construction evaluates zero user-controlled callbacks (`__repr__`, `__str__`, metaclass attribute lookups, properties, methods).
+  - Identity preservation: Preserves caller-supplied objects by identity (`is`) without normalization, cloning, replacement, or caching.
+- **Temporal Distinction & Eligibility Requirements:**
+  - `available_at` represents the earliest instant at which the referenced evidence became knowable to the system.
+  - It is strictly distinct from source/content identity (`provenance_ref`), economic effective date, calendar analysis anchor (`AnalysisHorizonContext.as_of_date`), ingestion time, or current system clock.
+  - Does NOT verify that the claimed timestamp or content is authentic, complete, verified, or suitable.
+  - Does NOT compare `available_at` with `AnalysisPITContext.knowledge_cutoff` yet; PIT-eligibility requires a later fail-closed check (`available_at <= knowledge_cutoff`).
+  - Does NOT compose with `MissingRiskEvidence`.
+- **Strict Non-Goals:**
+  - Zero risk scoring, risk levels, tolerance/capacity aggregation, suitability verdicts, portfolio recommendations, optimizations, allocations, rebalancing, or order execution.
