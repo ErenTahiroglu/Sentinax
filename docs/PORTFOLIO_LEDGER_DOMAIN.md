@@ -980,3 +980,25 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Does NOT compose with `MissingRiskEvidence`.
 - **Strict Non-Goals:**
   - Zero risk scoring, risk levels, tolerance/capacity aggregation, suitability verdicts, portfolio recommendations, optimizations, allocations, rebalancing, or order execution.
+
+---
+
+## 42. Fail-Closed Risk-Evidence PIT Binding (Phase 15B.6)
+- **`RiskEvidencePITBinding` Primitive:**
+  - Immutable, frozen domain primitive binding `context: RiskAxisContext` and `availability_ref: RiskEvidenceAvailabilityRef`.
+  - Pure domain value object; zero system clock calls (`datetime.now()`, `date.today()`), zero UUID generation, zero hashing, zero raw-byte storage, zero filesystem, zero database, zero persistence.
+  - Strict concrete-type validation: `type(context) is RiskAxisContext` and `type(availability_ref) is RiskEvidenceAvailabilityRef` (rejects subclasses, non-instances, swapped arguments).
+  - Identity preservation: Preserves both supplied objects by identity (`is`) without storing normalized UTC fields or caching.
+- **Inclusive UTC Comparison Rule:**
+  - Evaluates temporal admissibility strictly by UTC instant:
+    `availability_ref.available_at.astimezone(timezone.utc) <= context.temporal_context.pit_context.knowledge_cutoff.astimezone(timezone.utc)`
+  - Exact equality (`available_at_utc == knowledge_cutoff_utc`) is valid and admissible.
+  - Rejects lookahead even by a single microsecond (`available_at_utc > knowledge_cutoff_utc`) with deterministic `ValueError("risk evidence availability exceeds the analysis knowledge cutoff")`.
+  - Comparisons are strictly by UTC instant; local wall-clock times appearing earlier but converting to later UTC instants are rejected.
+  - Catches ordinary timezone/conversion/comparison failures and fails closed with static `TypeError("risk evidence PIT instants must remain valid for UTC comparison")`.
+- **Semantic Boundary & Non-Goals:**
+  - Successful binding proves ONLY that the supplied availability metadata is temporally admissible for the analysis knowledge cutoff.
+  - It does NOT prove evidence presence, authenticity, completeness, sufficiency, verification, owner authorization, or suitability.
+  - Carries NO evidence payload, risk value, score, level, questionnaire result, required-risk result, or suitability verdict.
+  - Does NOT compose with `MissingRiskEvidence`, infer missing evidence, or replace missing with zero/default.
+  - Preserves independent `TOLERANCE` and `CAPACITY` axes; does not aggregate or compare them.
