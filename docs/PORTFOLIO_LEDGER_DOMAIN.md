@@ -925,3 +925,21 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Omits `owner_id`; owner authorization belongs to future owner-bound persistence/repository boundaries, not pure analysis context metadata.
 - **Strict Non-Goals:**
   - Zero risk scoring, risk levels, tolerance/capacity aggregation, suitability verdicts, portfolio recommendations, optimizations, allocations, rebalancing, or order execution.
+
+---
+
+## 39. Explicit Missing-Risk-Evidence Primitive (Phase 15B.3)
+- **`MissingRiskEvidence` Primitive:**
+  - Immutable, frozen domain primitive binding exactly one `context: RiskAxisContext` with a non-empty `missing_inputs: tuple[str, ...]`.
+  - Pure domain value object; zero system clock calls (`datetime.now()`, `date.today()`), zero network, zero filesystem, zero database, zero persistence.
+  - Strict concrete-type validation: `type(context) is RiskAxisContext` and `type(missing_inputs) is tuple` with exact `str` elements (rejects empty strings, whitespace-only strings, strings with leading/trailing whitespace, and duplicates) with static `TypeError` string literals.
+  - Callback safety: Error construction evaluates zero user-controlled callbacks (`__repr__`, `__str__`, metaclass attribute lookups, iterators).
+  - Identity & Order Preservation: Preserves `context` by identity (`is`) and preserves `missing_inputs` caller ordering without sorting or modification.
+- **Missing Means Explicit Absence (Missing != Zero):**
+  - Represents the explicit absence of required risk evidence for the given axis and temporal context.
+  - Missing evidence NEVER converts to numeric zero (`0`, `0.0`, `Decimal("0")`), default risk, neutral risk, or level strings (`LOW`, `MEDIUM`, `HIGH`).
+  - Carries NO claim that evidence is present, complete, sufficient, or verified. Future evidence-present primitives must require genuine provenance/audit backing.
+- **No Convenience Aliases or Owner Binding:**
+  - Zero convenience alias or decision properties (e.g. `value`, `score`, `level`, `status`, `available`, `present`, `complete`, `sufficient`, `verified`, `suitability`, `overall_risk`, `required_risk`, `owner_id`).
+- **Strict Non-Goals:**
+  - Zero risk scoring, risk levels, tolerance/capacity aggregation, suitability verdicts, portfolio recommendations, optimizations, allocations, rebalancing, or order execution.
