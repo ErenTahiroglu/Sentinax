@@ -1002,3 +1002,31 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Carries NO evidence payload, risk value, score, level, questionnaire result, required-risk result, or suitability verdict.
   - Does NOT compose with `MissingRiskEvidence`, infer missing evidence, or replace missing with zero/default.
   - Preserves independent `TOLERANCE` and `CAPACITY` axes; does not aggregate or compare them.
+
+---
+
+## 43. Exclusive Risk-Evidence Reference Resolution (Phase 15B.7)
+- **`resolve_risk_evidence_reference` Function & `RiskEvidenceReferenceResolution` Type Alias:**
+  - Pure functional resolver forcing callers to choose exactly one explicit branch:
+    `RiskEvidenceReferenceResolution = MissingRiskEvidence | RiskEvidencePITBinding`.
+  - Signature requires keyword-only arguments without defaults:
+    `resolve_risk_evidence_reference(*, context: RiskAxisContext, availability_ref: RiskEvidenceAvailabilityRef | None, missing_inputs: tuple[str, ...] | None) -> RiskEvidenceReferenceResolution`.
+  - Pure domain resolver; zero system clock calls (`datetime.now()`, `date.today()`), zero network, zero persistence, zero UUID generation, zero hashing, zero caching, zero normalization.
+  - Strict concrete-type validation: `type(context) is RiskAxisContext` and `availability_ref is None or type(availability_ref) is RiskEvidenceAvailabilityRef`.
+- **Exclusive Two-Branch Resolution Truth Table:**
+
+| `availability_ref` | `missing_inputs` | Resolution Result |
+| :--- | :--- | :--- |
+| `RiskEvidenceAvailabilityRef` instance | `None` | Reference Branch: returns `RiskEvidencePITBinding(context=context, availability_ref=availability_ref)` |
+| `None` | `tuple[str, ...]` (non-None) | Missing Branch: returns `MissingRiskEvidence(context=context, missing_inputs=missing_inputs)` |
+| `RiskEvidenceAvailabilityRef` instance | `tuple[str, ...]` (non-None) | **Rejected:** `ValueError("exactly one risk evidence reference resolution branch must be supplied")` |
+| `None` | `None` | **Rejected:** `ValueError("exactly one risk evidence reference resolution branch must be supplied")` |
+
+- **Unmodified Error Propagation & Identity Preservation:**
+  - `None` is accepted strictly as an input selector at the resolver boundary; the returned missing branch is always an explicit, strongly-typed `MissingRiskEvidence` instance.
+  - Propagates all validation errors raised by `RiskEvidencePITBinding` (lookahead `ValueError`, late conversion `TypeError`) and `MissingRiskEvidence` (tuple/element/uniqueness `TypeError`) directly without catching, weakening, or translating.
+  - Preserves caller-supplied `context`, `availability_ref`, and `missing_inputs` object identities (`is`) through the constructed result.
+- **Semantic Boundary & Non-Goals:**
+  - Missing evidence remains explicit absence and is NEVER converted to `0`, `0.0`, `Decimal("0")`, neutral risk, default risk, or level strings (`LOW`, `MEDIUM`, `HIGH`).
+  - Reference branch proves only that the reference metadata satisfies the PIT cutoff; it does NOT prove evidence presence, authenticity, completeness, sufficiency, verification, or suitability.
+  - Preserves independent `TOLERANCE` and `CAPACITY` axes without aggregation, scoring, or comparisons.
