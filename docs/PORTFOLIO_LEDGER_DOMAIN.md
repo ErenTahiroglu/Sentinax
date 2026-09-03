@@ -943,3 +943,21 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Zero convenience alias or decision properties (e.g. `value`, `score`, `level`, `status`, `available`, `present`, `complete`, `sufficient`, `verified`, `suitability`, `overall_risk`, `required_risk`, `owner_id`).
 - **Strict Non-Goals:**
   - Zero risk scoring, risk levels, tolerance/capacity aggregation, suitability verdicts, portfolio recommendations, optimizations, allocations, rebalancing, or order execution.
+
+---
+
+## 40. Risk-Evidence Provenance Reference Foundation (Phase 15B.4)
+- **`RiskEvidenceProvenanceRef` Primitive:**
+  - Immutable, frozen domain primitive binding `source_key: str` and `content_sha256: str`.
+  - Pure domain value object; zero system clock calls (`datetime.now()`, `date.today()`), zero UUID generation, zero hashing, zero raw-byte storage, zero filesystem, zero database, zero persistence.
+  - Strict concrete-type validation: `type(source_key) is str` and `type(content_sha256) is str` rejecting subclasses and non-str objects.
+  - Strict canonical regex constraints: `source_key` must match `^[a-z0-9][a-z0-9._-]{0,63}$`; `content_sha256` must match `^[a-f0-9]{64}$` (rejects uppercase, whitespace/padding, overlength, or non-hex characters) with static `TypeError` string literals.
+  - Callback safety: Error construction evaluates zero user-controlled callbacks (`__repr__`, `__str__`, metaclass attribute lookups, properties, methods).
+  - String preservation: Preserves caller-supplied string values without normalization.
+- **Reference Metadata Only (Not Evidence-Present Status):**
+  - This object is an opaque source/content provenance reference only; it does NOT claim that evidence exists, is present, complete, authentic, sufficient, verified, PIT-eligible, or owner-authorized.
+  - Carries no context, axis, value, score, level, status, timestamps, owner_id, or suitability result.
+  - Does NOT compose with `MissingRiskEvidence` or create evidence-present states yet.
+  - Enforces core Sentinax domain boundaries: missing != zero, fail-closed PIT/lookahead isolation, no synthetic evidence fabrication, and explicit provenance/audit trail requirements.
+- **Strict Non-Goals:**
+  - Zero risk scoring, risk levels, tolerance/capacity aggregation, suitability verdicts, portfolio recommendations, optimizations, allocations, rebalancing, or order execution.
