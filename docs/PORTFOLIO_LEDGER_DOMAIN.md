@@ -1068,3 +1068,17 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
 - **Empty Bytes:** `b""` is valid content and succeeds when the canonical digest is the SHA-256 of empty bytes (`e3b0c442...b855`). It is never treated as missing. Only `MissingRiskEvidence` + `None` is valid for the missing branch.
 - **Missing Remains Explicit Absence:** never converted to `0`, `0.0`, `Decimal("0")`, `False`, empty bytes, empty string, neutral, default, or level strings.
 - **Semantic Boundary & Non-Goals:** success proves only that the reference passed the 15B.6 PIT cutoff and that the exact supplied bytes matched the canonical SHA-256 digest. It does NOT establish source authenticity, economic truth, semantic correctness, completeness, sufficiency, owner authorization, storage durability, questionnaire validity, risk relevance, or risk value. No score, no risk level, no suitability, no owner claim, no recommendation. The resolver is pure: zero clock, UUID, entropy, network, filesystem, database, persistence, cache, environment access, financial arithmetic, or float conversion.
+
+---
+
+## 46. Canonical Risk-Evidence Kind Taxonomy (Phase 15C.1)
+- **`RiskEvidenceKind` Taxonomy Enum (`backend/engine/private/domain.py`):** exactly three ordered members, no aliases:
+  - `CASH_BALANCE ("cash_balance")`: exact cash held for an account/currency as represented by the existing private cash projection. Not emergency reserve, investable cash, cash by purpose, liquidity sufficiency, or a capacity score.
+  - `INVESTMENT_GOAL ("investment_goal")`: a declared investment goal with its existing requirements (target amount, target date). Not required return, required risk, goal suitability, or risk tolerance.
+  - `PLANNED_CONTRIBUTION ("planned_contribution")`: a declared expected future contribution (`PlannedContribution`). Explicitly NOT current portfolio cash, guaranteed income, or a recurring income model.
+- **Axis Mapping:** the explicit `axis` property returns the canonical `RiskAxis.CAPACITY` member (identity, not a string) for all three current members.
+- **`TOLERANCE` Has No Canonical Kind Yet:** the repository has no canonical tolerance evidence source. No `RISK_TOLERANCE`, `DRAWDOWN_REACTION`, questionnaire, experience, or behavior member exists, and none was added for symmetry. Consequently `RiskAxis.TOLERANCE` currently has zero canonical evidence kinds.
+- **Legacy Non-Canonical:** legacy `low`/`medium`/`high`, Turkish level strings (`Orta`, `Düşük`, `Yüksek`), wizard-skip `low`, and edge-function `medium` defaults are not evidence kinds; `RiskEvidenceKind(<legacy>)` raises `ValueError`. No mapping, adapter, or fallback exists.
+- **No Speculative Kinds:** income, liability/debt, planned expense, household obligation, receivable/payable, cash-by-purpose, portfolio value, and net worth are intentionally absent; future phases may add them deliberately.
+- **`source_key` Remains Opaque:** `RiskEvidenceProvenanceRef.source_key` keeps its source/content provenance identity semantics and carries no kind convention. Evidence kind is a separate semantic dimension, independent of provenance/source identity.
+- **Semantic Boundary & Non-Goals:** taxonomy only. No scores, levels, weights, thresholds, ranking/ordering, aggregation, overall or required risk, suitability, or recommendation. No content decoding, serialization schema, fact binding (`RiskAssessmentFact`/`RiskAxisInput`), multi-fact collections, persistence, API, frontend, or order execution.

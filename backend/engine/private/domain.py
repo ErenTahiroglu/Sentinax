@@ -269,6 +269,42 @@ class RiskAxis(Enum):
     CAPACITY = "capacity"
 
 
+class RiskEvidenceKind(Enum):
+    """
+    Canonical semantic kinds of risk evidence (taxonomy only).
+
+    CASH_BALANCE:
+        Exact cash held for an account/currency as represented by the existing private
+        cash projection. NOT emergency reserve, investable cash, cash by purpose,
+        liquidity sufficiency, or a capacity score.
+    INVESTMENT_GOAL:
+        A declared investment goal carrying its existing requirements (target amount,
+        target date). NOT required return, required risk, goal suitability, or tolerance.
+    PLANNED_CONTRIBUTION:
+        A declared expected future contribution (existing PlannedContribution object).
+        NOT current portfolio cash, guaranteed income, or a recurring income model.
+
+    RiskAxis.TOLERANCE intentionally has no canonical kind yet. Kinds are categories, not
+    ordinal risk values; no scores, levels, weights, thresholds, or aggregation exist here.
+    Kind is independent of provenance `source_key` identity.
+    """
+    CASH_BALANCE = "cash_balance"
+    INVESTMENT_GOAL = "investment_goal"
+    PLANNED_CONTRIBUTION = "planned_contribution"
+
+    @property
+    def axis(self) -> RiskAxis:
+        """The single canonical RiskAxis this evidence kind may bind to."""
+        return _RISK_EVIDENCE_KIND_AXIS[self]
+
+
+_RISK_EVIDENCE_KIND_AXIS = {
+    RiskEvidenceKind.CASH_BALANCE: RiskAxis.CAPACITY,
+    RiskEvidenceKind.INVESTMENT_GOAL: RiskAxis.CAPACITY,
+    RiskEvidenceKind.PLANNED_CONTRIBUTION: RiskAxis.CAPACITY,
+}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Currency
 # ─────────────────────────────────────────────────────────────────────────────

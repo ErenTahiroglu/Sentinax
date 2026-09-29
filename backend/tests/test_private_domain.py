@@ -31,6 +31,7 @@ from backend.engine.private.domain import (
     Currency,
     TaxConfidenceClass,
     RiskAxis,
+    RiskEvidenceKind,
 )
 from backend.engine.private.result import DataResult, AnalysisResult
 from backend.engine.private.provider_contract import (
@@ -207,6 +208,72 @@ class TestRiskAxisTaxonomy:
         for member in RiskAxis:
             for attr in prohibited_attrs:
                 assert not hasattr(member, attr), f"RiskAxis.{member.name} must not have property '{attr}'"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RiskEvidenceKind — Canonical Phase 15C.1 Taxonomy
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestRiskEvidenceKindTaxonomy:
+    def test_exact_ordered_members(self):
+        assert list(RiskEvidenceKind) == [
+            RiskEvidenceKind.CASH_BALANCE,
+            RiskEvidenceKind.INVESTMENT_GOAL,
+            RiskEvidenceKind.PLANNED_CONTRIBUTION,
+        ]
+
+    def test_exact_member_names_and_no_aliases(self):
+        assert list(RiskEvidenceKind.__members__.keys()) == [
+            "CASH_BALANCE",
+            "INVESTMENT_GOAL",
+            "PLANNED_CONTRIBUTION",
+        ]
+        assert len(RiskEvidenceKind) == len(RiskEvidenceKind.__members__) == 3
+
+    def test_exact_values(self):
+        assert RiskEvidenceKind.CASH_BALANCE.value == "cash_balance"
+        assert RiskEvidenceKind.INVESTMENT_GOAL.value == "investment_goal"
+        assert RiskEvidenceKind.PLANNED_CONTRIBUTION.value == "planned_contribution"
+
+    def test_every_member_maps_to_capacity_by_identity(self):
+        for kind in RiskEvidenceKind:
+            assert kind.axis is RiskAxis.CAPACITY
+
+    def test_tolerance_has_no_canonical_kind(self):
+        assert [k for k in RiskEvidenceKind if k.axis is RiskAxis.TOLERANCE] == []
+
+    @pytest.mark.parametrize(
+        "invalid_val",
+        [
+            "low", "medium", "high", "Orta", "Düşük", "Yüksek",
+            "risk_tolerance", "drawdown_reaction", "experience",
+            "income", "liability", "debt", "portfolio_value",
+            "cash_purpose", "overall", "required",
+            "CASH_BALANCE", "", 0, 1, None,
+        ],
+    )
+    def test_undefined_and_legacy_values_raise_value_error(self, invalid_val):
+        with pytest.raises(ValueError):
+            RiskEvidenceKind(invalid_val)
+
+    def test_no_decision_properties(self):
+        prohibited_attrs = [
+            "score", "weight", "rank", "severity", "threshold", "level", "status",
+            "value_score", "overall_risk", "required_risk", "suitability",
+            "is_tolerance", "is_capacity",
+        ]
+        for member in RiskEvidenceKind:
+            for attr in prohibited_attrs:
+                assert not hasattr(member, attr), f"RiskEvidenceKind.{member.name} must not have '{attr}'"
+
+    def test_no_numeric_ordering_or_conversion(self):
+        for dunder in ("__lt__", "__le__", "__gt__", "__ge__", "__int__", "__float__", "__index__"):
+            assert dunder not in RiskEvidenceKind.__dict__
+        a, b = RiskEvidenceKind.CASH_BALANCE, RiskEvidenceKind.INVESTMENT_GOAL
+        with pytest.raises(TypeError):
+            a < b  # noqa: B015
+        with pytest.raises(TypeError):
+            int(a)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
