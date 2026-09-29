@@ -102,3 +102,19 @@ jobs:
           backend/tests/test_risk_evidence_investment_goal_schema.py \
           backend/tests/test_risk_evidence_investment_goal_resolution.py \
           -q --disable-socket
+
+    - name: Phase 16 TEFAS fund engine correctness
+      run: |
+        python -m pytest \
+          backend/tests/test_tefas_fund_price_series.py \
+          backend/tests/test_tefas_fund_return_series.py \
+          backend/tests/test_tefas_fund_drawdown.py \
+          backend/tests/test_tefas_fund_rolling_returns.py \
+          backend/tests/test_tefas_fund_downside_deviation.py \
+          backend/tests/test_tefas_fund_annualized_returns.py \
+          backend/tests/test_tefas_fund_category.py \
+          backend/tests/test_tefas_fund_peer_percentile.py \
+          backend/tests/test_tefas_fund_peer_persistence.py \
+          backend/tests/test_tefas_fund_expected_shortfall.py \
+          backend/tests/test_tefas_fund_volatility.py \
+          -q --disable-socket
