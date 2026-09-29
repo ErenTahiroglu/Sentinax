@@ -93,14 +93,16 @@ def test_return_point_fields_and_frozen() -> None:
         point.simple_return = Decimal("0")  # type: ignore[misc]
 
 
-@pytest.mark.parametrize("ret", ["0", "0.0", "0.5", "-0.5", "-0.9999999999", "1E+3", "-0"])
+@pytest.mark.parametrize("ret", ["0", "0.0", "0.5", "-0.5", "-0.9999999999", "1E+3", "-0", "-1", "-1.0",
+                                 "-1.0000000000000000000000000000000000000000000000000"])
 def test_return_point_valid_returns(ret: str) -> None:
     assert _rp(_D[0], _D[1], ret).simple_return == Decimal(ret)
 
 
-@pytest.mark.parametrize("ret", ["-1", "-1.0", "-1.5", "-100", "NaN", "sNaN", "Infinity", "-Infinity"])
+@pytest.mark.parametrize("ret", ["-1.0000000000000000000000000000000000000000000000001", "-1.5", "-100",
+                                 "NaN", "sNaN", "Infinity", "-Infinity"])
 def test_return_point_rejects_invalid_values(ret: str) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"^simple_return must be a finite Decimal greater than or equal to -1$"):
         _rp(_D[0], _D[1], ret)
 
 
@@ -217,6 +219,82 @@ def test_constructor_validation_is_independent_of_ambient_context() -> None:
     with decimal.localcontext() as ctx:
         ctx.prec = 3
         assert TefasFundReturnSeries(source=source, points=good.points).points == good.points
+
+
+# --- Phase 16B-R1: Decimal representability and rounded -1 -------------------------------
+
+_RANGE_MSG = r"^TEFAS fund return exceeds supported Decimal analytics range$"
+
+
+def test_extreme_positive_return_is_finite_deterministic_and_context_independent() -> None:
+    source = _source(("1E-1000000", "1"))
+    result = build_tefas_fund_return_series(price_series=source)
+    value = result.points[0].simple_return
+    assert type(value) is Decimal and value.is_finite() and value > 0
+    assert value >= Decimal("1E+999999")
+    for prec, rounding in ((4, decimal.ROUND_DOWN), (2, decimal.ROUND_UP), (9, decimal.ROUND_HALF_UP)):
+        with decimal.localcontext() as ctx:
+            ctx.prec = prec
+            ctx.rounding = rounding
+            assert build_tefas_fund_return_series(price_series=source).points == result.points
+
+
+def test_extreme_loss_rounds_to_minus_one_without_zero_price() -> None:
+    source = _source(("1", "1E-1000000"))
+    assert all(p.unit_price > 0 for p in source.points)  # analytical rounding, not a zero price
+    result = build_tefas_fund_return_series(price_series=source)
+    assert result.points[0].simple_return == Decimal("-1")
+    assert result.source is source
+
+
+def test_true_return_above_minus_one_is_not_minus_one_for_ordinary_prices() -> None:
+    assert build_tefas_fund_return_series(price_series=_source(("100", "1"))).points[0].simple_return == \
+        Decimal("-0.99")
+
+
+def test_forged_minus_one_fails_for_ordinary_source_but_succeeds_for_extreme_source() -> None:
+    ordinary = _source(("100", "1"))
+    with pytest.raises(ValueError, match=_MATCH_MSG):
+        TefasFundReturnSeries(source=ordinary, points=(_rp(_D[0], _D[1], "-1"),))
+    extreme = _source(("1", "1E-1000000"))
+    series = TefasFundReturnSeries(source=extreme, points=(_rp(_D[0], _D[1], "-1"),))
+    assert series.points[0].simple_return == Decimal("-1")
+    with pytest.raises(ValueError, match=_MATCH_MSG):
+        TefasFundReturnSeries(source=extreme, points=(_rp(_D[0], _D[1], "-0.99"),))
+
+
+def test_context_uses_the_maximum_decimal_exponent_range() -> None:
+    context = module_under_test._return_context()
+    assert context.Emin == decimal.MIN_EMIN and context.Emax == decimal.MAX_EMAX
+    assert context.prec == 50 and context.rounding == decimal.ROUND_HALF_EVEN
+
+
+def test_result_outside_even_the_maximum_range_fails_closed_with_static_error() -> None:
+    huge = Decimal(f"1E+{decimal.MAX_EMAX}")
+    tiny = Decimal(f"1E-{decimal.MAX_EMAX}")
+    source = _source((str(tiny), str(huge)))
+    assert all(p.unit_price.is_finite() and p.unit_price > 0 for p in source.points)
+    with pytest.raises(ValueError, match=_RANGE_MSG) as info:
+        build_tefas_fund_return_series(price_series=source)
+    assert info.value.__cause__ is None and info.value.__suppress_context__ is True
+    assert str(info.value) == "TEFAS fund return exceeds supported Decimal analytics range"
+    with pytest.raises(ValueError, match=_RANGE_MSG):
+        TefasFundReturnSeries(source=source, points=(_rp(_D[0], _D[1], "1"),))
+
+
+def test_extreme_shrinking_ratio_underflows_to_analytical_minus_one() -> None:
+    huge = Decimal(f"1E+{decimal.MAX_EMAX}")
+    tiny = Decimal(f"1E-{decimal.MAX_EMAX}")
+    result = build_tefas_fund_return_series(price_series=_source((str(huge), str(tiny))))
+    assert result.points[0].simple_return == Decimal("-1")
+
+
+def test_range_error_only_covers_overflow_not_programming_errors(monkeypatch) -> None:
+    def boom(*_a, **_k):
+        raise KeyError("unrelated")
+    monkeypatch.setattr(module_under_test, "_return_context", boom)
+    with pytest.raises(KeyError):
+        build_tefas_fund_return_series(price_series=_source(("1", "2")))
 
 
 # --- source contract / gaps ---------------------------------------------------------

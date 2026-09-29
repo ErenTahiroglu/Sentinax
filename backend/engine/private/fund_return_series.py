@@ -18,6 +18,11 @@ Architectural Invariants:
       and subtraction; it never reads or mutates the ambient `decimal.getcontext()`. The 50-digit precision is an
       analytical contract, NOT money rounding, currency precision, database NUMERIC precision, or display precision.
       Repeating returns (for example 3 -> 4) are deterministic 50-digit-context approximations, not exact Decimals.
+      The context uses Decimal's maximum exponent range (MIN_EMIN/MAX_EMAX). A result beyond even that range fails
+      closed with a static ValueError (never Infinity, float, or unbounded precision).
+    - A stored `simple_return` is `>= -1`: the exact return from strictly positive prices is always `> -1`, but the
+      50-digit approximation of an extremely near-total loss may round to exactly `-1`. That does NOT mean the
+      endpoint price was zero; the series constructor still binds every point to the recomputed source return.
     - `TefasFundReturnSeries` retains the source series by identity and its constructor is self-validating: every
       return point must equal the canonical return recomputed from the adjacent source prices, so manual forgeries
       (wrong dates, wrong value, missing/extra/reordered points, bridging points) are rejected. Return points do
@@ -43,6 +48,7 @@ _ERR_INCOMPLETE = "TEFAS fund return series requires a complete price series"
 _ERR_TOO_FEW = "TEFAS fund return series requires at least two price points"
 _ERR_POINTS_TYPE = "points must be a tuple of exact TefasFundReturnPoint instances"
 _ERR_POINTS_MATCH = "points must match consecutive source price points exactly"
+_ERR_ANALYTICS_RANGE = "TEFAS fund return exceeds supported Decimal analytics range"
 
 
 def _return_context() -> decimal.Context:
@@ -50,8 +56,8 @@ def _return_context() -> decimal.Context:
     return decimal.Context(
         prec=_RETURN_DECIMAL_PRECISION,
         rounding=decimal.ROUND_HALF_EVEN,
-        Emin=-999999,
-        Emax=999999,
+        Emin=decimal.MIN_EMIN,
+        Emax=decimal.MAX_EMAX,
         capitals=1,
         clamp=0,
         flags=[],
@@ -61,7 +67,11 @@ def _return_context() -> decimal.Context:
 
 def _simple_return(start_price: Decimal, end_price: Decimal) -> Decimal:
     context = _return_context()
-    return context.subtract(context.divide(end_price, start_price), Decimal(1))
+    try:
+        return context.subtract(context.divide(end_price, start_price), Decimal(1))
+    except decimal.Overflow:
+        # Only a result beyond even Decimal's maximum exponent range; fail closed, never Infinity or float.
+        raise ValueError(_ERR_ANALYTICS_RANGE) from None
 
 
 @dataclass(frozen=True)
@@ -80,8 +90,8 @@ class TefasFundReturnPoint:
             raise ValueError("end_date must be after start_date")
         if type(self.simple_return) is not Decimal:
             raise TypeError("simple_return must be an exact Decimal instance")
-        if not self.simple_return.is_finite() or not self.simple_return > Decimal(-1):
-            raise ValueError("simple_return must be a finite Decimal greater than -1")
+        if not self.simple_return.is_finite() or not self.simple_return >= Decimal(-1):
+            raise ValueError("simple_return must be a finite Decimal greater than or equal to -1")
 
 
 def _require_complete_source(source: object) -> None:
