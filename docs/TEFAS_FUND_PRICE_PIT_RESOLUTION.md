@@ -199,3 +199,16 @@ The resolution key is entirely invariant to physical database UUIDs and input li
 - **Percentile.** Midrank `100 * (less + equal / 2) / N` over the members' latest simple returns, evaluated as `50 * (2 * less + equal) / N` in an explicit 50-digit `ROUND_HALF_EVEN` context. The result is a percent in [0, 100]. A partial cross-section still yields a percentile, carrying `is_complete == False`.
 - **No annualized dependency.** Within one horizon annualization is monotonic, so ordering cumulative simple returns is equivalent.
 - **Out of scope.** Only the latest rolling point is compared: no historical percentile, persistence, ranking label, score, minimum peer-count policy, candidate-universe discovery, taxonomy normalization or historical category-effective dating.
+
+## Phase 16I — Historical PIT Peer Persistence
+
+`backend/engine/private/fund_peer_persistence.py` aggregates a historical sequence of exact Phase 16H `TefasFundPeerPercentile` objects into a category-relative persistence fraction. Its only private import is `fund_peer_percentile`. It stays outside `PURE_MANIFEST`; tests assert G1, G2, G4 and G5 are clean and that G3 flags only that import.
+
+- **Independent historical observations.** Each percentile must come from its own SYSTEM_AS_OF Phase 16H cross-section, so the contemporaneous category at that cutoff defined the peer group. The current category is never applied backward, and the module makes no resolver or provider calls. A CURRENT_REPORTED percentile (`as_of is None`) is rejected.
+- **Binding.** Every observation targets the same instrument (both `percentile.instrument_id` and the cross-section target) and shares one rolling horizon.
+- **Order.** Canonical order is evaluation month ascending. Months are unique and `as_of` strictly increases with them. The builder canonicalises input order; the constructor requires it and recomputes the score, rejecting forgery.
+- **Category may change.** The label is not required to stay constant. Persistence is relative standing inside the contemporaneous peer category, not category stability.
+- **Formula.** `persistence = count(percentile > 50) / valid percentile observations`, stored as a fraction in [0, 1] in an explicit 50-digit `ROUND_HALF_EVEN` context. A percentile of exactly 50 does not count. There is no minimum observation policy; `observation_count` is exposed.
+- **Coverage debt.** Partial cross-sections stay in the denominator but make `is_complete` false (`partial_cross_section_count`). Calendar months absent between the first and last observation stay absent (no interpolation or carry-forward) and make `is_complete` false (`missing_month_count`).
+- **Limitation.** `is_complete` is relative to the supplied sequence. Candidate-universe completeness remains an upstream limitation from Phase 16H.
+- **Deferred.** Percentile dispersion (no authoritative statistic defined yet) and qualitative persistence labels or score bands (no thresholds defined).
