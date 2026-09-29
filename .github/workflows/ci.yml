@@ -80,9 +80,10 @@ jobs:
           backend/tests/test_risk_evidence_content_match.py \
           -q --disable-socket
 
-    - name: Phase 15C risk taxonomy and binding
+    - name: Phase 15C risk evidence correctness
       run: |
         python -m pytest \
           backend/tests/test_private_domain.py \
           backend/tests/test_risk_evidence_kind_binding.py \
+          backend/tests/test_risk_evidence_cash_schema.py \
           -q --disable-socket
