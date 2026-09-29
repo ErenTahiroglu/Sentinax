@@ -69,6 +69,16 @@ jobs:
           backend/tests/test_no_crypto_path.py \
           -q --disable-socket
 
+    - name: Phase 15A temporal and risk context correctness
+      run: |
+        python -m pytest \
+          backend/tests/test_goal_date.py \
+          backend/tests/test_analysis_horizon.py \
+          backend/tests/test_analysis_pit.py \
+          backend/tests/test_analysis_context.py \
+          backend/tests/test_risk_context.py \
+          -q --disable-socket
+
     - name: Phase 15B risk-evidence regression chain
       run: |
         python -m pytest \
@@ -88,4 +98,7 @@ jobs:
           backend/tests/test_risk_evidence_cash_schema.py \
           backend/tests/test_risk_evidence_cash_resolution.py \
           backend/tests/test_risk_evidence_planned_contribution_schema.py \
+          backend/tests/test_risk_evidence_planned_contribution_resolution.py \
+          backend/tests/test_risk_evidence_investment_goal_schema.py \
+          backend/tests/test_risk_evidence_investment_goal_resolution.py \
           -q --disable-socket
