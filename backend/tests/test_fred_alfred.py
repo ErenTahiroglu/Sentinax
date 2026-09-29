@@ -36,7 +36,7 @@ Coverage:
     30. Current realtime_start query date does not become first availability
     31. Geography migration safe pattern (no silent DEFAULT 'TR')
     32. Availability precision check constraint
-    33. FRED seven registry series remain verified
+    33. FRED nine registry series remain verified
     34. Missing != 0 invariant
     35. MacroSeriesDefinition requires explicit geography (no silent default)
     36. MacroObservationRecord availability_precision defaults to None and validates
@@ -46,6 +46,8 @@ Coverage:
     40. Phase 17E: US_BROAD_DOLLAR_INDEX (DTWEXBGS) verified registry identity
     41. Phase 17E: canonical key resolves to DTWEXBGS in the FRED request and response metadata
     42. Phase 17E: missing broad-dollar value stays missing, real zero stays zero
+    43. Phase 17F: DFII10 / STLFSI4 registry identities, MacroCategory.FINANCIAL_STRESS, migration 006 has no category allow-list
+    44. Phase 17F: canonical keys resolve to DFII10 / STLFSI4; missing != zero; negative stress is valid
 """
 
 import os
@@ -523,9 +525,9 @@ class TestFREDALFREDProviderHardening:
 
     # 10. Registry & Taxonomy Invariants
     def test_33_and_34_registry_and_missing_invariants(self):
-        """Scenario 33 & 34: 7 verified FRED US series and Missing != 0."""
+        """Scenario 33 & 34: 9 verified FRED US series and Missing != 0."""
         fred_series = MacroSeriesRegistry.list_by_provider("FRED_ALFRED")
-        assert len(fred_series) == 7
+        assert len(fred_series) == 9
         for s in fred_series:
             assert s.contract_status == ContractStatus.VERIFIED
             assert s.is_active is True
@@ -602,3 +604,99 @@ class TestFREDALFREDProviderHardening:
         assert missing.effective_date == date(2024, 5, 10)
         zero = await _fetch("0")
         assert zero.status == DataStatus.COMPLETE
+
+    # 12. Phase 17F — Verified U.S. real-rate (DFII10) and financial-stress (STLFSI4) raw inputs
+    def test_43_real_yield_registry_identity(self):
+        d = MacroSeriesRegistry.get("US_TREASURY_REAL_10Y_YIELD")
+        assert d is not None
+        assert d.canonical_key == "US_TREASURY_REAL_10Y_YIELD"
+        assert d.provider == "FRED_ALFRED"
+        assert d.provider_series_code == "DFII10"
+        assert d.category == MacroCategory.INTEREST_RATE
+        assert d.unit == MacroUnit.PERCENT
+        assert d.frequency == MacroFrequency.DAILY
+        assert d.freshness_basis == FreshnessBasis.EFFECTIVE_DATE
+        assert d.source_tier == SourceTier.TIER_1_REGULATORY
+        assert d.geography == "US"
+        assert d.provider_native_units == "Percent"
+        assert d.seasonal_adjustment == "Not Seasonally Adjusted"
+        assert d.origin_source == "Board of Governors of the Federal Reserve System"
+        assert d.release_name == "H.15 Selected Interest Rates"
+        assert d.contract_status == ContractStatus.VERIFIED
+        assert d.is_active is True
+        assert d.expected_release_interval_days == 1
+        assert d.source_url == "https://fred.stlouisfed.org/series/DFII10"
+        assert "inflation-indexed" in d.description.lower() and "10-year" in d.description.lower()
+        assert "FRED" in d.verification_source and "H.15" in d.verification_source
+
+    def test_43_financial_stress_registry_identity(self):
+        d = MacroSeriesRegistry.get("US_FINANCIAL_STRESS_INDEX")
+        assert d is not None
+        assert d.canonical_key == "US_FINANCIAL_STRESS_INDEX"
+        assert d.provider == "FRED_ALFRED"
+        assert d.provider_series_code == "STLFSI4"
+        assert d.category == MacroCategory.FINANCIAL_STRESS
+        assert d.unit == MacroUnit.INDEX_POINTS
+        assert d.frequency == MacroFrequency.WEEKLY
+        assert d.freshness_basis == FreshnessBasis.PUBLISHED_AT
+        assert d.source_tier == SourceTier.TIER_1_REGULATORY
+        assert d.geography == "US"
+        assert d.provider_native_units == "Index"
+        assert d.seasonal_adjustment == "Not Seasonally Adjusted"
+        assert d.origin_source == "Federal Reserve Bank of St. Louis"
+        assert d.release_name == "St. Louis Fed Financial Stress Index"
+        assert d.contract_status == ContractStatus.VERIFIED
+        assert d.is_active is True
+        assert d.expected_release_interval_days == 7
+        assert d.source_url == "https://fred.stlouisfed.org/series/STLFSI4"
+        assert "financial stress index" in d.description.lower()
+        codes = {s.provider_series_code for s in MacroSeriesRegistry.list_all()}
+        assert not codes & {"STLFSI", "STLFSI2", "STLFSI3"}
+
+    def test_43_financial_stress_category_and_no_db_category_allow_list(self):
+        assert MacroCategory.FINANCIAL_STRESS.value == "financial_stress"
+        assert [c.name for c in MacroCategory][:9] == [
+            "FX", "INTEREST_RATE", "INFLATION_CPI", "INFLATION_PPI", "LABOR", "OUTPUT", "INDUSTRIAL_ACTIVITY",
+            "MONEY_SUPPLY", "RESERVES"]
+        assert len(MacroCategory) == 10
+        migrations = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../supabase/migrations"))
+        with open(os.path.join(migrations, "006_macro_series.sql"), "r", encoding="utf-8") as f:
+            sql = "\n".join(line.split("--", 1)[0] for line in f.read().splitlines())
+        import re
+        assert re.search(r"category\s+VARCHAR\(32\)\s+NOT\s+NULL", sql, re.I)
+        assert not re.search(r"CHECK\s*\([^)]*\bcategory\b", sql, re.I)
+        assert not re.search(r"CONSTRAINT\s+\w*categor\w*", sql, re.I)
+        # no later migration introduces a category allow-list either
+        for name in sorted(os.listdir(migrations)):
+            if name.endswith(".sql"):
+                text = "\n".join(l.split("--", 1)[0] for l in open(os.path.join(migrations, name), encoding="utf-8"))
+                assert not re.search(r"CHECK\s*\(\s*category\b", text, re.I), name
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key,code,origin,release", [
+        ("US_TREASURY_REAL_10Y_YIELD", "DFII10", "Board of Governors of the Federal Reserve System",
+         "H.15 Selected Interest Rates"),
+        ("US_FINANCIAL_STRESS_INDEX", "STLFSI4", "Federal Reserve Bank of St. Louis",
+         "St. Louis Fed Financial Stress Index"),
+    ])
+    async def test_44_canonical_key_resolves_and_value_semantics(self, key, code, origin, release):
+        async def _fetch(value):
+            mock_client = AsyncMock(spec=httpx.AsyncClient)
+            mock_client.get.return_value = MagicMock(
+                status_code=200,
+                json=MagicMock(return_value={"observations": [{"date": "2024-05-10", "value": value}]}),
+            )
+            provider = FREDALFREDProvider(api_key="key", http_client=mock_client)
+            resp = await provider.fetch(FetchContext("MACRO_US", provider_symbol=key))
+            return resp, mock_client
+
+        resp, client = await _fetch("1.25")
+        client.get.assert_awaited_once()
+        assert client.get.call_args.kwargs["params"]["series_id"] == code
+        assert resp.status == DataStatus.COMPLETE
+        assert resp.source_metadata["origin_source"] == origin
+        assert resp.source_metadata["release_name"] == release
+        assert resp.source_metadata["series_id"] == code
+        assert (await _fetch("."))[0].status == DataStatus.UNAVAILABLE
+        assert (await _fetch("0"))[0].status == DataStatus.COMPLETE
+        assert (await _fetch("-0.75"))[0].status == DataStatus.COMPLETE

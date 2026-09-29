@@ -21,6 +21,8 @@ Verified Series Catalog:
         * US_INDUSTRIAL_PRODUCTION (INDPRO) -> VERIFIED
         * US_EFFECTIVE_FED_FUNDS_RATE (DFF) -> VERIFIED
         * US_BROAD_DOLLAR_INDEX (DTWEXBGS) -> VERIFIED
+        * US_TREASURY_REAL_10Y_YIELD (DFII10) -> VERIFIED
+        * US_FINANCIAL_STRESS_INDEX (STLFSI4) -> VERIFIED
     - ECB Data Portal (EA):
         * EA_EURUSD_REFERENCE_RATE (EXR/D.USD.EUR.SP00.A) -> VERIFIED
         * EA_ECB_DEPOSIT_FACILITY_RATE (FM/D.U2.EUR.4F.KR.DFR.LEV) -> VERIFIED
@@ -430,6 +432,50 @@ class MacroSeriesRegistry:
             source_url="https://fred.stlouisfed.org/series/DTWEXBGS",
             verification_source="Federal Reserve Bank of St. Louis FRED API Series Metadata; Federal Reserve Board H.10 Foreign Exchange Rates",
             verification_notes="Nominal Broad U.S. Dollar Index. Daily observations are released through the weekly H.10/FRED cycle. Not DXY; not the discontinued DTWEXB/TWEXB.",
+            is_active=True,
+        ),
+        "US_TREASURY_REAL_10Y_YIELD": MacroSeriesDefinition(
+            canonical_key="US_TREASURY_REAL_10Y_YIELD",
+            provider="FRED_ALFRED",
+            provider_series_code="DFII10",
+            category=MacroCategory.INTEREST_RATE,
+            description="Market Yield on U.S. Treasury Securities at 10-Year Constant Maturity, Quoted on an Investment Basis, Inflation-Indexed (Percent, NSA)",
+            unit=MacroUnit.PERCENT,
+            frequency=MacroFrequency.DAILY,
+            freshness_basis=FreshnessBasis.EFFECTIVE_DATE,
+            source_tier=SourceTier.TIER_1_REGULATORY,
+            geography="US",
+            provider_native_units="Percent",
+            seasonal_adjustment="Not Seasonally Adjusted",
+            origin_source="Board of Governors of the Federal Reserve System",
+            release_name="H.15 Selected Interest Rates",
+            contract_status=ContractStatus.VERIFIED,
+            expected_release_interval_days=1,
+            source_url="https://fred.stlouisfed.org/series/DFII10",
+            verification_source="Federal Reserve Bank of St. Louis FRED API Series Metadata; Federal Reserve Board H.15 Selected Interest Rates",
+            verification_notes="10-year inflation-indexed Treasury constant-maturity market yield (raw real-yield evidence). Not the policy rate, breakeven inflation or the nominal 10Y yield.",
+            is_active=True,
+        ),
+        "US_FINANCIAL_STRESS_INDEX": MacroSeriesDefinition(
+            canonical_key="US_FINANCIAL_STRESS_INDEX",
+            provider="FRED_ALFRED",
+            provider_series_code="STLFSI4",
+            category=MacroCategory.FINANCIAL_STRESS,
+            description="St. Louis Fed Financial Stress Index (Index, NSA, weekly ending Friday)",
+            unit=MacroUnit.INDEX_POINTS,
+            frequency=MacroFrequency.WEEKLY,
+            freshness_basis=FreshnessBasis.PUBLISHED_AT,
+            source_tier=SourceTier.TIER_1_REGULATORY,
+            geography="US",
+            provider_native_units="Index",
+            seasonal_adjustment="Not Seasonally Adjusted",
+            origin_source="Federal Reserve Bank of St. Louis",
+            release_name="St. Louis Fed Financial Stress Index",
+            contract_status=ContractStatus.VERIFIED,
+            expected_release_interval_days=7,
+            source_url="https://fred.stlouisfed.org/series/STLFSI4",
+            verification_source="Federal Reserve Bank of St. Louis FRED API Series Metadata; St. Louis Fed Financial Stress Index (STLFSI4)",
+            verification_notes="Officially published composite index (STLFSI4 only; not STLFSI/STLFSI2/STLFSI3). Raw series, not Sentinax FinancialStress_t.",
             is_active=True,
         ),
 

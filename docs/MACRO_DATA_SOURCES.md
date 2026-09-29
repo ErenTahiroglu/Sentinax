@@ -169,3 +169,22 @@ Phase 17E activates the broad-USD evidence input as a registry contract only.
 - **No provider change.** The existing FRED provider already resolves a verified registry key to its provider series code, so `US_BROAD_DOLLAR_INDEX` is requested as `series_id=DTWEXBGS` and its response metadata carries the registry `origin_source` and `release_name`. A missing value (`.`) stays UNAVAILABLE, never zero; a real `0` stays an observation.
 - **No DXY.** The discontinued `DTWEXB` / `TWEXB` and the ICE DXY are not used, aliased or used as fallback.
 - **Not included.** No strength, momentum, change, z-score or trend transform, no regime interpretation and no portfolio effect. The legacy FRED provider float parsing is unchanged; Phase 17 exact analytics must still consume persisted PIT-safe Decimal facts (`MacroStateInputFact`), never provider floats.
+
+## 11. Phase 17F — Verified U.S. Real-Rate & Financial-Stress Inputs
+
+Phase 17F activates two more raw evidence inputs as registry contracts only, both delivered by the existing FRED/ALFRED provider (no provider change).
+
+### Real yield
+- `US_TREASURY_REAL_10Y_YIELD` -> FRED `DFII10`: Market Yield on U.S. Treasury Securities at 10-Year Constant Maturity, Quoted on an Investment Basis, Inflation-Indexed. Origin: Board of Governors of the Federal Reserve System, release `H.15 Selected Interest Rates`. Daily, Percent, Not Seasonally Adjusted, category `INTEREST_RATE`, `freshness_basis=EFFECTIVE_DATE`, `expected_release_interval_days=1`.
+- It is raw market real-yield evidence. It is not the policy rate, an inflation expectation, breakeven inflation or the nominal 10Y yield, and it is not combined with `DFF`, CPI or the curve slopes (no real policy stance, no change or regime).
+
+### Financial stress
+- `US_FINANCIAL_STRESS_INDEX` -> FRED `STLFSI4`: St. Louis Fed Financial Stress Index. Origin: Federal Reserve Bank of St. Louis, release `St. Louis Fed Financial Stress Index`. Weekly (ending Friday), Index, Not Seasonally Adjusted, new category `MacroCategory.FINANCIAL_STRESS`, `freshness_basis=PUBLISHED_AT`, `expected_release_interval_days=7`, `TIER_1_REGULATORY` (an official Federal Reserve Bank product; `TIER_4_DERIVED` is reserved for Sentinax-derived computation).
+- STLFSI4 is itself the official composite. Its internals are not reproduced, and the older STLFSI / STLFSI2 / STLFSI3 versions are not used. Negative values are valid observations. No threshold, band, label or signal is attached.
+- The raw series is not Sentinax's future `FinancialStress_t` state axis.
+- No database migration is needed for the new category: migration 006 stores `category VARCHAR(32) NOT NULL` with no category allow-list `CHECK` (a test guards this across all migrations).
+
+### Common
+- A missing value (`.`) stays UNAVAILABLE, zero stays an observation. `published_at` is never fabricated; freshness uses the existing fallback chain.
+- These close raw evidence gaps only: no normalization, macro-state construction, interpretation or portfolio effect.
+- Provider floats remain non-authoritative for Phase 17 analytics; exact analytics still consume persisted PIT-safe `MacroStateInputFact` values.
