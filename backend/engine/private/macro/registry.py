@@ -20,6 +20,7 @@ Verified Series Catalog:
         * US_REAL_GDP (GDPC1) -> VERIFIED
         * US_INDUSTRIAL_PRODUCTION (INDPRO) -> VERIFIED
         * US_EFFECTIVE_FED_FUNDS_RATE (DFF) -> VERIFIED
+        * US_BROAD_DOLLAR_INDEX (DTWEXBGS) -> VERIFIED
     - ECB Data Portal (EA):
         * EA_EURUSD_REFERENCE_RATE (EXR/D.USD.EUR.SP00.A) -> VERIFIED
         * EA_ECB_DEPOSIT_FACILITY_RATE (FM/D.U2.EUR.4F.KR.DFR.LEV) -> VERIFIED
@@ -407,6 +408,28 @@ class MacroSeriesRegistry:
             source_url="https://fred.stlouisfed.org/series/DFF",
             verification_source="Federal Reserve Bank of St. Louis FRED API Series Metadata",
             verification_notes="Daily Effective Federal Funds Rate.",
+            is_active=True,
+        ),
+        "US_BROAD_DOLLAR_INDEX": MacroSeriesDefinition(
+            canonical_key="US_BROAD_DOLLAR_INDEX",
+            provider="FRED_ALFRED",
+            provider_series_code="DTWEXBGS",
+            category=MacroCategory.FX,
+            description="Nominal Broad U.S. Dollar Index (Index Jan 2006=100, NSA, daily observations)",
+            unit=MacroUnit.INDEX_POINTS,
+            frequency=MacroFrequency.DAILY,
+            freshness_basis=FreshnessBasis.EFFECTIVE_DATE,
+            source_tier=SourceTier.TIER_1_REGULATORY,
+            geography="US",
+            provider_native_units="Index Jan 2006=100",
+            seasonal_adjustment="Not Seasonally Adjusted",
+            origin_source="Board of Governors of the Federal Reserve System",
+            release_name="H.10 Foreign Exchange Rates",
+            contract_status=ContractStatus.VERIFIED,
+            expected_release_interval_days=7,
+            source_url="https://fred.stlouisfed.org/series/DTWEXBGS",
+            verification_source="Federal Reserve Bank of St. Louis FRED API Series Metadata; Federal Reserve Board H.10 Foreign Exchange Rates",
+            verification_notes="Nominal Broad U.S. Dollar Index. Daily observations are released through the weekly H.10/FRED cycle. Not DXY; not the discontinued DTWEXB/TWEXB.",
             is_active=True,
         ),
 

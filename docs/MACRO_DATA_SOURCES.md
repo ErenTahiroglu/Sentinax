@@ -159,3 +159,13 @@ Phase 17D adds the first macro calculation, `backend/engine/private/macro/us_tre
 - **Independent availability.** A slope needs only its two numeric legs; a missing 3M does not block 10Y-2Y. PARTIAL, DEGRADED and STALE facts with numeric values are used as-is, with no aggregate status or confidence invented.
 - **Signed evidence.** A negative spread is a legitimate number and zero is a real value. There is no inversion flag, label, regime, score, probability, recession view or portfolio action. Component facts are retained by identity for provenance.
 - **Still deferred.** Normalization, structural breaks, yield-curve interpretation, GrowthImpulse / PolicyInflationState / FinancialStress, and any tactical use.
+
+## 10. Phase 17E — Verified Broad U.S. Dollar Input
+
+Phase 17E activates the broad-USD evidence input as a registry contract only.
+
+- **Series.** Canonical key `US_BROAD_DOLLAR_INDEX`, provider `FRED_ALFRED`, FRED series `DTWEXBGS` (Nominal Broad U.S. Dollar Index). Origin: Board of Governors of the Federal Reserve System, release `H.10 Foreign Exchange Rates`. Category FX, unit `INDEX_POINTS`, native unit `Index Jan 2006=100`, Not Seasonally Adjusted, geography `US`, VERIFIED and active.
+- **Cadence.** Observations are daily (`MacroFrequency.DAILY`), but they reach FRED through the weekly H.10 release cycle, so `expected_release_interval_days = 7`. Observation frequency and release interval are distinct. `freshness_basis` is `EFFECTIVE_DATE`, as for the other daily FRED series (`DFF`); no new freshness mechanism and no publication timestamp is inferred (`published_at` stays `None` in the provider response).
+- **No provider change.** The existing FRED provider already resolves a verified registry key to its provider series code, so `US_BROAD_DOLLAR_INDEX` is requested as `series_id=DTWEXBGS` and its response metadata carries the registry `origin_source` and `release_name`. A missing value (`.`) stays UNAVAILABLE, never zero; a real `0` stays an observation.
+- **No DXY.** The discontinued `DTWEXB` / `TWEXB` and the ICE DXY are not used, aliased or used as fallback.
+- **Not included.** No strength, momentum, change, z-score or trend transform, no regime interpretation and no portfolio effect. The legacy FRED provider float parsing is unchanged; Phase 17 exact analytics must still consume persisted PIT-safe Decimal facts (`MacroStateInputFact`), never provider floats.

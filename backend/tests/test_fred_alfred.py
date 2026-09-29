@@ -36,13 +36,16 @@ Coverage:
     30. Current realtime_start query date does not become first availability
     31. Geography migration safe pattern (no silent DEFAULT 'TR')
     32. Availability precision check constraint
-    33. FRED six registry series remain verified
+    33. FRED seven registry series remain verified
     34. Missing != 0 invariant
     35. MacroSeriesDefinition requires explicit geography (no silent default)
     36. MacroObservationRecord availability_precision defaults to None and validates
     37. to_macro_observation fails fast without retrieved_at timestamp (no now() fabrication)
     38. to_macro_observation resolves source_tier from provenance/registry without silent TIER_1
     39. Raw non-registry FRED query does not fabricate origin_source as FRED
+    40. Phase 17E: US_BROAD_DOLLAR_INDEX (DTWEXBGS) verified registry identity
+    41. Phase 17E: canonical key resolves to DTWEXBGS in the FRED request and response metadata
+    42. Phase 17E: missing broad-dollar value stays missing, real zero stays zero
 """
 
 import os
@@ -520,9 +523,9 @@ class TestFREDALFREDProviderHardening:
 
     # 10. Registry & Taxonomy Invariants
     def test_33_and_34_registry_and_missing_invariants(self):
-        """Scenario 33 & 34: 6 verified FRED US series and Missing != 0."""
+        """Scenario 33 & 34: 7 verified FRED US series and Missing != 0."""
         fred_series = MacroSeriesRegistry.list_by_provider("FRED_ALFRED")
-        assert len(fred_series) == 6
+        assert len(fred_series) == 7
         for s in fred_series:
             assert s.contract_status == ContractStatus.VERIFIED
             assert s.is_active is True
@@ -538,3 +541,64 @@ class TestFREDALFREDProviderHardening:
 
         assert FREDALFREDProvider._parse_decimal(".") is None
         assert FREDALFREDProvider._parse_decimal("0.0") == 0.0
+
+    # 11. Phase 17E — Verified broad U.S. dollar index (Federal Reserve H.10 via FRED DTWEXBGS)
+    def test_40_broad_dollar_index_registry_identity(self):
+        d = MacroSeriesRegistry.get("US_BROAD_DOLLAR_INDEX")
+        assert d is not None
+        assert d.canonical_key == "US_BROAD_DOLLAR_INDEX"
+        assert d.provider == "FRED_ALFRED"
+        assert d.provider_series_code == "DTWEXBGS"
+        assert d.category == MacroCategory.FX
+        assert d.unit == MacroUnit.INDEX_POINTS
+        assert d.frequency == MacroFrequency.DAILY
+        assert d.geography == "US"
+        assert d.contract_status == ContractStatus.VERIFIED
+        assert d.is_active is True
+        assert d.provider_native_units == "Index Jan 2006=100"
+        assert d.seasonal_adjustment == "Not Seasonally Adjusted"
+        assert d.origin_source == "Board of Governors of the Federal Reserve System"
+        assert d.release_name == "H.10 Foreign Exchange Rates"
+        assert d.source_tier == SourceTier.TIER_1_REGULATORY
+        assert d.freshness_basis == FreshnessBasis.EFFECTIVE_DATE  # same as the other daily FRED series (DFF)
+        assert d.expected_release_interval_days == 7  # daily observations, weekly H.10/FRED release cadence
+        assert d.source_url == "https://fred.stlouisfed.org/series/DTWEXBGS"
+        assert "nominal broad u.s. dollar index" in d.description.lower()
+        assert "FRED" in d.verification_source and "H.10" in d.verification_source
+        codes = {s.provider_series_code for s in MacroSeriesRegistry.list_all()}
+        assert not codes & {"DTWEXB", "TWEXB", "DXY"}
+        assert MacroSeriesRegistry.get("US_DXY") is None
+
+    @pytest.mark.asyncio
+    async def test_41_broad_dollar_canonical_key_resolves_to_dtwexbgs(self):
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"observations": [{"date": "2024-05-10", "value": "120.1234"}]}),
+        )
+        provider = FREDALFREDProvider(api_key="key", http_client=mock_client)
+        resp = await provider.fetch(FetchContext("MACRO_US", provider_symbol="US_BROAD_DOLLAR_INDEX"))
+
+        mock_client.get.assert_awaited_once()
+        _, kwargs = mock_client.get.call_args
+        assert kwargs["params"]["series_id"] == "DTWEXBGS"
+        assert resp.source_metadata["origin_source"] == "Board of Governors of the Federal Reserve System"
+        assert resp.source_metadata["release_name"] == "H.10 Foreign Exchange Rates"
+        assert resp.source_metadata["series_id"] == "DTWEXBGS"
+
+    @pytest.mark.asyncio
+    async def test_42_broad_dollar_missing_is_not_zero_and_zero_is_real(self):
+        async def _fetch(value):
+            mock_client = AsyncMock(spec=httpx.AsyncClient)
+            mock_client.get.return_value = MagicMock(
+                status_code=200,
+                json=MagicMock(return_value={"observations": [{"date": "2024-05-10", "value": value}]}),
+            )
+            provider = FREDALFREDProvider(api_key="key", http_client=mock_client)
+            return await provider.fetch(FetchContext("MACRO_US", provider_symbol="US_BROAD_DOLLAR_INDEX"))
+
+        missing = await _fetch(".")
+        assert missing.status == DataStatus.UNAVAILABLE
+        assert missing.effective_date == date(2024, 5, 10)
+        zero = await _fetch("0")
+        assert zero.status == DataStatus.COMPLETE
