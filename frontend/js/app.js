@@ -16,6 +16,7 @@ import {
 } from './utils.js';
 import { checkServerHealth } from './network/api.js';
 import { toggleNotifications } from './components/Notifications.js';
+import { setupAuthModal } from './network/supabaseClient.js';
 
 class App {
     constructor() {
@@ -37,6 +38,7 @@ class App {
 
         // 3. Global Static Bindings (Header/Sidebar)
         this.bindStaticUI();
+        setupAuthModal();
 
         // 4. Background Services
         this.checkHealth();

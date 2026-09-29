@@ -4,7 +4,7 @@
  * Bu dosya, sistemin yeni otonom kart ve tablo yapılarını içerir.
  */
 
-import { BaseComponent } from './BaseComponent.js';
+import { appState } from '../core/appState.js';
 
 /**
  * 🎴 <x-analysis-card>
@@ -143,57 +143,24 @@ export class AnalysisCard extends HTMLElement {
 
 /**
  * 📦 <x-analysis-grid>
- * Tüm kartları yöneten konteyner.
+ * Sonuç kartlarının konteyneri (#results-grid). Render sahibi ResultsComponent'tir;
+ * bu eleman yalnızca geçerli bir DOM konteyneridir.
  */
-export class AnalysisGrid extends BaseComponent {
-    constructor() {
-        super();
-        this.innerHTML = '<div class="results-grid" id="comp-results-grid"></div>';
-        this.grid = this.querySelector('#comp-results-grid');
-    }
-
-    connectedCallback() {
-        if (window.AppState) {
-            this._unsubscribe = window.AppState.subscribe("results", (val) => {
-                this.render(val);
-            });
-        }
-    }
-
-    disconnectedCallback() {
-        if (this._unsubscribe) {
-            this._unsubscribe();
-            this._unsubscribe = null;
-        }
-    }
-
-    render(results) {
-        this.grid.innerHTML = '';
-        if (!results || results.length === 0) {
-            this.grid.innerHTML = `
-                <div class="empty-state">
-                    <i class="fas fa-folder-open"></i>
-                    <h3>Henüz Analiz Yok</h3>
-                    <p>Portföyünüzü oluşturun veya yukarıdan hisse sembolü girerek ilk analizinizi başlatın.</p>
-                </div>
-            `;
-            return;
-        }
-        results.forEach(res => {
-            const card = document.createElement('x-analysis-card');
-            card.data = res;
-            this.grid.appendChild(card);
-        });
-    }
-}
+export class AnalysisGrid extends HTMLElement {}
 
 /**
  * 📊 <x-analysis-table>
  * Rasyonel tablo görünümü.
  */
-export class AnalysisTable extends BaseComponent {
-    constructor() {
-        super();
+export class AnalysisTable extends HTMLElement {
+    connectedCallback() {
+        if (!this.body) this.build();
+        this._unsubscribe = appState.subscribe("results", (val) => {
+            this.render(val);
+        });
+    }
+
+    build() {
         this.innerHTML = `
             <div class="summary-container glass-panel table-responsive">
                 <table class="summary-table">
@@ -216,14 +183,6 @@ export class AnalysisTable extends BaseComponent {
             </div>
         `;
         this.body = this.querySelector('#comp-summary-body');
-    }
-
-    connectedCallback() {
-        if (window.AppState) {
-            this._unsubscribe = window.AppState.subscribe("results", (val) => {
-                this.render(val);
-            });
-        }
     }
 
     disconnectedCallback() {
