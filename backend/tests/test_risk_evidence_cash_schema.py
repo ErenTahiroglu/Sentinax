@@ -283,7 +283,7 @@ def test_decoder_rejects_non_exact_bytes(bad) -> None:
 
 
 @pytest.mark.parametrize("content", [b"\xff\xfe", b"", b"{", b"nul", b"\xef\xbb\xbf" + _LITERAL,
-                                     _LITERAL.replace(b'"1234.5"', b"NaN"), b"[" * 100000])
+                                     _LITERAL.replace(b'"1234.5"', b"NaN"), b"[" * 4000])
 def test_invalid_utf8_or_json(content: bytes) -> None:
     with pytest.raises(ValueError, match=_JSON_MSG):
         decode_cash_balance_risk_fact(content)
@@ -518,3 +518,96 @@ def test_no_composition_with_evidence_chain() -> None:
                    "backend.engine.private.risk_evidence_kind_binding",
                    "backend.engine.private.risk_evidence_resolution"):
         assert banned not in imports
+
+
+# --- Phase 15C.3-R1: resource ceiling ---------------------------------------
+
+_SIZE_BALANCE_MSG = r"^balance canonical representation exceeds maximum supported size$"
+_SIZE_CONTENT_MSG = r"^cash balance risk evidence content exceeds maximum supported size$"
+
+
+def _forbid(*_args, **_kwargs):
+    raise AssertionError("expensive operation reached")
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["1E+999999999", "1E-999999999", "0E-999999999", "9" * 5000, "1E+4200", "1E-4200",
+     "1" + "0" * 4200, "0." + "0" * 4200 + "1"],
+)
+def test_oversized_decimal_rejected_before_fixed_point_format(monkeypatch, text: str) -> None:
+    fact = _fact(balance=Decimal(text))
+    # If the encoder reached format(..., "f") the sentinel would raise AssertionError.
+    monkeypatch.setattr(module_under_test, "format", _forbid, raising=False)
+    with pytest.raises(ValueError, match=_SIZE_BALANCE_MSG):
+        encode_cash_balance_risk_fact(fact)
+
+
+def test_oversize_error_does_not_leak_decimal() -> None:
+    with pytest.raises(ValueError) as info:
+        encode_cash_balance_risk_fact(_fact(balance=Decimal("1E+999999999")))
+    assert "999999999" not in str(info.value)
+
+
+def test_compact_zero_with_positive_exponent_is_cheap_and_valid() -> None:
+    out = encode_cash_balance_risk_fact(_fact(balance=Decimal("0E+999999999")))
+    assert b'"balance":"0"' in out
+
+
+def test_large_but_safe_decimals_round_trip() -> None:
+    for balance in (Decimal("9" * 3000), Decimal("1" + "0" * 3000), Decimal("0." + "0" * 2000 + "7"),
+                    Decimal("1E+3000"), Decimal("123456789012345678901234567890.123456789012345678901234567890")):
+        fact = _fact(balance=balance)
+        encoded = encode_cash_balance_risk_fact(fact)
+        assert len(encoded) <= 4096
+        decoded = decode_cash_balance_risk_fact(encoded)
+        assert decoded == fact
+        assert encode_cash_balance_risk_fact(decoded) == encoded
+
+
+def test_ceiling_boundary_between_preformat_and_content_checks() -> None:
+    # Passes the pre-format estimate but the full envelope exceeds the ceiling.
+    borderline = _fact(balance=Decimal("9" * 3950))
+    with pytest.raises(ValueError, match=_SIZE_CONTENT_MSG):
+        encode_cash_balance_risk_fact(borderline)
+    # Clearly below: succeeds.
+    assert len(encode_cash_balance_risk_fact(_fact(balance=Decimal("9" * 3500)))) <= 4096
+
+
+def test_existing_literal_bytes_unchanged() -> None:
+    assert encode_cash_balance_risk_fact(_fact()) == _LITERAL
+    assert decode_cash_balance_risk_fact(_LITERAL) == _fact()
+
+
+def test_oversized_decoder_content_rejected_before_parsing(monkeypatch) -> None:
+    content = b" " * 4097
+    assert type(content) is bytes and len(content) == 4097
+    monkeypatch.setattr(json, "loads", _forbid)
+    with pytest.raises(ValueError, match=_SIZE_CONTENT_MSG):
+        decode_cash_balance_risk_fact(content)
+    with pytest.raises(ValueError, match=_SIZE_CONTENT_MSG):
+        decode_cash_balance_risk_fact(_LITERAL + b" " * 4096)
+
+
+def test_decoder_size_gate_precedes_utf8_validation(monkeypatch) -> None:
+    monkeypatch.setattr(json, "loads", _forbid)
+    with pytest.raises(ValueError, match=_SIZE_CONTENT_MSG):
+        decode_cash_balance_risk_fact(b"\xff" * 5000)
+
+
+def test_content_at_exactly_ceiling_reaches_parser() -> None:
+    with pytest.raises(ValueError, match=_ENVELOPE_MSG):
+        decode_cash_balance_risk_fact(b"[" + b" " * 4094 + b"]")
+    assert len(b"[" + b" " * 4094 + b"]") == 4096
+
+
+def test_type_check_still_precedes_size_check() -> None:
+    with pytest.raises(TypeError, match=_BYTES_MSG):
+        decode_cash_balance_risk_fact(bytearray(b" " * 5000))  # type: ignore[arg-type]
+
+
+def test_resource_ceiling_is_not_a_fact_rule() -> None:
+    # The fact still represents any exact finite non-negative Decimal.
+    fact = _fact(balance=Decimal("1E+999999999"))
+    assert fact.balance == Decimal("1E+999999999")
+    assert module_under_test._MAX_CANONICAL_CONTENT_BYTES == 4096

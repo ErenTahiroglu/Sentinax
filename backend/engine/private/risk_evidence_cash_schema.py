@@ -24,6 +24,12 @@ Architectural Invariants:
       payload key sets; exact kind and schema version; exact scalar types (balance is a JSON string, never a
       number); then re-encode-and-compare so exactly one byte representation exists per fact.
     - Missing evidence is NOT representable here: it stays `MissingRiskEvidence` in the binding chain.
+    - Resource ceiling: canonical content is at most `_MAX_CANONICAL_CONTENT_BYTES` (4096) bytes. This is a
+      serialization/wire-size bound only: it is NOT financial precision, NOT PostgreSQL NUMERIC semantics,
+      NOT a maximum cash balance, and NOT a risk threshold; `CashBalanceRiskFact` still represents any exact
+      finite non-negative Decimal. The encoder estimates the fixed-point size from `Decimal.as_tuple()` and
+      rejects oversized values BEFORE `format(..., "f")`; the decoder checks length BEFORE UTF-8 decoding and
+      JSON parsing. `schema_version` stays 1: every in-budget v1 fact keeps byte-identical canonical form.
     - Static error strings only (no raw content, repr, str, type names, or parser text).
     - No scoring, level, suitability, required-risk, or overall-risk semantics.
 """
@@ -39,6 +45,8 @@ from uuid import UUID
 
 from backend.engine.private.domain import Currency, PortfolioMode
 
+# Wire/serialization resource ceiling only (not financial precision or an economic maximum).
+_MAX_CANONICAL_CONTENT_BYTES = 4096
 _KIND_VALUE = "cash_balance"
 _SCHEMA_VERSION = 1
 _ENVELOPE_KEYS = frozenset({"kind", "schema_version", "payload"})
@@ -48,6 +56,8 @@ _PAYLOAD_KEYS = frozenset(
 # Canonical non-negative decimal text; excludes signs, exponents, redundant zeros.
 _CANONICAL_BALANCE_RE = re.compile(r"(0|[1-9][0-9]*)(\.[0-9]*[1-9])?\Z")
 
+_ERR_BALANCE_SIZE = "balance canonical representation exceeds maximum supported size"
+_ERR_CONTENT_SIZE = "cash balance risk evidence content exceeds maximum supported size"
 _ERR_FACT_TYPE = "fact must be an exact CashBalanceRiskFact instance"
 _ERR_BYTES = "content must be exact bytes"
 _ERR_JSON = "cash balance risk evidence content must be valid canonical UTF-8 JSON"
@@ -97,7 +107,26 @@ def _require_aware_datetime(value: object) -> None:
         raise TypeError(message) from None
 
 
+def _fixed_point_length_upper_bound(value: Decimal) -> int:
+    """
+    Allocation-free upper bound on `len(format(value, "f"))` for a finite Decimal,
+    computed from the coefficient digit count and exponent only.
+    """
+    _sign, digits, exponent = value.as_tuple()
+    digit_count = len(digits)
+    sign_chars = 1
+    if exponent >= 0:
+        if value.is_zero():
+            return sign_chars + 1  # zero with a non-negative exponent formats as "0"
+        return sign_chars + digit_count + exponent
+    if digit_count + exponent > 0:
+        return sign_chars + digit_count + 1  # integer digits + "." + fraction digits
+    return sign_chars + 2 - exponent  # "0." + leading fractional zeros + digits
+
+
 def _canonical_decimal_text(value: Decimal) -> str:
+    if _fixed_point_length_upper_bound(value) > _MAX_CANONICAL_CONTENT_BYTES:
+        raise ValueError(_ERR_BALANCE_SIZE)
     text = format(value, "f")
     if "." in text:
         text = text.rstrip("0").rstrip(".")
@@ -127,13 +156,16 @@ def encode_cash_balance_risk_fact(fact: CashBalanceRiskFact) -> bytes:
             "as_of_recorded_at": as_of,
         },
     }
-    return json.dumps(
+    encoded = json.dumps(
         envelope,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
+    if len(encoded) > _MAX_CANONICAL_CONTENT_BYTES:
+        raise ValueError(_ERR_CONTENT_SIZE)
+    return encoded
 
 
 def _reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -153,6 +185,8 @@ def decode_cash_balance_risk_fact(content: bytes) -> CashBalanceRiskFact:
     """Decode canonical envelope bytes into a fact, failing closed on anything non-canonical."""
     if type(content) is not bytes:
         raise TypeError(_ERR_BYTES)
+    if len(content) > _MAX_CANONICAL_CONTENT_BYTES:
+        raise ValueError(_ERR_CONTENT_SIZE)
 
     try:
         text = content.decode("utf-8")
