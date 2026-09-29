@@ -212,3 +212,18 @@ The resolution key is entirely invariant to physical database UUIDs and input li
 - **Coverage debt.** Partial cross-sections stay in the denominator but make `is_complete` false (`partial_cross_section_count`). Calendar months absent between the first and last observation stay absent (no interpolation or carry-forward) and make `is_complete` false (`missing_month_count`).
 - **Limitation.** `is_complete` is relative to the supplied sequence. Candidate-universe completeness remains an upstream limitation from Phase 16H.
 - **Deferred.** Percentile dispersion (no authoritative statistic defined yet) and qualitative persistence labels or score bands (no thresholds defined).
+
+## Phase 16J — Historical TEFAS Expected Shortfall
+
+`backend/engine/private/fund_expected_shortfall.py` computes an empirical historical VaR and Expected Shortfall from one exact Phase 16D `TefasFundRollingReturnSeries`. Its only private import is `fund_rolling_returns`. It stays outside `PURE_MANIFEST`; tests assert G1, G2, G4 and G5 are clean and that G3 flags only that import.
+
+- **Horizon-specific.** The source is the 12M, 36M or 60M rolling cumulative-return sample. Each horizon is a separate metric and is never annualized or converted between horizons.
+- **Explicit confidence.** `confidence_level` is a mandatory exact finite `Decimal` fraction with `0 < c < 1` (for example `0.95`, never `95`). There is no default.
+- **Loss.** `loss = -return`, computed with the context-independent `copy_negate`. Losses are never floored at zero, so a profitable window has a negative loss.
+- **Empirical VaR.** Nearest-rank: with losses sorted ascending and `k = ceil(alpha * N)`, `VaR = L(k)`. `k` is computed by exact integer arithmetic from `confidence_level.as_integer_ratio()` (no float, no ambient context, no interpolation).
+- **Expected Shortfall.** The exact mean of ALL losses `>= VaR`, so ties at the threshold are included. The tail can therefore hold more than `(1 - alpha) * N` observations. The sum and mean use an explicit 50-digit `ROUND_HALF_EVEN` context with maximum exponent range; only `decimal.Overflow` is translated.
+- **Availability.** An empty rolling series gives `value_at_risk = None` and `expected_shortfall = None` (never zero). `observation_count` and `tail_count` are derived properties.
+- **Range.** VaR and ES are at most 1 (a total-loss window has loss 1) and have no finite lower bound. An all-gain history yields negative VaR and ES; this is not missing data. `expected_shortfall >= value_at_risk` always.
+- **Constructor.** It recomputes the canonical VaR and ES through the same helper as the builder and rejects forged values.
+- **Caveats.** Phase 16D windows overlap, so this is a descriptive empirical tail diagnostic over observed rolling windows. It does not imply independent observations, iid sampling, a standard error, a confidence interval or a forecast probability. It is not a maximum possible loss; it depends on the supplied history, horizon, confidence level and whether crisis periods are present.
+- **Not included.** Parametric or fitted distributions, bootstrap or any randomness, stress scenarios, fund volatility, annualization, portfolio or optimizer CVaR, minimum-sample policy, ranking, scores and recommendations.
