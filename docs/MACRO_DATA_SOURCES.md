@@ -133,3 +133,16 @@ Phase 17B makes the Phase 17A `MacroStateInputFact` usable from persisted data w
 - **Phase 17A stays the final defense.** The row is passed to `build_macro_state_input_fact`, so PIT eligibility, supersession and value/status rules propagate unchanged.
 - **Missing versus unavailable.** No eligible row returns `None`. A returned explicit UNAVAILABLE row (`value_text` NULL) returns a fact whose value is `None`. These two cases stay distinct, and neither means numerical zero.
 - **Still deferred.** Legacy float provider layer, a verified Turkish policy-rate source, a verified 12-month expectations source, macro normalization, the continuous macro state formulas and the technical overlay.
+
+## 8. Phase 17C — PIT-Safe Exact Macro History Window
+
+Phase 17C adds a bounded history query over `MacroStateInputFact` with `supabase/migrations/023_macro_state_input_history_rpc.sql` (`get_pit_macro_state_input_history`) and `MacroStateInputQueryService.get_history`. It calculates nothing: no transform, normalization, score or regime.
+
+- **Authority chain 023 -> 022 -> 006.** Migration 006 remains the PIT winner authority and migration 022 the single-point exact-TEXT transport authority. Migration 023 only enumerates candidate `effective_date` values (`SELECT DISTINCT`, inclusive range, requested series, active and `verified`) and calls the 022 wrapper per date through `CROSS JOIN LATERAL`. It copies no PIT predicate and does not call 006 directly. The candidate query reads no value, status or timestamp column, so a date that exists only from a row ingested after `as_of` produces no output row.
+- **One shared cutoff.** The whole window uses one `mode` and one aware `as_of`; the SQL mode token is forwarded to 022 unchanged. Every returned fact carries the caller's `mode` and `as_of`, and each row remains subject to the Phase 17A SYSTEM_AS_OF / SOURCE_AS_OF / supersession / value-status checks. One malformed row fails the whole history; nothing is skipped.
+- **Exact Decimal only.** Values arrive as database-generated text (from 022) and are parsed directly into `Decimal`. No float, int, quantization or recast.
+- **Ordered immutable tuple.** SQL orders by `effective_date ASC`; Python verifies rows are within the inclusive range, match the requested key and are strictly increasing (no duplicates), and never sorts or repairs. The result is a `tuple[MacroStateInputFact, ...]`.
+- **No synthetic periods.** Frequency is owned by the registry. There is no resampling, forward fill, interpolation or gap row.
+- **Three distinct states.** `()` means no eligible history. A missing period is simply an absent effective date. An explicit persisted UNAVAILABLE observation is a real fact with `value is None`. None of these is zero.
+- **Validation.** `canonical_key` must be an exact registered active VERIFIED key (`TR_POLICY_RATE` fails closed), both dates exact `date`, `start <= end` (never swapped), exact `AsOfMode` and aware `as_of`, all before the single RPC call.
+- **Still deferred.** Historical transforms, robust normalization, GrowthImpulse / PolicyInflationState / FinancialStress, verified TR policy-rate and 12-month expectation series, broad USD and market-stress inputs, technical overlay and Phase 17 CI consolidation.

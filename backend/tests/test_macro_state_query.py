@@ -514,7 +514,7 @@ def test_migration_022_exists_and_is_the_only_new_migration() -> None:
     assert MIGRATION_022.is_file()
     names = sorted(p.name for p in MIGRATIONS.glob("*.sql"))
     assert [n for n in names if n.startswith("022")] == [MIGRATION_022.name]
-    assert max(names) == MIGRATION_022.name
+    assert max(names) >= MIGRATION_022.name
     assert all(any(n.startswith(f"{i:03d}_") for n in names) for i in range(1, 22))
 
 

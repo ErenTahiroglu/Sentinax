@@ -43,6 +43,7 @@ from backend.engine.private.macro.state_inputs import (
 )
 
 _RPC_NAME = "get_pit_macro_state_input"
+_HISTORY_RPC_NAME = "get_pit_macro_state_input_history"
 # Migration 006's RPC accepts upper-case tokens, while the Python AsOfMode enum serialises lower-case. The two are
 # distinct contracts and are bridged explicitly here (never by case-folding the enum serialization).
 _SQL_AS_OF_MODE = {
@@ -59,6 +60,8 @@ _ERR_CLIENT = "client must expose a callable rpc"
 _ERR_KEY_TYPE = "canonical_key must be an exact str instance"
 _ERR_KEY_EMPTY = "canonical_key must be non-empty"
 _ERR_DATE_TYPE = "effective_date must be an exact date instance"
+_ERR_START_TYPE = "start_effective_date must be an exact date instance"
+_ERR_END_TYPE = "end_effective_date must be an exact date instance"
 _ERR_MODE_TYPE = "mode must be an exact AsOfMode instance"
 _ERR_AS_OF_TYPE = "as_of must be an exact timezone-aware datetime instance"
 _ERR_RESPONSE = "macro state RPC response must be a list of at most one row"
@@ -66,6 +69,10 @@ _ERR_ROW_TYPE = "macro state RPC row must be a mapping"
 _ERR_ROW_KEYS = "macro state RPC row must have exactly the expected columns"
 _ERR_KEY_MISMATCH = "macro state RPC row canonical_key does not match the request"
 _ERR_DATE_MISMATCH = "macro state RPC row effective_date does not match the request"
+_ERR_HISTORY_RESPONSE = "macro state history RPC response must be a list"
+_ERR_RANGE = "start_effective_date must not be after end_effective_date"
+_ERR_RANGE_MISMATCH = "macro state RPC row effective_date is outside the requested range"
+_ERR_ORDER = "macro state RPC rows must have strictly increasing effective_date"
 _ERR_VALUE_TYPE = "value_text must be a str or None"
 _ERR_VALUE_PADDED = "value_text must be a non-empty unpadded numeric string"
 _ERR_VALUE_NUMERIC = "value_text must be a finite numeric string"
@@ -136,6 +143,52 @@ def _parse_effective_date(value: object) -> date:
         raise ValueError("effective_date is not a valid ISO date") from None
 
 
+def _validate_key(canonical_key: object) -> None:
+    if type(canonical_key) is not str:
+        raise TypeError(_ERR_KEY_TYPE)
+    if len(canonical_key) == 0:
+        raise ValueError(_ERR_KEY_EMPTY)
+    _verified_definition(canonical_key)
+
+
+def _hydrate_row(
+    row: object,
+    *,
+    canonical_key: str,
+    mode: AsOfMode,
+    as_of: datetime,
+    expected_date: date | None,
+) -> MacroStateInputFact:
+    """Shared single-row codec for `get_input` and `get_history`; `expected_date` pins the date when it is exact."""
+    if not isinstance(row, Mapping):
+        raise TypeError(_ERR_ROW_TYPE)
+    if set(row.keys()) != _ROW_KEYS:
+        raise ValueError(_ERR_ROW_KEYS)
+    if type(row["canonical_key"]) is not str:
+        raise TypeError("canonical_key must be a str")
+    if row["canonical_key"] != canonical_key:
+        raise ValueError(_ERR_KEY_MISMATCH)
+    row_date = _parse_effective_date(row["effective_date"])
+    if expected_date is not None and row_date != expected_date:
+        raise ValueError(_ERR_DATE_MISMATCH)
+    return build_macro_state_input_fact(
+        canonical_key=row["canonical_key"],
+        effective_date=row_date,
+        value=_parse_value_text(row["value_text"]),
+        data_status=_parse_enum(DataStatus, "data_status", row["data_status"]),
+        confidence_level=_parse_enum(DataConfidenceLevel, "confidence_level", row["confidence_level"]),
+        source_tier=_parse_enum(SourceTier, "source_tier", row["source_tier"]),
+        mode=mode,
+        as_of=as_of,
+        published_at=_parse_timestamp("published_at", row["published_at"], required=False),
+        observed_at=_parse_timestamp("observed_at", row["observed_at"], required=True),
+        ingested_at=_parse_timestamp("ingested_at", row["ingested_at"], required=True),
+        superseded_at=_parse_timestamp("superseded_at", row["superseded_at"], required=False),
+        observation_id=_parse_uuid("observation_id", row["observation_id"], required=True),
+        snapshot_id=_parse_uuid("snapshot_id", row["snapshot_id"], required=False),
+    )
+
+
 class MacroStateInputQueryService:
     """Reads one exact, PIT-eligible macro state input through the migration-022 RPC."""
 
@@ -152,11 +205,7 @@ class MacroStateInputQueryService:
         mode: AsOfMode,
         as_of: datetime,
     ) -> MacroStateInputFact | None:
-        if type(canonical_key) is not str:
-            raise TypeError(_ERR_KEY_TYPE)
-        if len(canonical_key) == 0:
-            raise ValueError(_ERR_KEY_EMPTY)
-        _verified_definition(canonical_key)
+        _validate_key(canonical_key)
         if type(effective_date) is not date:
             raise TypeError(_ERR_DATE_TYPE)
         if type(mode) is not AsOfMode:
@@ -178,33 +227,51 @@ class MacroStateInputQueryService:
             raise ValueError(_ERR_RESPONSE)
         if not data:
             return None
-        row = data[0]
-        if not isinstance(row, Mapping):
-            raise TypeError(_ERR_ROW_TYPE)
-        if set(row.keys()) != _ROW_KEYS:
-            raise ValueError(_ERR_ROW_KEYS)
+        return _hydrate_row(data[0], canonical_key=canonical_key, mode=mode, as_of=as_of,
+                            expected_date=effective_date)
 
-        if type(row["canonical_key"]) is not str:
-            raise TypeError("canonical_key must be a str")
-        if row["canonical_key"] != canonical_key:
-            raise ValueError(_ERR_KEY_MISMATCH)
-        row_date = _parse_effective_date(row["effective_date"])
-        if row_date != effective_date:
-            raise ValueError(_ERR_DATE_MISMATCH)
+    def get_history(
+        self,
+        *,
+        canonical_key: str,
+        start_effective_date: date,
+        end_effective_date: date,
+        mode: AsOfMode,
+        as_of: datetime,
+    ) -> tuple[MacroStateInputFact, ...]:
+        _validate_key(canonical_key)
+        if type(start_effective_date) is not date:
+            raise TypeError(_ERR_START_TYPE)
+        if type(end_effective_date) is not date:
+            raise TypeError(_ERR_END_TYPE)
+        if type(mode) is not AsOfMode:
+            raise TypeError(_ERR_MODE_TYPE)
+        if type(as_of) is not datetime or as_of.tzinfo is None or as_of.utcoffset() is None:
+            raise TypeError(_ERR_AS_OF_TYPE)
+        if start_effective_date > end_effective_date:
+            raise ValueError(_ERR_RANGE)
 
-        return build_macro_state_input_fact(
-            canonical_key=row["canonical_key"],
-            effective_date=row_date,
-            value=_parse_value_text(row["value_text"]),
-            data_status=_parse_enum(DataStatus, "data_status", row["data_status"]),
-            confidence_level=_parse_enum(DataConfidenceLevel, "confidence_level", row["confidence_level"]),
-            source_tier=_parse_enum(SourceTier, "source_tier", row["source_tier"]),
-            mode=mode,
-            as_of=as_of,
-            published_at=_parse_timestamp("published_at", row["published_at"], required=False),
-            observed_at=_parse_timestamp("observed_at", row["observed_at"], required=True),
-            ingested_at=_parse_timestamp("ingested_at", row["ingested_at"], required=True),
-            superseded_at=_parse_timestamp("superseded_at", row["superseded_at"], required=False),
-            observation_id=_parse_uuid("observation_id", row["observation_id"], required=True),
-            snapshot_id=_parse_uuid("snapshot_id", row["snapshot_id"], required=False),
-        )
+        response = self._client.rpc(
+            _HISTORY_RPC_NAME,
+            {
+                "p_canonical_key": canonical_key,
+                "p_start_effective_date": start_effective_date.isoformat(),
+                "p_end_effective_date": end_effective_date.isoformat(),
+                "p_as_of": as_of.isoformat(),
+                "p_as_of_mode": _SQL_AS_OF_MODE[mode],
+            },
+        ).execute()
+        data = getattr(response, "data", None)
+        if type(data) is not list:
+            raise ValueError(_ERR_HISTORY_RESPONSE)
+        facts: list[MacroStateInputFact] = []
+        previous: date | None = None
+        for row in data:
+            fact = _hydrate_row(row, canonical_key=canonical_key, mode=mode, as_of=as_of, expected_date=None)
+            if not start_effective_date <= fact.effective_date <= end_effective_date:
+                raise ValueError(_ERR_RANGE_MISMATCH)
+            if previous is not None and fact.effective_date <= previous:
+                raise ValueError(_ERR_ORDER)
+            previous = fact.effective_date
+            facts.append(fact)
+        return tuple(facts)
