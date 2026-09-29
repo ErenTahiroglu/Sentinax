@@ -110,3 +110,13 @@ To eliminate lookahead contamination and semantic confusion, Sentinax strictly s
 2. `US_TREASURY_PAR_2Y` (`BC_2YEAR`): 2-Year Daily Par Yield Rate (%).
 3. `US_TREASURY_PAR_10Y` (`BC_10YEAR`): 10-Year Benchmark Daily Par Yield Rate (%).
 4. `US_TREASURY_PAR_30Y` (`BC_30YEAR`): 30-Year Daily Par Yield Rate (%).
+
+## 6. Phase 17A — PIT-Safe Exact-Decimal Macro State Input Authority
+
+Phase 17 is the macro + technical roadmap. The continuous macro state itself (GrowthImpulse, PolicyInflationState, FinancialStress) is NOT implemented yet. Phase 17A adds only the safe analytical input boundary, `backend/engine/private/macro/state_inputs.py` (`MacroStateInputFact`, `build_macro_state_input_fact`), which future macro calculations must consume.
+
+- **Exact Decimal only.** `value` is an exact `Decimal` or `None`; float, int, bool, str, Fraction and Decimal subclasses are rejected, and non-finite Decimals are rejected. There is no float-to-Decimal rehabilitation: `Decimal(str(float_value))` would only spell an already rounded binary float, so the legacy `MacroObservationRecord.value: float` provider layer is not accepted as analytical authority. That legacy layer (and its G4 baseline entries) is unchanged.
+- **Missing is not zero.** `None` is missing. COMPLETE requires a finite Decimal; UNAVAILABLE requires `None`; PARTIAL, DEGRADED and STALE describe existing data and still require an observed Decimal. A present `Decimal("0")` is an observed zero.
+- **Registry authority.** `canonical_key` must resolve through `MacroSeriesRegistry.get` to an active, VERIFIED series, with no aliasing or normalization. Category, unit, frequency, geography and provider are derived from the registry definition, never supplied by the caller. Unverified or inactive series such as `TR_POLICY_RATE` fail closed and are never mapped to `TR_TCMB_AOFM`, which is not the statutory policy rate.
+- **Explicit PIT.** `SYSTEM_AS_OF` requires `ingested_at <= as_of` and `published_at` null or `<= as_of`. `SOURCE_AS_OF` requires `coalesce(published_at, observed_at) <= as_of`. In both modes `superseded_at` must be null or strictly after `as_of`, matching migration 006's `get_macro_observation_as_of`. There is no CURRENT_REPORTED mode, and the module performs no resolver or database call, ambient clock read or UUID generation.
+- **Not included.** Macro scores or composites, regime labels, real policy stance (no verified 12-month expectation series exists in the registry, and ENAG is not a monetary-policy expectation input), technical indicators or signals, optimizer inputs and tactical tilts.
