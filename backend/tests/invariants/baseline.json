@@ -1,0 +1,189 @@
+{
+  "schema_version": 1,
+  "guards": {
+    "G4": [
+      {
+        "path": "backend/engine/private/orchestrator.py",
+        "qualname": "OrchestrationResult.to_macro_observation",
+        "node_kind": "Call:float",
+        "fingerprint": "eb3d2d4473361114b296a6c357681df23ab76ccd8c1c1dfd1fb32f168dc8d687",
+        "ordinal": 0,
+        "line": 216,
+        "classification": "legacy_debt",
+        "note": "Macro observation value is cast to float; exact Decimal value is lost."
+      },
+      {
+        "path": "backend/engine/private/providers/ecb_sdmx.py",
+        "qualname": "ECBDataPortalProvider._parse_decimal",
+        "node_kind": "Call:float",
+        "fingerprint": "b65c95e59773492448b8f0b74573fce0d511fa50ce74fa7b9d0ba5d0b42a2036",
+        "ordinal": 0,
+        "line": 395,
+        "classification": "legacy_debt",
+        "note": "_parse_decimal returns float(cleaned); provider value loses Decimal exactness."
+      },
+      {
+        "path": "backend/engine/private/providers/eurostat_sdmx.py",
+        "qualname": "EurostatSDMXProvider._parse_decimal",
+        "node_kind": "Call:float",
+        "fingerprint": "b65c95e59773492448b8f0b74573fce0d511fa50ce74fa7b9d0ba5d0b42a2036",
+        "ordinal": 0,
+        "line": 376,
+        "classification": "legacy_debt",
+        "note": "_parse_decimal returns float(cleaned); provider value loses Decimal exactness."
+      },
+      {
+        "path": "backend/engine/private/providers/fred_alfred.py",
+        "qualname": "FREDALFREDProvider._parse_decimal",
+        "node_kind": "Call:float",
+        "fingerprint": "b65c95e59773492448b8f0b74573fce0d511fa50ce74fa7b9d0ba5d0b42a2036",
+        "ordinal": 0,
+        "line": 546,
+        "classification": "legacy_debt",
+        "note": "_parse_decimal returns float(cleaned); provider value loses Decimal exactness."
+      },
+      {
+        "path": "backend/engine/private/providers/tcmb_evds.py",
+        "qualname": "TCMBEVDSProvider._parse_decimal",
+        "node_kind": "Call:float",
+        "fingerprint": "3b65f4ada0890a63de5e43185fb2f162d125b283f258f37caf5356320aed48c4",
+        "ordinal": 0,
+        "line": 393,
+        "classification": "legacy_debt",
+        "note": "_parse_decimal returns float of the cleaned string; provider value loses Decimal exactness."
+      },
+      {
+        "path": "backend/engine/private/providers/tuik_sdmx.py",
+        "qualname": "TUIKSDMXProvider._parse_decimal",
+        "node_kind": "Call:float",
+        "fingerprint": "3b65f4ada0890a63de5e43185fb2f162d125b283f258f37caf5356320aed48c4",
+        "ordinal": 0,
+        "line": 281,
+        "classification": "legacy_debt",
+        "note": "_parse_decimal returns float of the cleaned string; provider value loses Decimal exactness."
+      },
+      {
+        "path": "backend/engine/private/providers/us_treasury.py",
+        "qualname": "USTreasuryYieldCurveProvider._parse_yield_curve_xml",
+        "node_kind": "Call:float",
+        "fingerprint": "7091ec61dfd13a15ceb6de39e54f21bc3fdd7a07b89a737f6591a551e810b806",
+        "ordinal": 0,
+        "line": 519,
+        "classification": "legacy_debt",
+        "note": "Treasury yield maturities are parsed to float instead of Decimal."
+      },
+      {
+        "path": "backend/engine/private/sec/client.py",
+        "qualname": "SECEdgarClient.get_json",
+        "node_kind": "Call:float",
+        "fingerprint": "a7b5eca409d84311ce522e15affba189464a1eb78ab9d831bcb064eb53f80ff0",
+        "ordinal": 0,
+        "line": 173,
+        "classification": "legitimate_boundary_semantics",
+        "note": "HTTP Retry-After seconds; not a financial amount."
+      },
+      {
+        "path": "backend/engine/private/sec/client.py",
+        "qualname": "SECRateLimiter.__init__",
+        "node_kind": "Call:float",
+        "fingerprint": "31f51d0dff93e20b75d37242ba8d6f59a1cd043a8f4cb1d23b16aa2ef76da07a",
+        "ordinal": 0,
+        "line": 69,
+        "classification": "legitimate_boundary_semantics",
+        "note": "HTTP rate-limit requests-per-second; not a financial amount."
+      },
+      {
+        "path": "backend/engine/private/sec/client.py",
+        "qualname": "SECRateLimiter.__init__",
+        "node_kind": "Call:float",
+        "fingerprint": "db296738f5db111ce9809c63023082c0fbdd05d5d620713b02817cf17b13cbbd",
+        "ordinal": 0,
+        "line": 67,
+        "classification": "legitimate_boundary_semantics",
+        "note": "HTTP rate-limit requests-per-second; not a financial amount."
+      }
+    ],
+    "G5": [
+      {
+        "path": "backend/engine/private/confidence.py",
+        "qualname": "DataConfidence.from_dict",
+        "node_kind": "Call:get-default-zero",
+        "fingerprint": "fc6a35f1e124007ff1172e4d3487f4e18a1e948990a46a27a5aa89abefdece83",
+        "ordinal": 0,
+        "line": 67,
+        "classification": "legacy_debt",
+        "note": "Missing confidence dimension deserializes to 0.0 instead of being rejected or explicit None."
+      },
+      {
+        "path": "backend/engine/private/confidence.py",
+        "qualname": "DataConfidence.from_dict",
+        "node_kind": "Call:get-default-zero",
+        "fingerprint": "fc6a35f1e124007ff1172e4d3487f4e18a1e948990a46a27a5aa89abefdece83",
+        "ordinal": 1,
+        "line": 68,
+        "classification": "legacy_debt",
+        "note": "Missing confidence dimension deserializes to 0.0 instead of being rejected or explicit None."
+      },
+      {
+        "path": "backend/engine/private/confidence.py",
+        "qualname": "DataConfidence.from_dict",
+        "node_kind": "Call:get-default-zero",
+        "fingerprint": "fc6a35f1e124007ff1172e4d3487f4e18a1e948990a46a27a5aa89abefdece83",
+        "ordinal": 2,
+        "line": 69,
+        "classification": "legacy_debt",
+        "note": "Missing confidence dimension deserializes to 0.0 instead of being rejected or explicit None."
+      },
+      {
+        "path": "backend/engine/private/confidence.py",
+        "qualname": "DataConfidence.from_dict",
+        "node_kind": "Call:get-default-zero",
+        "fingerprint": "fc6a35f1e124007ff1172e4d3487f4e18a1e948990a46a27a5aa89abefdece83",
+        "ordinal": 3,
+        "line": 71,
+        "classification": "legacy_debt",
+        "note": "Missing confidence dimension deserializes to 0.0 instead of being rejected or explicit None."
+      },
+      {
+        "path": "backend/engine/private/market_data/resolver.py",
+        "qualname": "PointInTimeMarketDataResolver.resolve_tefas_fund_price._stable_tefas_scope_key",
+        "node_kind": "BoolOp:or-zero",
+        "fingerprint": "681f8cef82a87467238f3962aa92adbedfc2fa1c953e3eb9b071dabe5399e213",
+        "ordinal": 0,
+        "line": 1338,
+        "classification": "legitimate_nonmissing_semantics",
+        "note": "Deterministic sort/tie-break key only; the value is never used as data."
+      },
+      {
+        "path": "backend/engine/private/orchestrator.py",
+        "qualname": "ProviderOrchestrator._tier_rank",
+        "node_kind": "Call:get-default-zero",
+        "fingerprint": "5626d9779fca02c03c10828208ff4e80b0c8fa98dc12de51e92a5343997691a8",
+        "ordinal": 0,
+        "line": 727,
+        "classification": "legitimate_nonmissing_semantics",
+        "note": "Unknown SourceTier ranks lowest for ordering; not a data value."
+      },
+      {
+        "path": "backend/engine/private/provider_contract.py",
+        "qualname": "ProviderAttempt.from_dict",
+        "node_kind": "Call:get-default-zero",
+        "fingerprint": "95c541f7c9016daf53fb6fbebb985981ad1e15b47ddea07620eb4ee6676cb3f2",
+        "ordinal": 0,
+        "line": 138,
+        "classification": "legacy_debt",
+        "note": "Missing latency_ms deserializes to 0.0 (non-financial telemetry, low severity)."
+      },
+      {
+        "path": "backend/engine/private/providers/sec_edgar.py",
+        "qualname": "SECCompanyFactsDataProvider.normalize",
+        "node_kind": "Call:get-default-zero",
+        "fingerprint": "703931afacdccb21384fee8ca76b6c06db7913005c97a227f47abd74a08d9d91",
+        "ordinal": 0,
+        "line": 297,
+        "classification": "legacy_debt",
+        "note": "Absent facts_count is reported as 0 instead of None."
+      }
+    ]
+  }
+}
