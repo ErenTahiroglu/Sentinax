@@ -146,3 +146,16 @@ Phase 17C adds a bounded history query over `MacroStateInputFact` with `supabase
 - **Three distinct states.** `()` means no eligible history. A missing period is simply an absent effective date. An explicit persisted UNAVAILABLE observation is a real fact with `value is None`. None of these is zero.
 - **Validation.** `canonical_key` must be an exact registered active VERIFIED key (`TR_POLICY_RATE` fails closed), both dates exact `date`, `start <= end` (never swapped), exact `AsOfMode` and aware `as_of`, all before the single RPC call.
 - **Still deferred.** Historical transforms, robust normalization, GrowthImpulse / PolicyInflationState / FinancialStress, verified TR policy-rate and 12-month expectation series, broad USD and market-stress inputs, technical overlay and Phase 17 CI consolidation.
+
+## 9. Phase 17D — Exact U.S. Treasury Yield-Curve Slope Evidence
+
+Phase 17D adds the first macro calculation, `backend/engine/private/macro/us_treasury_curve.py` (`USTreasuryCurveSlopePoint`, `build_us_treasury_curve_slope_history`). It is a pure layer: it performs no query, provider call, clock read or registry search, and consumes only Phase 17C `MacroStateInputFact` histories of the VERIFIED official series `US_TREASURY_PAR_10Y`, `US_TREASURY_PAR_2Y` and `US_TREASURY_PAR_3M`.
+
+- **Slopes only.** `slope_10y_2y = 10Y - 2Y` and `slope_10y_3m = 10Y - 3M`, as signed percentage-point spreads (inputs are percent levels; no basis points, annualization, rounding or quantization). Neither is chosen as "the" signal and they are not combined.
+- **Exact subtraction.** Done on integer coefficients at a common exponent and rebuilt from (sign, digits, exponent), so the result does not depend on the ambient `decimal` context and no global context is touched. No float.
+- **Strict inputs.** Each history must be an exact `tuple` of exact `MacroStateInputFact` bound to its own canonical key (no aliases, no 30Y or other series), strictly increasing by `effective_date` (validated, never sorted), and every fact must carry the caller's `mode` and an `as_of` equal to the caller's. The point stores the caller's own `mode` and `as_of` objects.
+- **Exact-date union alignment.** Output dates are the union of actual effective dates. A tenor with no row on a date has slot `None`: no synthetic fact, forward fill, interpolation or nearest-date match. Empty histories give `()`.
+- **Missing row versus explicit UNAVAILABLE.** A missing row is a `None` slot; an explicit UNAVAILABLE fact is retained unchanged (value `None`) and yields no slope. Neither is zero.
+- **Independent availability.** A slope needs only its two numeric legs; a missing 3M does not block 10Y-2Y. PARTIAL, DEGRADED and STALE facts with numeric values are used as-is, with no aggregate status or confidence invented.
+- **Signed evidence.** A negative spread is a legitimate number and zero is a real value. There is no inversion flag, label, regime, score, probability, recession view or portfolio action. Component facts are retained by identity for provenance.
+- **Still deferred.** Normalization, structural breaks, yield-curve interpretation, GrowthImpulse / PolicyInflationState / FinancialStress, and any tactical use.
