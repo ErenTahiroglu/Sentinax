@@ -1030,3 +1030,19 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Missing evidence remains explicit absence and is NEVER converted to `0`, `0.0`, `Decimal("0")`, neutral risk, default risk, or level strings (`LOW`, `MEDIUM`, `HIGH`).
   - Reference branch proves only that the reference metadata satisfies the PIT cutoff; it does NOT prove evidence presence, authenticity, completeness, sufficiency, verification, or suitability.
   - Preserves independent `TOLERANCE` and `CAPACITY` axes without aggregation, scoring, or comparisons.
+
+---
+
+## 44. Risk-Evidence Content Digest Match (Phase 15B.8)
+- **`RiskEvidenceContentMatch` Frozen Dataclass:**
+  - Constructor `RiskEvidenceContentMatch(pit_binding, content)`; retained fields are exactly `pit_binding` and `content_length`.
+  - `content` is constructor-only validation material. It is NOT a dataclass field and is never retained, stored, cached, returned, or exposed via `repr` or instance `__dict__`.
+  - Strict exact-type semantics: `type(pit_binding) is RiskEvidencePITBinding` and `type(content) is bytes`. Subclasses, `bytearray`, `memoryview`, `str`, `None`, `bool`, `int`, and arbitrary objects are rejected with static `TypeError` messages before any hashing. No decoding, encoding, or normalization is performed.
+  - Computes `hashlib.sha256(content).hexdigest()` over the exact bytes (no salt, key, timestamp, filename, context, or truncation) and compares it with `pit_binding.availability_ref.provenance_ref.content_sha256` (the canonical 15B.4 digest) using `hmac.compare_digest`.
+  - Mismatch fails closed with static `ValueError("content digest mismatch")`. `pit_binding` is preserved by identity; `content_length` is derived from the accepted bytes as an exact `int`.
+  - Empty `b""` is valid content and is matched by its real SHA-256 (`e3b0c442...b855`). It is NOT interpreted as missing, invalid, insufficient, or unavailable evidence. Binary, non-UTF8, and embedded-NUL bytes are valid content.
+  - Pure: zero clock, network, filesystem, database, persistence, cache, UUID generation, or global mutable state.
+- **Semantic Boundary & Non-Goals:**
+  - Establishes ONLY exact SHA-256 equality between caller-supplied bytes and the canonical content digest referenced by the PIT-bound provenance chain.
+  - Does NOT establish authenticity, truth, semantic validity, completeness, sufficiency, owner authorization, source trust, storage presence, or risk suitability.
+  - Carries NO risk value, score, level, or suitability verdict. Does not modify or wrap `MissingRiskEvidence`; missing remains an explicit separate branch.
