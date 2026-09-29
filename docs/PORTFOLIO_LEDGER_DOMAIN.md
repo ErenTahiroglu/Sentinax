@@ -1046,3 +1046,25 @@ Every `PortfolioTransaction` carries exactly ONE unambiguous economic meaning. M
   - Establishes ONLY exact SHA-256 equality between caller-supplied bytes and the canonical content digest referenced by the PIT-bound provenance chain.
   - Does NOT establish authenticity, truth, semantic validity, completeness, sufficiency, owner authorization, source trust, storage presence, or risk suitability.
   - Carries NO risk value, score, level, or suitability verdict. Does not modify or wrap `MissingRiskEvidence`; missing remains an explicit separate branch.
+
+---
+
+## 45. Content-Qualified Risk-Evidence Resolution (Phase 15B.9)
+- **Second-stage composition:** `resolve_risk_evidence_content(*, reference_resolution, content)` consumes the Phase 15B.7 output (`RiskEvidenceReferenceResolution`) and forces exactly one final branch. Both parameters are required and keyword-only, without defaults. `resolve_risk_evidence_reference` is unchanged; the two stages stay explicit.
+- **`RiskEvidenceContentResolution` Type Alias:** `MissingRiskEvidence | RiskEvidenceContentMatch`. `RiskEvidenceReferenceResolution` remains valid and public.
+- **Exact Two-Branch Truth Table:**
+
+| `reference_resolution` | `content` | Result |
+| :--- | :--- | :--- |
+| exact `MissingRiskEvidence` | `None` | The same `MissingRiskEvidence` object, returned by identity (not rebuilt, cloned, normalized, or wrapped) |
+| exact `RiskEvidencePITBinding` | exact `bytes` matching the canonical digest | `RiskEvidenceContentMatch(pit_binding=reference_resolution, content=content)` |
+| exact `MissingRiskEvidence` | any non-`None` value (including `b""`) | **Rejected:** `ValueError("content must be supplied exactly for the PIT-admissible reference branch")` |
+| exact `RiskEvidencePITBinding` | `None` | **Rejected:** same `ValueError` |
+| anything else (subclasses, `None`, `bool`, `int`, `str`, `dict`, `tuple`, `RiskEvidenceAvailabilityRef`, `RiskEvidenceContentMatch`, arbitrary objects) | any | **Rejected:** `TypeError("reference_resolution must be an exact MissingRiskEvidence or RiskEvidencePITBinding instance")` |
+
+- **Validation Order & Callback Safety:** `reference_resolution` is checked first with exact `type(...) is` comparisons; for invalid objects `content` is not inspected, hashed, measured, or formatted. Error messages are static literals and never include `repr`, `str`, or class names of supplied values.
+- **Delegation to Phase 15B.8:** the PIT branch does not pre-hash or re-validate content. `RiskEvidenceContentMatch` remains the sole content-digest authority, and its `TypeError("content must be exact bytes")` and `ValueError("content digest mismatch")` propagate unchanged (`bytearray`, `memoryview`, `str`, `bool`, `int`, `bytes` subclasses, and arbitrary objects fail there). `result.pit_binding is reference_resolution`.
+- **Metadata-only binding is not final:** a `RiskEvidencePITBinding` alone is a metadata-only eligibility result; consumers of this stage receive either explicit missing evidence or a digest-matched `RiskEvidenceContentMatch`.
+- **Empty Bytes:** `b""` is valid content and succeeds when the canonical digest is the SHA-256 of empty bytes (`e3b0c442...b855`). It is never treated as missing. Only `MissingRiskEvidence` + `None` is valid for the missing branch.
+- **Missing Remains Explicit Absence:** never converted to `0`, `0.0`, `Decimal("0")`, `False`, empty bytes, empty string, neutral, default, or level strings.
+- **Semantic Boundary & Non-Goals:** success proves only that the reference passed the 15B.6 PIT cutoff and that the exact supplied bytes matched the canonical SHA-256 digest. It does NOT establish source authenticity, economic truth, semantic correctness, completeness, sufficiency, owner authorization, storage durability, questionnaire validity, risk relevance, or risk value. No score, no risk level, no suitability, no owner claim, no recommendation. The resolver is pure: zero clock, UUID, entropy, network, filesystem, database, persistence, cache, environment access, financial arithmetic, or float conversion.

@@ -26,6 +26,8 @@ Covers:
 - Purity invariants (no clock, no scores, no conversion of missing to zero, no flags)
 """
 
+import dataclasses
+import hashlib
 import inspect
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import get_args
@@ -39,10 +41,13 @@ from backend.engine.private.domain import AsOfMode, Horizon, RiskAxis
 from backend.engine.private.risk_context import RiskAxisContext
 from backend.engine.private.risk_evidence import MissingRiskEvidence
 from backend.engine.private.risk_evidence_availability import RiskEvidenceAvailabilityRef
+from backend.engine.private.risk_evidence_content_match import RiskEvidenceContentMatch
 from backend.engine.private.risk_evidence_pit_binding import RiskEvidencePITBinding
 from backend.engine.private.risk_evidence_provenance import RiskEvidenceProvenanceRef
 from backend.engine.private.risk_evidence_resolution import (
+    RiskEvidenceContentResolution,
     RiskEvidenceReferenceResolution,
+    resolve_risk_evidence_content,
     resolve_risk_evidence_reference,
 )
 
@@ -394,3 +399,169 @@ class TestRiskEvidenceResolutionValidation:
                 availability_ref=AdversarialMetaClass(),  # type: ignore
                 missing_inputs=None,
             )
+
+
+# ---------------------------------------------------------------------------
+# Phase 15B.9 — content-qualified second-stage resolution
+# ---------------------------------------------------------------------------
+
+_INVALID_RESOLUTION_MSG = r"^reference_resolution must be an exact MissingRiskEvidence or RiskEvidencePITBinding instance$"
+_BRANCH_MSG = r"^content must be supplied exactly for the PIT-admissible reference branch$"
+
+
+class SubclassedMissingRiskEvidence(MissingRiskEvidence):
+    pass
+
+
+class SubclassedPITBinding(RiskEvidencePITBinding):
+    pass
+
+
+class BytesSubclass(bytes):
+    pass
+
+
+class HostileValue:
+    def __repr__(self):
+        raise RuntimeError("hostile repr")
+
+    def __str__(self):
+        raise RuntimeError("hostile str")
+
+    def __len__(self):
+        raise RuntimeError("hostile len")
+
+
+def _binding_for(content: bytes) -> RiskEvidencePITBinding:
+    availability = RiskEvidenceAvailabilityRef(
+        provenance_ref=RiskEvidenceProvenanceRef(
+            source_key="survey_v1", content_sha256=hashlib.sha256(content).hexdigest()
+        ),
+        available_at=datetime(2026, 8, 28, 9, 0, 0, tzinfo=timezone.utc),
+    )
+    return RiskEvidencePITBinding(context=_make_risk_axis_context(), availability_ref=availability)
+
+
+def _missing() -> MissingRiskEvidence:
+    return MissingRiskEvidence(context=_make_risk_axis_context(), missing_inputs=("questionnaire",))
+
+
+class TestContentQualifiedResolution:
+    def test_alias_members(self):
+        assert set(get_args(RiskEvidenceContentResolution)) == {MissingRiskEvidence, RiskEvidenceContentMatch}
+        assert len(get_args(RiskEvidenceContentResolution)) == 2
+
+    def test_signature_keyword_only_no_defaults(self):
+        params = inspect.signature(resolve_risk_evidence_content).parameters
+        assert list(params) == ["reference_resolution", "content"]
+        for p in params.values():
+            assert p.kind is inspect.Parameter.KEYWORD_ONLY
+            assert p.default is inspect.Parameter.empty
+
+    # --- missing branch ---
+    def test_missing_with_none_returns_same_object(self):
+        missing = _missing()
+        result = resolve_risk_evidence_content(reference_resolution=missing, content=None)
+        assert result is missing
+
+    @pytest.mark.parametrize("content", [b"", b"abc", 0, "", HostileValue(), bytearray(b"x")])
+    def test_missing_with_non_none_rejects(self, content):
+        with pytest.raises(ValueError, match=_BRANCH_MSG):
+            resolve_risk_evidence_content(reference_resolution=_missing(), content=content)
+
+    # --- reference branch ---
+    def test_binding_with_matching_bytes(self):
+        content = b"risk evidence bytes"
+        binding = _binding_for(content)
+        result = resolve_risk_evidence_content(reference_resolution=binding, content=content)
+        assert type(result) is RiskEvidenceContentMatch
+        assert result.pit_binding is binding
+        assert result.content_length == len(content)
+
+    def test_binding_with_empty_bytes_matches_empty_digest(self):
+        binding = _binding_for(b"")
+        assert binding.availability_ref.provenance_ref.content_sha256 == VALID_SHA256
+        result = resolve_risk_evidence_content(reference_resolution=binding, content=b"")
+        assert type(result) is RiskEvidenceContentMatch
+        assert result.content_length == 0
+
+    def test_binding_with_none_rejects(self):
+        with pytest.raises(ValueError, match=_BRANCH_MSG):
+            resolve_risk_evidence_content(reference_resolution=_binding_for(b"x"), content=None)
+
+    # --- delegation / propagation unchanged from 15B.8 ---
+    def test_digest_mismatch_propagates(self):
+        with pytest.raises(ValueError, match=r"^content digest mismatch$"):
+            resolve_risk_evidence_content(reference_resolution=_binding_for(b"a"), content=b"b")
+
+    @pytest.mark.parametrize(
+        "content",
+        [bytearray(b"a"), memoryview(b"a"), "a", True, 1, BytesSubclass(b"a"), HostileValue()],
+    )
+    def test_invalid_content_types_propagate(self, content):
+        with pytest.raises(TypeError, match=r"^content must be exact bytes$"):
+            resolve_risk_evidence_content(reference_resolution=_binding_for(b"a"), content=content)
+
+    # --- invalid resolution objects ---
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            None, True, 0, "x", {}, (),
+            _make_availability_ref(),
+            object(),
+        ],
+    )
+    def test_invalid_resolution_rejected(self, bad):
+        with pytest.raises(TypeError, match=_INVALID_RESOLUTION_MSG):
+            resolve_risk_evidence_content(reference_resolution=bad, content=None)
+
+    def test_content_match_is_not_a_valid_resolution(self):
+        match = resolve_risk_evidence_content(reference_resolution=_binding_for(b"a"), content=b"a")
+        with pytest.raises(TypeError, match=_INVALID_RESOLUTION_MSG):
+            resolve_risk_evidence_content(reference_resolution=match, content=b"a")
+
+    def test_missing_subclass_rejected(self):
+        sub = SubclassedMissingRiskEvidence(context=_make_risk_axis_context(), missing_inputs=("q",))
+        with pytest.raises(TypeError, match=_INVALID_RESOLUTION_MSG):
+            resolve_risk_evidence_content(reference_resolution=sub, content=None)
+
+    def test_binding_subclass_rejected(self):
+        b = _binding_for(b"a")
+        sub = SubclassedPITBinding(context=b.context, availability_ref=b.availability_ref)
+        with pytest.raises(TypeError, match=_INVALID_RESOLUTION_MSG):
+            resolve_risk_evidence_content(reference_resolution=sub, content=b"a")
+
+    # --- callback safety ---
+    def test_hostile_repr_and_str_not_invoked(self):
+        with pytest.raises(TypeError, match=_INVALID_RESOLUTION_MSG):
+            resolve_risk_evidence_content(reference_resolution=HostileValue(), content=HostileValue())
+
+    def test_hostile_metaclass_name_not_invoked(self):
+        with pytest.raises(TypeError, match=_INVALID_RESOLUTION_MSG):
+            resolve_risk_evidence_content(
+                reference_resolution=AdversarialMetaClass(), content=AdversarialReprObject()
+            )
+
+    def test_hostile_content_on_missing_branch_not_invoked(self):
+        with pytest.raises(ValueError, match=_BRANCH_MSG):
+            resolve_risk_evidence_content(reference_resolution=_missing(), content=HostileValue())
+
+    # --- semantic boundary ---
+    def test_no_raw_content_retention(self):
+        content = b"secret-evidence-bytes"
+        result = resolve_risk_evidence_content(reference_resolution=_binding_for(content), content=content)
+        assert [f.name for f in dataclasses.fields(result)] == ["pit_binding", "content_length"]
+        assert content not in repr(result).encode()
+        assert content not in repr(vars(result)).encode()
+
+    def test_no_score_level_or_suitability(self):
+        result = resolve_risk_evidence_content(reference_resolution=_binding_for(b"a"), content=b"a")
+        for attr in ("score", "level", "suitability", "risk", "default", "value"):
+            assert not hasattr(result, attr)
+
+    def test_missing_never_becomes_zero_or_default(self):
+        missing = _missing()
+        result = resolve_risk_evidence_content(reference_resolution=missing, content=None)
+        assert type(result) is MissingRiskEvidence
+        for falsy in (0, 0.0, False, b"", "", None):
+            assert result is not falsy

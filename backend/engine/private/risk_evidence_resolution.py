@@ -22,6 +22,15 @@ Architectural Invariants:
     - Preserves caller-supplied objects by identity (`is`).
     - Error messages use static string literals to guarantee callback safety under adversarial inputs.
     - Does NOT convert missing evidence to zero/default/neutral. Does NOT promote reference metadata to verified/present evidence.
+
+Second stage (Phase 15B.9): `resolve_risk_evidence_content` forces exactly one final branch:
+    - exact `MissingRiskEvidence` + `content is None` -> the same object, returned by identity;
+    - exact `RiskEvidencePITBinding` + `content` (not None) -> `RiskEvidenceContentMatch(...)`,
+      delegated unchanged to Phase 15B.8, which remains the sole content-digest authority
+      (no hashing here; 15B.8 TypeError/ValueError propagate unchanged).
+    - Anything else is rejected with static, callback-safe messages. `b""` is valid content, not missing.
+    - Proves only PIT admissibility of the reference plus exact digest equality of supplied bytes.
+      No score, level, suitability, or interpretation.
 """
 
 from __future__ import annotations
@@ -31,9 +40,11 @@ from typing import Union
 from backend.engine.private.risk_context import RiskAxisContext
 from backend.engine.private.risk_evidence import MissingRiskEvidence
 from backend.engine.private.risk_evidence_availability import RiskEvidenceAvailabilityRef
+from backend.engine.private.risk_evidence_content_match import RiskEvidenceContentMatch
 from backend.engine.private.risk_evidence_pit_binding import RiskEvidencePITBinding
 
 RiskEvidenceReferenceResolution = Union[MissingRiskEvidence, RiskEvidencePITBinding]
+RiskEvidenceContentResolution = Union[MissingRiskEvidence, RiskEvidenceContentMatch]
 
 
 def resolve_risk_evidence_reference(
@@ -64,3 +75,28 @@ def resolve_risk_evidence_reference(
         return RiskEvidencePITBinding(context=context, availability_ref=availability_ref)  # type: ignore[arg-type]
 
     return MissingRiskEvidence(context=context, missing_inputs=missing_inputs)  # type: ignore[arg-type]
+
+
+def resolve_risk_evidence_content(
+    *,
+    reference_resolution: RiskEvidenceReferenceResolution,
+    content: bytes | None,
+) -> RiskEvidenceContentResolution:
+    """
+    Second-stage resolver forcing exactly one final branch:
+    1. Explicit missing evidence, returned unchanged (`content` must be None); or
+    2. Digest-matched PIT-admissible content (RiskEvidenceContentMatch).
+    """
+    resolution_type = type(reference_resolution)
+
+    if resolution_type is MissingRiskEvidence:
+        if content is not None:
+            raise ValueError("content must be supplied exactly for the PIT-admissible reference branch")
+        return reference_resolution  # type: ignore[return-value]
+
+    if resolution_type is RiskEvidencePITBinding:
+        if content is None:
+            raise ValueError("content must be supplied exactly for the PIT-admissible reference branch")
+        return RiskEvidenceContentMatch(pit_binding=reference_resolution, content=content)
+
+    raise TypeError("reference_resolution must be an exact MissingRiskEvidence or RiskEvidencePITBinding instance")
