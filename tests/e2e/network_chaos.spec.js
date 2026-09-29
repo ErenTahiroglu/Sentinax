@@ -1,12 +1,30 @@
 import { test, expect } from '@playwright/test';
 
+const sse = (item) => `data: ${JSON.stringify(item)}\n\n`;
+
+async function gotoAppReady(page) {
+    const ready = page.waitForEvent('console', {
+        predicate: (m) => m.text().includes('App Initialized Successfully'),
+        timeout: 15000
+    });
+    await Promise.all([ready, page.goto('/')]);
+}
+
+async function enterGuestAndAnalyze(page, ticker) {
+    await gotoAppReady(page);
+    await page.getByRole('button', { name: 'Misafir Olarak Dene', exact: true }).click();
+    await expect(page.locator('#ticker-input')).toBeVisible();
+    await page.locator('#ticker-input').fill(ticker);
+    await page.locator('#analyze-btn').click();
+}
+
 test.describe('Network Chaos & Resilience Tests', () => {
     test('should retry on 503 Service Unavailable and eventually succeed', async ({ page }) => {
-        let attempt = 0;
+        let attempts = 0;
 
         await page.route('**/api/analyze', async (route) => {
-            attempt++;
-            if (attempt === 1) {
+            attempts++;
+            if (attempts === 1) {
                 await route.fulfill({
                     status: 503,
                     contentType: 'application/json',
@@ -16,19 +34,38 @@ test.describe('Network Chaos & Resilience Tests', () => {
                 await route.fulfill({
                     status: 200,
                     contentType: 'text/event-stream',
-                    body: 'data: {"ticker": "AAPL", "price": 150}\n\n'
+                    body: sse({ ticker: 'AAPL', price: 150 })
                 });
             }
         });
 
-        await page.goto('http://localhost:3000');
-        await page.click('#guest-btn');
-        await page.fill('#ticker-input', 'AAPL');
-        await page.click('#analyze-btn');
+        await enterGuestAndAnalyze(page, 'AAPL');
 
-        // Note: Next.js frontend uses "Analyzing..." text in the button during loading
-        await expect(page.locator('#loader')).toBeVisible();
-        await expect(page.locator('.result-card')).toBeVisible({ timeout: 15000 });
-        await expect(page.locator('body')).toContainText('AAPL');
+        await expect(page.locator('#results-grid .result-card:not(.skeleton-card)').first()).toBeVisible({ timeout: 15000 });
+        await expect(page.locator('#results-grid .result-card:not(.skeleton-card)').first()).toContainText('AAPL');
+        expect(attempts).toBeGreaterThanOrEqual(2);
+    });
+
+    test('should retry on network disconnect (abort) and eventually succeed', async ({ page }) => {
+        let attempts = 0;
+
+        await page.route('**/api/analyze', async (route) => {
+            attempts++;
+            if (attempts === 1) {
+                await route.abort('failed');
+            } else {
+                await route.fulfill({
+                    status: 200,
+                    contentType: 'text/event-stream',
+                    body: sse({ ticker: 'MSFT', price: 300 })
+                });
+            }
+        });
+
+        await enterGuestAndAnalyze(page, 'MSFT');
+
+        await expect(page.locator('#results-grid .result-card:not(.skeleton-card)').first()).toBeVisible({ timeout: 15000 });
+        await expect(page.locator('#results-grid .result-card:not(.skeleton-card)').first()).toContainText('MSFT');
+        expect(attempts).toBeGreaterThanOrEqual(2);
     });
 });

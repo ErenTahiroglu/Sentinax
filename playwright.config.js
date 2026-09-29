@@ -1,7 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
-  testDir: './e2e',
+  testDir: './tests/e2e',
   timeout: 60 * 1000,
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
@@ -9,7 +9,7 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   reporter: 'html',
   use: {
-    baseURL: 'http://localhost:3000',
+    baseURL: 'http://127.0.0.1:3000',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure'
   },
@@ -24,11 +24,13 @@ export default defineConfig({
       use: { ...devices['Pixel 5'] },
     },
   ],
-  // Web server configuration
+  // Static frontend server (frontend/ has no npm manifest)
   webServer: {
-    command: 'npm run dev --prefix ../frontend',
-    url: 'http://localhost:3000',
+    // Stock `http.server` has a listen backlog of 5 and resets connections when
+    // parallel workers load the ES-module graph; raise it.
+    command: `python3 -c "import functools, http.server as h; h.ThreadingHTTPServer.request_queue_size = 128; h.test(HandlerClass=functools.partial(h.SimpleHTTPRequestHandler, directory='frontend'), ServerClass=h.ThreadingHTTPServer, port=3000, bind='127.0.0.1')"`,
+    url: 'http://127.0.0.1:3000',
     reuseExistingServer: !process.env.CI,
-    timeout: 120 * 1000,
+    timeout: 30 * 1000,
   },
 });
