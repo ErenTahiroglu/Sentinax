@@ -227,3 +227,16 @@ The resolution key is entirely invariant to physical database UUIDs and input li
 - **Constructor.** It recomputes the canonical VaR and ES through the same helper as the builder and rejects forged values.
 - **Caveats.** Phase 16D windows overlap, so this is a descriptive empirical tail diagnostic over observed rolling windows. It does not imply independent observations, iid sampling, a standard error, a confidence interval or a forecast probability. It is not a maximum possible loss; it depends on the supplied history, horizon, confidence level and whether crisis periods are present.
 - **Not included.** Parametric or fitted distributions, bootstrap or any randomness, stress scenarios, fund volatility, annualization, portfolio or optimizer CVaR, minimum-sample policy, ranking, scores and recommendations.
+
+## Phase 16K — Month-End Historical Fund Volatility
+
+`backend/engine/private/fund_volatility.py` builds canonical month-end monthly returns from a Phase 16A `TefasFundPriceSeries` and computes historical fund volatility. Its only private imports are `fund_price_series` and `fund_return_series` (reusing the Phase 16B `_simple_return` as the sole return arithmetic). It stays outside `PURE_MANIFEST`; tests assert G1, G2, G4 and G5 are clean and that G3 flags only those two imports.
+
+- **Methodology gap.** The methodology requires volatility but does not define the sampling frequency, the sample-vs-population denominator or the annualization convention. The rules below are the explicit Sentinax Phase 16K engineering convention, not a formula already defined by the methodology report.
+- **Sampling.** The last authoritative observation of each calendar month is the monthly representative (no averaging, first observation or nearest-day inference; the day of month need not match). Returns are adjacent calendar-month simple returns.
+- **Continuity.** Every calendar month between the first and last represented month must contain at least one price point, otherwise the build fails closed (no February to April "monthly" return, no interpolation). Explicit Phase 16A gaps are rejected, so a SOURCE_AS_OF series is never evaluated. One represented month is valid and yields no monthly returns.
+- **Volatility.** Sample standard deviation of the monthly returns with denominator `N - 1`. Fewer than two monthly returns gives `None` / `None`, never zero. This is mathematical availability, not a sufficiency policy.
+- **Annualization.** `annualized = sqrt(sample_variance * 12)`, computed directly from the variance in an explicit 50-digit `ROUND_HALF_EVEN` context. There is no 252/365 day-count annualization. The `sqrt(12)` scaling is descriptive and conventional; it is not a forecast of realized volatility or proof of iid returns or zero serial correlation.
+- **Not overlapping windows.** The sample is NOT the overlapping Phase 16D 12/36/60M rolling returns, and the module does not import the rolling or annualized-return modules.
+- **Self-validation.** Both the monthly series and the volatility result recompute their canonical values through the same helper as the builder and reject forged values.
+- **Not included.** Sharpe, Sortino, excess return, risk-free rate, MAR, portfolio covariance, stress scenarios, bootstrap, ranking, scores and recommendations.
