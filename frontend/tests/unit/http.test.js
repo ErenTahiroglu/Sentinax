@@ -95,37 +95,34 @@ describe('HttpClient Tests', () => {
         }
     });
 
-    it('should handle timeout correctly', async () => {
-        client = new HttpClient({ timeout: 10, maxRetries: 0 });
-        
-        // Mock fetch to reject when aborted
-        global.fetch.mockImplementationOnce((url, { signal }) => {
-            return new Promise((resolve, reject) => {
-                const timeout = setTimeout(() => resolve({ ok: true }), 100);
-                if (signal) {
-                    if (signal.aborted) {
-                        clearTimeout(timeout);
-                        const err = new Error('Aborted');
-                        err.name = 'AbortError';
-                        reject(err);
-                    } else {
-                        signal.addEventListener('abort', () => {
-                            clearTimeout(timeout);
-                            const err = new Error('Aborted');
-                            err.name = 'AbortError';
-                            reject(err);
-                        });
-                    }
-                }
-            });
-        });
-
+    it('should handle timeout correctly with zero retries', async () => {
+        vi.useFakeTimers();
         try {
-            await client.get('/timeout');
-            expect.fail('Should have timed out');
-        } catch (err) {
+            client = new HttpClient({ timeout: 10, maxRetries: 0 });
+
+            // Mock fetch to reject when aborted
+            global.fetch.mockImplementation((url, { signal }) => new Promise((resolve, reject) => {
+                const abort = () => {
+                    const err = new Error('Aborted');
+                    err.name = 'AbortError';
+                    reject(err);
+                };
+                if (signal.aborted) abort();
+                else signal.addEventListener('abort', abort);
+            }));
+
+            const outcome = client.get('/timeout').then(
+                () => { throw new Error('Should have timed out'); },
+                (err) => err
+            );
+            await vi.runAllTimersAsync();
+            const err = await outcome;
+
             expect(err.status).toBe(408);
             expect(err.message).toBe('Request Timeout');
+            expect(global.fetch).toHaveBeenCalledTimes(1);
+        } finally {
+            vi.useRealTimers();
         }
     });
 });

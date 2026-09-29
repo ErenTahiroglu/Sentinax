@@ -62,12 +62,37 @@ export class AnalysisService {
     }
 
     async handleComplete(payload) {
+        // Heavy math runs in the worker; failure propagates to the error path.
+        if (this.state.results.length > 0) {
+            this.state.extras = await this.runWorkerTask('CALCULATE_EXTRAS', this.state.results, payload);
+        }
+
         this.state.isAnalyzing = false;
         this.state.systemStatus = 'ready';
-        
-        // Trigger heavy math in worker if needed (keeping original logic)
-        // This part would ideally be another service, but keeping it simple for now
         showToast("Analiz tamamlandı", "success");
+    }
+
+    /**
+     * One-shot worker task: create, await terminal message, always terminate.
+     */
+    runWorkerTask(type, results, payload) {
+        return new Promise((resolve, reject) => {
+            const worker = new Worker(new URL('../worker.js', import.meta.url), { type: 'module' });
+
+            const finish = (settle, value) => {
+                worker.removeEventListener('message', handler);
+                worker.terminate();
+                settle(value);
+            };
+
+            const handler = (e) => {
+                if (e.data.type === 'EXTRAS_RESULT') finish(resolve, e.data.extras);
+                else if (e.data.type === 'ERROR') finish(reject, new Error(e.data.message));
+            };
+
+            worker.addEventListener('message', handler);
+            worker.postMessage({ type, results, payload });
+        });
     }
 
     handleError(err) {

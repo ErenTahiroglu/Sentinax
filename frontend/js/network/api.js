@@ -21,7 +21,7 @@ export async function runAnalysis(payload, endpoint, callbacks) {
             cachedItems.forEach(item => onResult({ ...item, _fromCache: true }));
         }
 
-        if (tickersToFetch.length === 0) return onComplete?.();
+        if (tickersToFetch.length === 0) return await onComplete?.();
 
         // 2. Request remaining from server
         onProgress?.({ status: 'streaming', message: 'requesting_server' });
@@ -38,7 +38,7 @@ export async function runAnalysis(payload, endpoint, callbacks) {
         if (response.status === 409) return handle409(payload, endpoint, callbacks);
         
         await consumeStream(response, onResult);
-        onComplete?.();
+        await onComplete?.();
 
     } catch (err) {
         if (err.status === 409) return handle409(payload, endpoint, callbacks);

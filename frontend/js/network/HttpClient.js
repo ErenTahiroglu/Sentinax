@@ -14,7 +14,7 @@ export class HttpClient {
     constructor(options = {}) {
         this.baseUrl = options.baseUrl || window.API_BASE || '';
         this.timeout = options.timeout || 120000; // 120s for complex TEFAS + AI analyses
-        this.maxRetries = options.maxRetries || 3;
+        this.maxRetries = options.maxRetries ?? 3;
         this.defaultHeaders = {
             'Content-Type': 'application/json',
             'Accept': 'application/json',
@@ -115,7 +115,7 @@ export class HttpClient {
                 }
 
                 // If we've reached maxRetries or it's a non-retriable error, throw it
-                if (isTimeout) throw { status: 408, message: 'Request Timeout (Max Retries Exceeded)', correlationId };
+                if (isTimeout) throw { status: 408, message: 'Request Timeout', correlationId };
                 if (err.status) throw err; // Already standardized API error
 
                 throw { status: 0, message: err.message || 'Network Error', correlationId };
