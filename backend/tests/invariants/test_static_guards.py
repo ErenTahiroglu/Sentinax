@@ -50,6 +50,7 @@ EXPECTED_MANIFEST = (
     "backend/engine/private/risk_evidence_pit_binding.py",
     "backend/engine/private/risk_evidence_resolution.py",
     "backend/engine/private/risk_evidence_content_match.py",
+    "backend/engine/private/risk_evidence_kind_binding.py",
 )
 
 
