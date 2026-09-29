@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from decimal import Decimal
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -210,6 +210,94 @@ def test_series_requires_exact_partition_in_requested_order(points, gaps) -> Non
 def test_series_rejects_mixed_currencies() -> None:
     with pytest.raises(ValueError, match=r"^TEFAS fund price series contains inconsistent currencies$"):
         _series(points=(_point(_D1), _point(_D2, currency=Currency.USD)), gaps=())
+
+
+# --- canonical constructor temporal contract (16A-R1) ---------------------------
+
+_AWARE = datetime(2026, 3, 10, 12, 0, 0, tzinfo=timezone.utc)
+_SYS_MSG = r"^as_of must be an exact timezone-aware datetime for SYSTEM_AS_OF$"
+_CR_MSG = r"^as_of must be None for CURRENT_REPORTED$"
+
+
+class _NullOffset(tzinfo):
+    """tzinfo whose utcoffset() is None (not a usable offset)."""
+
+    def utcoffset(self, dt):
+        return None
+
+    def dst(self, dt):
+        return None
+
+    def tzname(self, dt):
+        return None
+
+
+class _DatetimeSub(datetime):
+    pass
+
+
+def _bare_series(mode, as_of) -> TefasFundPriceSeries:
+    return _series(mode=mode, as_of=as_of)
+
+
+@pytest.mark.parametrize("as_of", [
+    None, datetime(2026, 3, 10, 12, 0, 0), _DatetimeSub(2026, 3, 10, 12, tzinfo=timezone.utc),
+    datetime(2026, 3, 10, tzinfo=_NullOffset()), "2026-03-10T12:00:00+00:00", 0, 1, True, _Hostile(),
+])
+def test_direct_series_system_as_of_requires_exact_aware_datetime(as_of) -> None:
+    with pytest.raises(TypeError, match=_SYS_MSG):
+        _bare_series(SYS, as_of)
+
+
+@pytest.mark.parametrize("as_of", [_AWARE, datetime(2026, 3, 10, tzinfo=timezone(timedelta(hours=3)))])
+def test_direct_series_system_as_of_accepts_aware_datetime(as_of) -> None:
+    assert _bare_series(SYS, as_of).as_of is as_of
+
+
+@pytest.mark.parametrize("as_of", [_AWARE, datetime(2026, 3, 10, 12, 0, 0), "x", 0, True, _Hostile()])
+def test_direct_series_current_reported_rejects_any_as_of(as_of) -> None:
+    with pytest.raises((TypeError, ValueError)) as info:
+        _bare_series(CR, as_of)
+    assert info.type in (TypeError, ValueError)
+    if _is_aware(as_of):
+        assert info.type is ValueError and str(info.value) == "as_of must be None for CURRENT_REPORTED"
+
+
+def _is_aware(value) -> bool:
+    return type(value) is datetime and value.tzinfo is not None
+
+
+def test_direct_series_current_reported_accepts_none() -> None:
+    assert _bare_series(CR, None).as_of is None
+
+
+@pytest.mark.parametrize("as_of", [None, _AWARE])
+def test_direct_series_source_as_of_preserved(as_of) -> None:
+    assert _bare_series(SRC, as_of).as_of == as_of
+
+
+def test_direct_series_source_as_of_still_rejects_invalid_as_of_type() -> None:
+    with pytest.raises(TypeError):
+        _bare_series(SRC, datetime(2026, 3, 10, 12, 0, 0))
+
+
+def test_direct_constructor_errors_are_static() -> None:
+    with pytest.raises(TypeError) as info:
+        _bare_series(SYS, _Hostile())
+    assert str(info.value) == "as_of must be an exact timezone-aware datetime for SYSTEM_AS_OF"
+
+
+def test_builder_and_constructor_share_the_same_contract() -> None:
+    snap = _snap([_obs(_D1)])
+    for as_of in (None, datetime(2026, 3, 10, 12, 0, 0), "x"):
+        with pytest.raises(TypeError, match=_SYS_MSG):
+            _build([snap], dates=(_D1,), mode=SYS, as_of=as_of)
+        with pytest.raises(TypeError, match=_SYS_MSG):
+            _bare_series(SYS, as_of)
+    with pytest.raises(ValueError, match=_CR_MSG):
+        _build([snap], dates=(_D1,), mode=CR, as_of=_AWARE)
+    with pytest.raises(ValueError, match=_CR_MSG):
+        _bare_series(CR, _AWARE)
 
 
 # --- builder: happy paths ------------------------------------------------------

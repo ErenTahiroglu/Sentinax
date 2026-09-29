@@ -61,6 +61,22 @@ def _is_aware_datetime(value: object) -> bool:
         return False
 
 
+def _validate_temporal_context(mode: MarketDataResolutionMode, as_of: datetime | None) -> None:
+    """
+    Single source of the canonical temporal contract, shared by the series constructor and the builder:
+    SYSTEM_AS_OF requires an exact timezone-aware `as_of`; CURRENT_REPORTED requires `as_of is None`;
+    SOURCE_AS_OF allows None or an exact timezone-aware datetime (the resolver reports it unavailable).
+    """
+    if mode is MarketDataResolutionMode.SYSTEM_AS_OF:
+        if not _is_aware_datetime(as_of):
+            raise TypeError("as_of must be an exact timezone-aware datetime for SYSTEM_AS_OF")
+    elif mode is MarketDataResolutionMode.CURRENT_REPORTED:
+        if as_of is not None:
+            raise ValueError("as_of must be None for CURRENT_REPORTED")
+    elif as_of is not None and not _is_aware_datetime(as_of):
+        raise TypeError("as_of must be None or an exact timezone-aware datetime")
+
+
 def _require_ascending_dates(dates: object, message: str) -> None:
     if type(dates) is not tuple or len(dates) == 0:
         raise TypeError(message)
@@ -130,8 +146,7 @@ class TefasFundPriceSeries:
             raise TypeError("instrument_id must be an exact UUID instance")
         if type(self.mode) is not MarketDataResolutionMode:
             raise TypeError("mode must be an exact MarketDataResolutionMode instance")
-        if self.as_of is not None and not _is_aware_datetime(self.as_of):
-            raise TypeError("as_of must be None or an exact timezone-aware datetime")
+        _validate_temporal_context(self.mode, self.as_of)
         _require_ascending_dates(
             self.requested_dates,
             "requested_dates must be a non-empty tuple of strictly ascending exact dates",
@@ -204,12 +219,7 @@ def build_tefas_fund_price_series(
     if provider_symbol is not None and type(provider_symbol) is not str:
         raise TypeError("provider_symbol must be None or a str")
 
-    if mode is MarketDataResolutionMode.SYSTEM_AS_OF:
-        if not _is_aware_datetime(as_of):
-            raise TypeError("as_of must be an exact timezone-aware datetime for SYSTEM_AS_OF")
-    elif mode is MarketDataResolutionMode.CURRENT_REPORTED:
-        if as_of is not None:
-            raise ValueError("as_of must be None for CURRENT_REPORTED")
+    _validate_temporal_context(mode, as_of)
 
     points: list[TefasFundPricePoint] = []
     gaps: list[TefasFundPriceGap] = []
