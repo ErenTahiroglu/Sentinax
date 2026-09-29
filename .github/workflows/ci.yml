@@ -87,4 +87,5 @@ jobs:
           backend/tests/test_risk_evidence_kind_binding.py \
           backend/tests/test_risk_evidence_cash_schema.py \
           backend/tests/test_risk_evidence_cash_resolution.py \
+          backend/tests/test_risk_evidence_planned_contribution_schema.py \
           -q --disable-socket
