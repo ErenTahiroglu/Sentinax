@@ -55,6 +55,8 @@ EXPECTED_MANIFEST = (
     "backend/engine/private/risk_evidence_cash_resolution.py",
     "backend/engine/private/risk_evidence_planned_contribution_schema.py",
     "backend/engine/private/risk_evidence_planned_contribution_resolution.py",
+    "backend/engine/private/risk_evidence_investment_goal_schema.py",
+    "backend/engine/private/risk_evidence_investment_goal_resolution.py",
 )
 
 
