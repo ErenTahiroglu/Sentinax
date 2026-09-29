@@ -43,6 +43,12 @@ from backend.engine.private.macro.state_inputs import (
 )
 
 _RPC_NAME = "get_pit_macro_state_input"
+# Migration 006's RPC accepts upper-case tokens, while the Python AsOfMode enum serialises lower-case. The two are
+# distinct contracts and are bridged explicitly here (never by case-folding the enum serialization).
+_SQL_AS_OF_MODE = {
+    AsOfMode.SYSTEM_AS_OF: "SYSTEM_AS_OF",
+    AsOfMode.SOURCE_AS_OF: "SOURCE_AS_OF",
+}
 _ROW_KEYS = frozenset({
     "canonical_key", "observation_id", "snapshot_id", "effective_date", "value_text", "data_status",
     "confidence_level", "source_tier", "published_at", "observed_at", "ingested_at", "superseded_at",
@@ -164,7 +170,7 @@ class MacroStateInputQueryService:
                 "p_canonical_key": canonical_key,
                 "p_effective_date": effective_date.isoformat(),
                 "p_as_of": as_of.isoformat(),
-                "p_as_of_mode": mode.value,
+                "p_as_of_mode": _SQL_AS_OF_MODE[mode],
             },
         ).execute()
         data = getattr(response, "data", None)

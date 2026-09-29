@@ -188,10 +188,47 @@ def test_rpc_is_called_once_with_exact_name_and_parameters() -> None:
     assert client.calls == [(
         "get_pit_macro_state_input",
         {"p_canonical_key": KEY, "p_effective_date": "2026-06-29", "p_as_of": AS_OF.isoformat(),
-         "p_as_of_mode": "source_as_of"},
+         "p_as_of_mode": "SOURCE_AS_OF"},
     )]
     assert set(client.calls[0][1]) == {"p_canonical_key", "p_effective_date", "p_as_of", "p_as_of_mode"}
     assert result.mode is AsOfMode.SOURCE_AS_OF
+
+
+def test_system_as_of_rpc_token_and_fact_domain_enum() -> None:
+    result, client = _query([_row()], mode=AsOfMode.SYSTEM_AS_OF)
+    assert client.calls[0][1]["p_as_of_mode"] == "SYSTEM_AS_OF"
+    assert result.mode is AsOfMode.SYSTEM_AS_OF  # the fact keeps the domain enum; SQL tokens stay at the boundary
+    result, client = _query([_row()], mode=AsOfMode.SOURCE_AS_OF)
+    assert result.mode is AsOfMode.SOURCE_AS_OF and result.mode.value == "source_as_of"
+
+
+def _strip_sql_comments(text: str) -> str:
+    return "\n".join(line.split("--", 1)[0] for line in text.splitlines())
+
+
+def test_cross_layer_as_of_mode_contract_python_to_migration_006() -> None:
+    m006 = _strip_sql_comments((MIGRATIONS / "006_macro_series.sql").read_text(encoding="utf-8"))
+    body = re.search(r"FUNCTION\s+public\.get_pit_macro_observation\b.*?\$\$\s+LANGUAGE", m006, re.I | re.S).group(0)
+    sql_tokens = set(re.findall(r"p_as_of_mode\s*=\s*'([^']*)'", body))
+    assert sql_tokens == {"SYSTEM_AS_OF", "SOURCE_AS_OF"}  # the authoritative accepted RPC tokens
+    m022 = _sql()
+    call = re.search(r"public\.get_pit_macro_observation\s*\((.*?)\)", m022, re.I | re.S).group(1)
+    assert [a.strip() for a in call.split(",")][-1] == "p_as_of_mode"  # forwarded unchanged, never normalized
+    assert not re.search(r"\b(upper|lower)\s*\(", m022, re.I)
+
+    sent = {}
+    for mode in AsOfMode:
+        _, client = _query([_row()], mode=mode)
+        sent[mode] = client.calls[0][1]["p_as_of_mode"]
+        assert sent[mode] in sql_tokens
+    assert set(sent.values()) == sql_tokens and len(sent) == len(sql_tokens)
+    assert sent[AsOfMode.SYSTEM_AS_OF] == "SYSTEM_AS_OF" and sent[AsOfMode.SOURCE_AS_OF] == "SOURCE_AS_OF"
+    assert {m.value for m in AsOfMode}.isdisjoint(sql_tokens)  # the enum serialization differs from the SQL contract
+
+
+def test_transport_does_not_derive_the_sql_token_from_the_enum_serialization() -> None:
+    source = Path(module_under_test.__file__).read_text(encoding="utf-8")
+    assert "mode.value" not in source and ".upper()" not in source and ".casefold()" not in source
 
 
 def test_as_of_offset_is_not_normalized_for_the_fact() -> None:
