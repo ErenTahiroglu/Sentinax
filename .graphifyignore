@@ -1,0 +1,8 @@
+# Graphify-specific corpus policy.
+# Generated/tool output (graphify-out/, .superpowers/, coverage, reports, caches) is already
+# covered by .gitignore, which Graphify honors — do not duplicate it here.
+#
+# Tests dominated the architecture graph (backend/tests ~62% of nodes in the previous build),
+# drowning production communities. Keep them out of Graphify; codebase-memory still indexes them.
+backend/tests/
+tests/

@@ -66,4 +66,10 @@ Thumbs.db
 
 .superpowers/
 
-.superpowers/
+# Graphify output & codebase-memory
+graphify-out/
+.codebase-memory/
+
+# Generated test artifacts
+playwright-report/
+test-results/
