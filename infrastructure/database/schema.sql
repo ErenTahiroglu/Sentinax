@@ -2,31 +2,31 @@
 -- AI Portfolio Manager - Supabase Schema
 -- ==========================================
 
--- 1. Portfolios Table
-CREATE TABLE IF NOT EXISTS public.portfolios (
+-- 1. Legacy Portfolio Watchlists Table (per-user ticker list; NOT the private-engine public.portfolios aggregate)
+CREATE TABLE IF NOT EXISTS public.legacy_portfolio_watchlists (
     user_id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     tickers jsonb NOT NULL DEFAULT '[]'::jsonb,
     updated_at timestamptz DEFAULT now()
 );
 
 -- Enable RLS
-ALTER TABLE public.portfolios ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.legacy_portfolio_watchlists ENABLE ROW LEVEL SECURITY;
 
 -- RLS Policies
 CREATE POLICY "Users can view their own portfolio" 
-    ON public.portfolios FOR SELECT 
+    ON public.legacy_portfolio_watchlists FOR SELECT
     USING (auth.uid() = user_id);
 
 CREATE POLICY "Users can insert their own portfolio" 
-    ON public.portfolios FOR INSERT 
+    ON public.legacy_portfolio_watchlists FOR INSERT
     WITH CHECK (auth.uid() = user_id);
 
 CREATE POLICY "Users can update their own portfolio" 
-    ON public.portfolios FOR UPDATE 
+    ON public.legacy_portfolio_watchlists FOR UPDATE
     USING (auth.uid() = user_id);
 
 CREATE POLICY "Users can delete their own portfolio" 
-    ON public.portfolios FOR DELETE 
+    ON public.legacy_portfolio_watchlists FOR DELETE
     USING (auth.uid() = user_id);
 
 

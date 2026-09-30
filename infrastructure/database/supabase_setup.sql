@@ -31,8 +31,8 @@ CREATE TABLE IF NOT EXISTS public.portfolio_snapshots (
     cash_balance DOUBLE PRECISION DEFAULT 0
 );
 
--- 4. Portfolios Tablosu (Güncel Ticker Listesi)
-CREATE TABLE IF NOT EXISTS public.portfolios (
+-- 4. Legacy Portfolio Watchlists Tablosu (Güncel Ticker Listesi; private-engine public.portfolios ile ÇAKIŞMAZ)
+CREATE TABLE IF NOT EXISTS public.legacy_portfolio_watchlists (
     user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     tickers JSONB DEFAULT '[]'::jsonb,
     updated_at TIMESTAMPTZ DEFAULT now()
@@ -71,17 +71,17 @@ CREATE TABLE IF NOT EXISTS public.user_events (
 ALTER TABLE public.user_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.paper_trades ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.portfolio_snapshots ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.portfolios ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.legacy_portfolio_watchlists ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.alerts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.llm_usage_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_events ENABLE ROW LEVEL SECURITY;
 
 -- Politikalar (Genel Şablon: Sadece kendi verisini gör/ekle)
-DROP POLICY IF EXISTS "Users can view own data" ON public.portfolios;
-CREATE POLICY "Users can view own data" ON public.portfolios FOR SELECT USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Users can view own data" ON public.legacy_portfolio_watchlists;
+CREATE POLICY "Users can view own data" ON public.legacy_portfolio_watchlists FOR SELECT USING (auth.uid() = user_id);
 
-DROP POLICY IF EXISTS "Users can update own data" ON public.portfolios;
-CREATE POLICY "Users can update own data" ON public.portfolios FOR ALL USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Users can update own data" ON public.legacy_portfolio_watchlists;
+CREATE POLICY "Users can update own data" ON public.legacy_portfolio_watchlists FOR ALL USING (auth.uid() = user_id);
 
 DROP POLICY IF EXISTS "Users can view own alerts" ON public.alerts;
 CREATE POLICY "Users can view own alerts" ON public.alerts FOR SELECT USING (auth.uid() = user_id);

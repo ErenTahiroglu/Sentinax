@@ -25,6 +25,71 @@
 --   - Foreign key integrity referencing public.instruments(id) ON DELETE RESTRICT
 
 -- ============================================================================
+-- 0. Legacy watchlist compatibility bridge (name collision on public.portfolios)
+-- ============================================================================
+-- The legacy Buffett/watchlist setup (infrastructure/database/*.sql) created a DIFFERENT aggregate under the same
+-- name: public.portfolios(user_id PRIMARY KEY, tickers JSONB, updated_at TIMESTAMPTZ). CREATE TABLE IF NOT EXISTS below
+-- would silently keep that table and the owner_id index would then fail. This block makes the migration replay-safe:
+--   * no table                      -> nothing to do
+--   * private-engine shape already  -> nothing to do (idempotent re-run)
+--   * exact legacy watchlist shape  -> RENAME (data, RLS, policies and constraints travel with the table) to
+--                                      public.legacy_portfolio_watchlists and rename its portfolios_pkey
+--   * anything else / collisions    -> RAISE EXCEPTION (never guess, never merge, never overwrite)
+-- No legacy row is dropped, rewritten, copied or reinterpreted as a private portfolio.
+DO $legacy_watchlist_bridge$
+DECLARE
+    v_oid oid := to_regclass('public.portfolios');
+    v_relkind "char";
+    v_private_markers integer;
+    v_legacy_markers integer;
+    v_pk_name name;
+BEGIN
+    IF v_oid IS NULL THEN
+        RETURN;
+    END IF;
+
+    SELECT relkind INTO v_relkind FROM pg_class WHERE oid = v_oid;
+    IF v_relkind NOT IN ('r', 'p') THEN
+        RAISE EXCEPTION 'migration 011: public.portfolios exists but is not a table (unsupported shape)';
+    END IF;
+
+    SELECT
+        count(*) FILTER (WHERE attname IN ('id', 'owner_id', 'mode', 'base_currency')),
+        count(*) FILTER (WHERE attname IN ('user_id', 'tickers', 'updated_at'))
+    INTO v_private_markers, v_legacy_markers
+    FROM pg_attribute
+    WHERE attrelid = v_oid AND attnum > 0 AND NOT attisdropped;
+
+    IF v_private_markers = 4 THEN
+        RETURN;
+    END IF;
+
+    IF v_private_markers <> 0 OR v_legacy_markers <> 3 THEN
+        RAISE EXCEPTION 'migration 011: existing public.portfolios has an unsupported shape (neither the private engine schema nor the legacy user_id/tickers/updated_at watchlist schema)';
+    END IF;
+
+    IF to_regclass('public.legacy_portfolio_watchlists') IS NOT NULL THEN
+        RAISE EXCEPTION 'migration 011: cannot rename legacy public.portfolios because public.legacy_portfolio_watchlists already exists';
+    END IF;
+    IF to_regclass('public.legacy_portfolio_watchlists_pkey') IS NOT NULL THEN
+        RAISE EXCEPTION 'migration 011: cannot rename legacy public.portfolios because public.legacy_portfolio_watchlists_pkey already exists';
+    END IF;
+
+    ALTER TABLE public.portfolios RENAME TO legacy_portfolio_watchlists;
+
+    -- The renamed table keeps its primary-key constraint/index name; free the portfolios_pkey namespace for the
+    -- private aggregate created below.
+    SELECT conname INTO v_pk_name
+    FROM pg_constraint
+    WHERE conrelid = 'public.legacy_portfolio_watchlists'::regclass AND contype = 'p';
+    IF v_pk_name = 'portfolios_pkey' THEN
+        ALTER TABLE public.legacy_portfolio_watchlists
+            RENAME CONSTRAINT portfolios_pkey TO legacy_portfolio_watchlists_pkey;
+    END IF;
+END
+$legacy_watchlist_bridge$;
+
+-- ============================================================================
 -- 1. public.portfolios (Root Aggregate)
 -- ============================================================================
 

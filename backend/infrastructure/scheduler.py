@@ -129,7 +129,7 @@ async def start_alert_scheduler():
                     for us in resp_settings.json():
                         user_settings_map[us.get("user_id")] = us
 
-                resp = await client.get(f"{SUPABASE_URL}/rest/v1/portfolios?select=user_id,tickers", headers=headers)
+                resp = await client.get(f"{SUPABASE_URL}/rest/v1/legacy_portfolio_watchlists?select=user_id,tickers", headers=headers)
                 if resp.status_code != 200:
                     await asyncio.sleep(INTERVAL_SECONDS)
                     continue

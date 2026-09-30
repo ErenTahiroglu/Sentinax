@@ -432,3 +432,103 @@ class TestMigration013ExternalIdentityNormalization:
         assert "FROM PUBLIC" in no_comments
         assert "GRANT EXECUTE ON FUNCTION public.lookup_portfolio_transaction_external_identity" in no_comments
         assert "TO authenticated, service_role" in no_comments
+
+
+# ============================================================================
+# Phase 17 DB chain repair: legacy watchlist / private portfolio name collision
+# ============================================================================
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+LEGACY_SETUP_FILES = (
+    os.path.join(REPO_ROOT, "infrastructure", "database", "schema.sql"),
+    os.path.join(REPO_ROOT, "infrastructure", "database", "supabase_setup.sql"),
+)
+SCHEDULER_PATH = os.path.join(REPO_ROOT, "backend", "infrastructure", "scheduler.py")
+MAIN_API_PATH = os.path.join(REPO_ROOT, "backend", "api", "main.py")
+
+
+def _strip_sql_comments(sql: str) -> str:
+    return re.sub(r"/\*.*?\*/", "", re.sub(r"--.*", "", sql), flags=re.DOTALL)
+
+
+@pytest.fixture(scope="module")
+def bridge_block(sql_without_comments: str) -> str:
+    match = re.search(r"DO\s+\$legacy_watchlist_bridge\$(.*?)\$legacy_watchlist_bridge\$", sql_without_comments,
+                      re.DOTALL | re.IGNORECASE)
+    assert match, "migration 011 must contain the legacy watchlist compatibility bridge"
+    return match.group(1)
+
+
+class TestLegacyWatchlistNameCollision:
+    """Migration 011 must be replay-safe when a legacy ticker-watchlist `public.portfolios` already exists."""
+
+    def test_bridge_exists_and_precedes_private_table_creation(self, sql_without_comments: str, bridge_block: str):
+        bridge_at = sql_without_comments.index("$legacy_watchlist_bridge$")
+        create_at = re.search(r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+public\.portfolios\b", sql_without_comments,
+                              re.IGNORECASE).start()
+        assert bridge_at < create_at
+
+    def test_legacy_table_is_renamed_to_a_semantic_name_without_data_destruction(self, bridge_block: str):
+        assert re.search(r"ALTER\s+TABLE\s+public\.portfolios\s+RENAME\s+TO\s+legacy_portfolio_watchlists\b",
+                         bridge_block, re.IGNORECASE)
+        for forbidden in (r"DROP\s+TABLE", r"TRUNCATE", r"DELETE\s+FROM", r"INSERT\s+INTO", r"UPDATE\s+public",
+                          r"CREATE\s+TABLE\s+public\.legacy", r"ALTER\s+TABLE[^;]*DROP\s+COLUMN", r"DROP\s+POLICY"):
+            assert not re.search(forbidden, bridge_block, re.IGNORECASE), forbidden
+
+    def test_no_destructive_statement_targets_the_legacy_table_anywhere(self, sql_without_comments: str):
+        assert not re.search(r"DROP\s+TABLE\s+(IF\s+EXISTS\s+)?public\.(portfolios|legacy_portfolio_watchlists)\b",
+                             sql_without_comments, re.IGNORECASE)
+        assert not re.search(r"(TRUNCATE|DELETE\s+FROM)\s+(TABLE\s+)?public\.(portfolios|legacy_portfolio_watchlists)\b",
+                             sql_without_comments, re.IGNORECASE)
+
+    def test_shape_detection_recognizes_private_legacy_and_fails_closed_on_unknown(self, bridge_block: str):
+        for marker in ("'id'", "'owner_id'", "'mode'", "'base_currency'", "'user_id'", "'tickers'", "'updated_at'"):
+            assert marker in bridge_block, marker
+        assert "to_regclass('public.portfolios')" in bridge_block
+        # private shape -> no-op, legacy shape -> rename, anything else -> deterministic exception
+        assert re.search(r"RETURN\s*;", bridge_block)
+        exceptions = re.findall(r"RAISE\s+EXCEPTION\s+'([^']+)'", bridge_block, re.IGNORECASE)
+        assert len(exceptions) >= 4
+        assert any("unsupported" in e.lower() for e in exceptions)
+        assert any("legacy_portfolio_watchlists" in e for e in exceptions)
+
+    def test_existing_legacy_target_name_is_a_collision_not_an_overwrite(self, bridge_block: str):
+        assert "to_regclass('public.legacy_portfolio_watchlists')" in bridge_block
+        assert "to_regclass('public.legacy_portfolio_watchlists_pkey')" in bridge_block
+
+    def test_primary_key_name_collision_is_prevented(self, bridge_block: str):
+        assert re.search(
+            r"RENAME\s+CONSTRAINT\s+portfolios_pkey\s+TO\s+legacy_portfolio_watchlists_pkey",
+            bridge_block, re.IGNORECASE)
+        assert "contype = 'p'" in bridge_block
+
+    def test_private_schema_invariants_are_not_weakened(self, sql_without_comments: str):
+        for needle in ("owner_id UUID NOT NULL REFERENCES auth.users(id)", "mode VARCHAR(32) NOT NULL",
+                       "base_currency VARCHAR(10) NOT NULL", "CONSTRAINT uq_portfolios_id_owner UNIQUE (id, owner_id)",
+                       "CONSTRAINT chk_portfolio_provenance", "CONSTRAINT fk_portfolios_source_portfolio"):
+            assert needle in sql_without_comments, needle
+
+    def test_scheduler_reads_the_renamed_legacy_watchlist_table(self):
+        with open(SCHEDULER_PATH, "r", encoding="utf-8") as f:
+            source = f.read()
+        assert "/rest/v1/legacy_portfolio_watchlists?select=user_id,tickers" in source
+        assert "/rest/v1/portfolios?select=user_id,tickers" not in source
+
+    def test_health_check_still_targets_the_private_portfolios_table(self):
+        with open(MAIN_API_PATH, "r", encoding="utf-8") as f:
+            source = f.read()
+        assert "/rest/v1/portfolios?limit=1" in source
+
+    @pytest.mark.parametrize("path", LEGACY_SETUP_FILES, ids=["schema.sql", "supabase_setup.sql"])
+    def test_legacy_setup_files_no_longer_create_the_colliding_table(self, path: str):
+        with open(path, "r", encoding="utf-8") as f:
+            sql = _strip_sql_comments(f.read())
+        assert re.search(r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+public\.legacy_portfolio_watchlists\s*\(", sql,
+                         re.IGNORECASE)
+        assert not re.search(r"public\.portfolios\b", sql, re.IGNORECASE)
+        assert re.search(r"user_id\s+uuid\s+PRIMARY\s+KEY\s+REFERENCES\s+auth\.users\(id\)\s+ON\s+DELETE\s+CASCADE",
+                         sql, re.IGNORECASE)
+        assert "tickers" in sql and "updated_at" in sql
+        assert re.search(r"ALTER\s+TABLE\s+public\.legacy_portfolio_watchlists\s+ENABLE\s+ROW\s+LEVEL\s+SECURITY", sql,
+                         re.IGNORECASE)
+        assert "owner_id" not in sql.split("legacy_portfolio_watchlists", 1)[1].split(");", 1)[0]
