@@ -3,12 +3,18 @@ backend/engine/private/providers/tcmb_evds.py
 ===============================================
 TCMB EVDS (Electronic Data Delivery System) Official API Adapter.
 
-Official Specification:
-    - Base URL: https://evds2.tcmb.gov.tr/service/evds/
+Official Specification (EVDS3 data service):
+    - Base URL: https://evds3.tcmb.gov.tr/igmevdsms-dis/
+    - Request form (path-style, reproduced live; `?series=` query-style returns 404 on this host):
+      `<base>series=<code>&startDate=<DD-MM-YYYY>&endDate=<DD-MM-YYYY>&type=json`
     - Authentication: API key provided via HTTP Request Header `key` (NEVER in URL/logs).
-    - Query Parameters: `series`, `startDate`, `endDate`, `type=json`
-    - Date Format: DD-MM-YYYY
-    - Response Format: JSON object containing items array with series fields (dots converted to underscores).
+    - Response Format: JSON object `{"totalCount", "items": [...]}`; each item has `Tarih`, an object-valued
+      `UNIXTIME` (`{"$numberLong": ...}`, raw provider metadata only) and series fields (dots -> underscores).
+    - `Tarih`: DD-MM-YYYY for daily series, `YYYY-M` for monthly series (a period, parsed to the first of the
+      month; it is NOT a publication date).
+    - Compatibility note: as of the 2026-09-30 authenticated Sentinax check the former evds2 service URL returned the
+      EVDS3 HTML application shell (HTTP 200, text/html) instead of JSON. There is no evds2 fallback; HTML is never
+      parsed and a non-JSON body fails closed as a schema error.
 
 Hardening Invariants:
     - Zero observation is a valid float (0.0), NEVER treated as missing or falsy.
@@ -24,6 +30,7 @@ import os
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 from uuid import UUID
 
 import httpx
@@ -59,10 +66,10 @@ class TCMBEVDSProvider(DataProviderContract):
     Official data adapter for Turkey Central Bank EVDS Web Service.
     """
     provider_name: str = "TCMB_EVDS"
-    provider_version: str = "1.0.0"
+    provider_version: str = "1.1.0"
     source_quality: SourceTier = SourceTier.TIER_1_REGULATORY
     access_status: ProviderAccessStatus = ProviderAccessStatus.GREEN
-    base_url: str = "https://evds2.tcmb.gov.tr/service/evds/"
+    base_url: str = "https://evds3.tcmb.gov.tr/igmevdsms-dis/"
 
     def __init__(
         self,
@@ -166,14 +173,14 @@ class TCMBEVDSProvider(DataProviderContract):
         start_str = context.request_parameters.get("startDate") or target_date.strftime("%d-%m-%Y")
         end_str = context.request_parameters.get("endDate") or target_date.strftime("%d-%m-%Y")
 
-        params = {
-            "series": series_code,
-            "startDate": start_str,
-            "endDate": end_str,
-            "type": "json",
-        }
+        # EVDS3 path-style request. Values are percent-encoded so a symbol cannot inject request parameters.
+        request_url = (
+            f"{self.base_url}series={quote(str(series_code), safe='.-_')}"
+            f"&startDate={quote(str(start_str), safe='-.')}"
+            f"&endDate={quote(str(end_str), safe='-.')}&type=json"
+        )
 
-        # Header authentication: NEVER pass key in query params
+        # Header authentication: NEVER pass key in the URL, path or query
         headers = {
             "key": self._api_key,
             "Accept": "application/json",
@@ -184,8 +191,7 @@ class TCMBEVDSProvider(DataProviderContract):
 
         try:
             resp = await client.get(
-                self.base_url,
-                params=params,
+                request_url,
                 headers=headers,
                 timeout=10.0,
             )
@@ -411,7 +417,8 @@ class TCMBEVDSProvider(DataProviderContract):
     def _parse_date(date_str: Optional[str]) -> Optional[date]:
         if not date_str:
             return None
-        for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d.%m.%Y"):
+        # "%Y-%m" is the EVDS3 monthly period ("2026-9" -> 2026-09-01): a period label, not a publication date.
+        for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d.%m.%Y", "%Y-%m"):
             try:
                 return datetime.strptime(date_str.strip(), fmt).date()
             except ValueError:

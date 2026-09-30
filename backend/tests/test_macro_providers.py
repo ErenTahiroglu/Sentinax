@@ -218,6 +218,126 @@ class TestTCMBEVDSHardened:
         assert kwargs.get("headers", {}).get("key") == secret_key
 
 
+class TestTCMBEVDS3Transport:
+    """Phase 17H-P0: EVDS3 `igmevdsms-dis` path-style transport (header auth, JSON, monthly Tarih)."""
+
+    BASE = "https://evds3.tcmb.gov.tr/igmevdsms-dis/"
+
+    @staticmethod
+    def _client(payload=None, json_error=None, status=200):
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        resp = MagicMock(status_code=status)
+        if json_error is not None:
+            resp.json = MagicMock(side_effect=json_error)
+        else:
+            resp.json = MagicMock(return_value=payload)
+        mock_client.get.return_value = resp
+        return mock_client
+
+    def test_endpoint_authority_and_version(self):
+        assert TCMBEVDSProvider.base_url == self.BASE
+        assert TCMBEVDSProvider.provider_version == "1.1.0"
+        provider = TCMBEVDSProvider(api_key="key")
+        resp_ctx = FetchContext(observation_type="MACRO", provider_symbol="TP.APIFON4")
+        assert "evds2" not in provider.base_url
+        assert resp_ctx.provider_symbol == "TP.APIFON4"
+
+    @pytest.mark.asyncio
+    async def test_request_is_path_style_with_header_auth_only(self):
+        secret = "super_secret_evds3_token_456"
+        client = self._client({"totalCount": 1, "items": [{"Tarih": "15-01-2024", "TP_DK_USD_A_YTL": "30.0"}]})
+        provider = TCMBEVDSProvider(api_key=secret, http_client=client)
+        ctx = FetchContext(observation_type="MACRO_FX", provider_symbol="TP.DK.USD.A.YTL",
+                           effective_date=date(2024, 1, 15))
+        await provider.fetch(ctx)
+        args, kwargs = client.get.call_args
+        assert args == (self.BASE + "series=TP.DK.USD.A.YTL&startDate=15-01-2024&endDate=15-01-2024&type=json",)
+        assert "params" not in kwargs
+        assert secret not in args[0]
+        assert kwargs["headers"]["key"] == secret and kwargs["headers"]["Accept"] == "application/json"
+        assert secret not in repr({k: v for k, v in kwargs.items() if k != "headers"})
+
+    @pytest.mark.asyncio
+    async def test_canonical_keys_resolve_to_provider_codes_in_path(self):
+        client = self._client({"totalCount": 1, "items": [{"Tarih": "15-01-2024", "TP_DK_USD_A_YTL": "30.0"}]})
+        provider = TCMBEVDSProvider(api_key="key", http_client=client)
+        await provider.fetch(FetchContext(observation_type="MACRO", provider_symbol="TR_FX_USDTRY",
+                                          effective_date=date(2024, 1, 15)))
+        assert "series=TP.DK.USD.A.YTL&" in client.get.call_args[0][0]
+        await provider.fetch(FetchContext(observation_type="MACRO", provider_symbol="TR_TCMB_AOFM",
+                                          effective_date=date(2024, 1, 15)))
+        assert "series=TP.APIFON4&" in client.get.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_symbol_cannot_inject_request_parameters(self):
+        client = self._client({"totalCount": 0, "items": []})
+        provider = TCMBEVDSProvider(api_key="key", http_client=client)
+        await provider.fetch(FetchContext(observation_type="MACRO", provider_symbol="TP.X&type=xml",
+                                          effective_date=date(2024, 1, 15)))
+        url = client.get.call_args[0][0]
+        assert url.count("&type=") == 1 and url.endswith("&type=json") and "TP.X%26type%3Dxml" in url
+
+    def test_monthly_tarih_parses_to_first_of_month_and_daily_formats_preserved(self):
+        assert TCMBEVDSProvider._parse_date("2026-9") == date(2026, 9, 1)
+        assert TCMBEVDSProvider._parse_date("2026-09") == date(2026, 9, 1)
+        assert TCMBEVDSProvider._parse_date("2026-12") == date(2026, 12, 1)
+        assert TCMBEVDSProvider._parse_date("15-01-2024") == date(2024, 1, 15)
+        assert TCMBEVDSProvider._parse_date("2024-01-15") == date(2024, 1, 15)
+        assert TCMBEVDSProvider._parse_date("15.01.2024") == date(2024, 1, 15)
+        for bad in ("2026-13", "2026-0", "2026", "9-2026x", "", None, "INVALID"):
+            assert TCMBEVDSProvider._parse_date(bad) is None
+
+    @pytest.mark.asyncio
+    async def test_evds3_monthly_payload_is_complete_without_inferring_publication(self):
+        payload = {"totalCount": 1, "items": [{
+            "Tarih": "2026-9", "TP_TEST_MONTHLY": "23.70000000", "UNIXTIME": {"$numberLong": "1788210000"}}]}
+        provider = TCMBEVDSProvider(api_key="key", http_client=self._client(payload))
+        response = await provider.fetch(FetchContext(observation_type="MACRO", provider_symbol="TP.TEST.MONTHLY"))
+        assert response.status == DataStatus.COMPLETE
+        assert response.effective_date == date(2026, 9, 1)
+        assert response.published_at is None
+        normalized = provider.normalize(response.raw)
+        assert normalized["value"] == 23.7
+        assert normalized["unix_time"] == {"$numberLong": "1788210000"}  # raw metadata only
+        assert "values" not in normalized and "UNIXTIME" not in normalized
+
+    @pytest.mark.asyncio
+    async def test_evds3_zero_complete_and_missing_unavailable(self):
+        for raw, expected in (("0", DataStatus.COMPLETE), ("0.00000000", DataStatus.COMPLETE),
+                              ("", DataStatus.UNAVAILABLE), (None, DataStatus.UNAVAILABLE)):
+            payload = {"totalCount": 1, "items": [{"Tarih": "2026-9", "TP_TEST_MONTHLY": raw,
+                                                    "UNIXTIME": {"$numberLong": "1"}}]}
+            provider = TCMBEVDSProvider(api_key="key", http_client=self._client(payload))
+            response = await provider.fetch(FetchContext(observation_type="MACRO",
+                                                         provider_symbol="TP.TEST.MONTHLY"))
+            assert response.status == expected
+
+    @pytest.mark.asyncio
+    async def test_html_200_shell_never_becomes_data(self):
+        client = self._client(json_error=ValueError("Expecting value: line 1 column 1 (char 0)"))
+        provider = TCMBEVDSProvider(api_key="key", http_client=client)
+        with pytest.raises(ProviderSchemaError):
+            await provider.fetch(FetchContext(observation_type="MACRO", provider_symbol="TP.ENFBEK.PKA12ENF"))
+        # Non-mapping / item-less JSON is not data either.
+        for bad in ("<!DOCTYPE html>", [], None, {"status": "400"}):
+            provider = TCMBEVDSProvider(api_key="key", http_client=self._client(bad))
+            response = await provider.fetch(FetchContext(observation_type="MACRO",
+                                                         provider_symbol="TP.ENFBEK.PKA12ENF"))
+            assert response.status == DataStatus.UNAVAILABLE and response.effective_date is None
+
+    def test_provenance_endpoint_is_evds3_and_carries_no_secret(self):
+        provider = TCMBEVDSProvider(api_key="super_secret_token")
+        from backend.engine.private.provider_contract import ProviderResponse
+        response = ProviderResponse(
+            provider_name="TCMB_EVDS", source_quality=SourceTier.TIER_1_REGULATORY,
+            retrieved_at=datetime(2026, 9, 30, tzinfo=timezone.utc), published_at=None, effective_date=None,
+            status=DataStatus.UNAVAILABLE, raw=None, warnings=[], canonical_instrument_id=None,
+            provider_symbol="TP.APIFON4")
+        prov = provider.provenance(response)
+        assert prov.endpoint == self.BASE and prov.provider_version == "1.1.0"
+        assert "super_secret_token" not in repr(prov)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. TÜİK SDMX Tests & Hardening
 # ─────────────────────────────────────────────────────────────────────────────

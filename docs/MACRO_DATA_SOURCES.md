@@ -10,7 +10,7 @@
 
 | Source | Geography | Authority Level | Access Method | Contract Status | Freshness Basis | Secret Requirement | Tax Indexation Eligible? |
 |---|---|---|---|---|---|---|---|
-| **TCMB EVDS** | TR | `TIER_1_REGULATORY` | REST API (JSON) | **VERIFIED (EVDS2)** | `EFFECTIVE_DATE` | `TCMB_EVDS_API_KEY` (Header `key`) | N/A (FX / Funding Rates) |
+| **TCMB EVDS** | TR | `TIER_1_REGULATORY` | REST API (JSON) | **VERIFIED (EVDS3 transport, provider 1.1.0)** | `EFFECTIVE_DATE` | `TCMB_EVDS_API_KEY` (Header `key`) | N/A (FX / Funding Rates) |
 | **TÜİK SDMX** | TR | `TIER_1_REGULATORY` | SDMX 2.1 REST API | **UNVERIFIED (YELLOW)** | `PUBLISHED_AT` | None (Open Web Service) | **YES** (Yİ-ÜFE Only, once verified) |
 | **ENAG Manual** | TR | `TIER_3_AGGREGATOR` | Manual Ingestion | **VERIFIED (MANUAL)** | `PUBLISHED_AT` | None (Audit Trail) | **NO** (Strictly Prohibited) |
 | **FRED / ALFRED** | US | `TIER_1_REGULATORY` | REST API v1 (JSON) | **VERIFIED** | `PUBLISHED_AT` / `EFFECTIVE_DATE` | `FRED_API_KEY` (Query `api_key`) | N/A (Global Macro) |
@@ -225,3 +225,17 @@ The builder returns ONE `USMacroEvidenceSnapshot` (there is no `build_*_history`
 
 ### Explicitly deferred
 `GrowthImpulse_t`, `PolicyInflationState_t`, `FinancialStress_t`, final MacroState, macro regime labels, component weights, structural-break detector, winsorization, recession prediction, broad-dollar momentum, real-yield momentum, curve inversion interpretation, Turkey activity composite, Turkey verified policy rate, Turkey 12m inflation expectations, technical overlay, portfolio tactical tilt, optimizer integration.
+
+## 13. Phase 17H-P0 — TCMB EVDS3 Transport
+
+`TCMBEVDSProvider` (version `1.1.0`) now uses the current EVDS3 REST data service. This is a transport change only: no registry contract, macro category, series activation or methodology changed, and `TR_POLICY_RATE` stays UNVERIFIED / inactive.
+
+As of the 2026-09-30 authenticated Sentinax compatibility check, the legacy provider URL returned the EVDS3 HTML application shell rather than the expected JSON data contract, while the EVDS3 `igmevdsms-dis` data service returned JSON. No broader claim is made about the EVDS2 service's lifecycle, and there is no EVDS2 fallback (a silent old/new fallback would hide contract drift).
+
+- **Endpoint.** `https://evds3.tcmb.gov.tr/igmevdsms-dis/`, path-style request `series=<code>&startDate=<DD-MM-YYYY>&endDate=<DD-MM-YYYY>&type=json`. The conventional `?series=` query form returned HTTP 404 on this host. Request values are percent-encoded so a symbol cannot inject parameters.
+- **Authentication.** HTTP header `key` only (plus `Accept: application/json`); never in the URL, path, query, warnings or provenance.
+- **Response.** `{"totalCount": n, "items": [{"Tarih": ..., "<SERIES_WITH_UNDERSCORES>": "...", "UNIXTIME": {"$numberLong": "..."}}]}`. Series fields parse exactly as before (missing is `None`, zero stays zero, multi-series gives a deterministic `values` mapping). `UNIXTIME` is kept as raw provider metadata only: it is never a series value, `effective_date`, `published_at` or availability timestamp.
+- **`Tarih`.** Daily series keep `DD-MM-YYYY` (also `YYYY-MM-DD`, `DD.MM.YYYY`). Monthly series use `YYYY-M` (e.g. `2026-9`), parsed to the first day of that month. That date is a period label (September 2026), not a publication date: `published_at` stays `None` and no availability date is inferred from it.
+- **Fail closed.** An HTML or otherwise non-JSON body raises the schema error and is never scraped; JSON without observation items is UNAVAILABLE.
+- **Unchanged.** Legacy macro values remain `float` (the exact-Decimal path for precious metals is untouched); provider calls still resolve canonical registry keys to provider codes (`TR_FX_USDTRY` -> `TP.DK.USD.A.YTL`, `TR_TCMB_AOFM` -> `TP.APIFON4`).
+- **Manual smoke.** `scripts/smoke_evds.py` (never run in CI) prints no part of the API key and also transport-probes the raw monthly codes `TP.ENFBEK.PKA12ENF` and `TP.BISPOLFAIZ.TUR`. A successful probe is not registry verification and not a statement that either is the final methodology authority.
