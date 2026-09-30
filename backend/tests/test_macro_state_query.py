@@ -160,8 +160,8 @@ def test_empty_and_unnormalized_keys_are_rejected_before_rpc() -> None:
 
 def test_unverified_inactive_and_disabled_series_fail_before_rpc(monkeypatch) -> None:
     with pytest.raises(ValueError, match=r"^macro series must be active and VERIFIED$"):
-        _query([_row()], canonical_key="TR_POLICY_RATE")
-    assert _client_after(dict(canonical_key="TR_POLICY_RATE"))[1].calls == []
+        _query([_row()], canonical_key="TR_CPI_TUIK_YOY")
+    assert _client_after(dict(canonical_key="TR_CPI_TUIK_YOY"))[1].calls == []
     base = MacroSeriesRegistry.get(KEY)
     for over in ({"is_active": False}, {"contract_status": ContractStatus.DISABLED},
                  {"contract_status": ContractStatus.UNVERIFIED}):
@@ -175,10 +175,21 @@ def test_unverified_inactive_and_disabled_series_fail_before_rpc(monkeypatch) ->
 
 
 def test_policy_rate_is_never_aliased_to_aofm() -> None:
-    _, client = _client_after(dict(canonical_key="TR_POLICY_RATE"))
-    assert client.calls == []
+    result, client = _query([_row(canonical_key="TR_POLICY_RATE", value_text="37.00")], canonical_key="TR_POLICY_RATE")
+    assert client.calls[0][1]["p_canonical_key"] == "TR_POLICY_RATE"  # Phase 17H: verified, exact key, no AOFM swap
+    assert result.canonical_key == "TR_POLICY_RATE" and result.value == Decimal("37.00")
+    assert type(result.value) is Decimal and str(result.value) == "37.00"
+    assert result.mode is AsOfMode.SYSTEM_AS_OF and result.as_of == AS_OF
     result, client = _query([_row(canonical_key="TR_TCMB_AOFM")], canonical_key="TR_TCMB_AOFM")
     assert result.canonical_key == "TR_TCMB_AOFM" and client.calls[0][1]["p_canonical_key"] == "TR_TCMB_AOFM"
+
+
+def test_expected_inflation_12m_is_queryable_with_exact_decimal_text() -> None:
+    key = "TR_EXPECTED_INFLATION_12M_PKA"
+    result, client = _query([_row(canonical_key=key, value_text="23.70")], canonical_key=key)
+    assert client.calls[0][1]["p_canonical_key"] == key
+    assert result.canonical_key == key and result.value == Decimal("23.70")
+    assert type(result.value) is Decimal and str(result.value) == "23.70"
 
 
 # --- rpc invocation ------------------------------------------------------------------------------------------------------------

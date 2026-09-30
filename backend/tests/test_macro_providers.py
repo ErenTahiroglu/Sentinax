@@ -7,7 +7,7 @@ Coverage:
     [TCMB EVDS]
     - TP.APIFON4 is NOT registered as policy rate
     - TP.APIFON4 is registered as TR_TCMB_AOFM (Ağırlıklı Ortalama Fonlama Maliyeti)
-    - Policy rate is UNVERIFIED / disabled pending official code confirmation
+    - Policy rate (TR_POLICY_RATE) is VERIFIED since Phase 17H (EVDS3 TP.BISPOLFAIZ.TUR, BIS upstream); AOFM stays separate
     - USD and EUR EVDS codes preserved
     - 0.0 is a valid observation (not falsy, not missing)
     - Missing observation is None (not 0.0)
@@ -92,8 +92,9 @@ class TestTCMBEVDSHardened:
         policy_def = MacroSeriesRegistry.get("TR_POLICY_RATE")
         assert policy_def is not None
         assert policy_def.provider_series_code != "TP.APIFON4"
-        assert policy_def.contract_status == ContractStatus.UNVERIFIED
-        assert policy_def.is_active is False
+        assert policy_def.provider_series_code == "TP.BISPOLFAIZ.TUR"
+        assert policy_def.contract_status == ContractStatus.VERIFIED
+        assert policy_def.is_active is True
 
     def test_02_tp_apifon4_registered_as_aofm(self):
         """Directive 1: TP.APIFON4 is registered as AOFM (Ağırlıklı Ortalama Fonlama Maliyeti)."""
@@ -104,12 +105,9 @@ class TestTCMBEVDSHardened:
         assert "AOFM" in aofm_def.description or "Fonlama" in aofm_def.description
         assert aofm_def.is_active is True
 
-    def test_03_policy_rate_unverified_returns_unavailable(self):
-        """Directive 1: Attempting to query unverified policy rate returns UNAVAILABLE."""
-        provider = TCMBEVDSProvider(api_key="key")
-        ctx = FetchContext(observation_type="MACRO", provider_symbol="TR_POLICY_RATE")
-        # Run sync check via registry
-        p_def = MacroSeriesRegistry.get(ctx.provider_symbol)
+    def test_03_still_unverified_series_remain_inactive(self):
+        """Phase 17H verified the policy rate; genuinely unverified series (e.g. TUIK CPI YoY) stay inactive."""
+        p_def = MacroSeriesRegistry.get("TR_CPI_TUIK_YOY")
         assert p_def.is_active is False
         assert p_def.contract_status == ContractStatus.UNVERIFIED
 
@@ -336,6 +334,95 @@ class TestTCMBEVDS3Transport:
         prov = provider.provenance(response)
         assert prov.endpoint == self.BASE and prov.provider_version == "1.1.0"
         assert "super_secret_token" not in repr(prov)
+
+
+class TestTurkeyPolicyInflationContracts:
+    """Phase 17H: verified raw contracts for TR_POLICY_RATE and TR_EXPECTED_INFLATION_12M_PKA (no calculation)."""
+
+    def test_policy_rate_contract_fields(self):
+        d = MacroSeriesRegistry.get("TR_POLICY_RATE")
+        assert (d.canonical_key, d.provider, d.provider_series_code) == ("TR_POLICY_RATE", "TCMB_EVDS", "TP.BISPOLFAIZ.TUR")
+        assert (d.category, d.unit, d.frequency) == (MacroCategory.INTEREST_RATE, MacroUnit.PERCENT,
+                                                     MacroFrequency.MONTHLY)
+        assert d.freshness_basis == FreshnessBasis.EFFECTIVE_DATE and d.source_tier == SourceTier.TIER_1_REGULATORY
+        assert d.geography == "TR" and d.contract_status == ContractStatus.VERIFIED and d.is_active is True
+        assert d.expected_release_interval_days == 31
+        assert d.origin_source == "Bank for International Settlements (BIS)"  # EVDS distributes; BIS is upstream
+        assert d.provider_native_units is None  # EVDS metadata supplied no unit field
+        assert d.origin_source is not None and "TCMB" not in d.origin_source
+
+    def test_policy_rate_notes_record_identity_and_freshness_limits(self):
+        notes = MacroSeriesRegistry.get("TR_POLICY_RATE").verification_notes
+        for needle in ("Türkiye (TUR) Central Bank Policy Interest Rate", "BIS", "monthly", "last",
+                       "NOT TP.APIFON4", "NOT AOFM", "July 2026", "2026-09-30", "freshness", "one-week repo",
+                       "PPK", "not an intramonth"):
+            assert needle.lower() in notes.lower(), needle
+        assert "always the latest" not in notes.lower()
+
+    def test_policy_rate_is_not_aofm(self):
+        policy, aofm = MacroSeriesRegistry.get("TR_POLICY_RATE"), MacroSeriesRegistry.get("TR_TCMB_AOFM")
+        assert policy.provider_series_code == "TP.BISPOLFAIZ.TUR" and aofm.provider_series_code == "TP.APIFON4"
+        assert policy.provider_series_code != aofm.provider_series_code
+        assert aofm.frequency == MacroFrequency.BUSINESS_DAILY and aofm.contract_status == ContractStatus.VERIFIED
+        assert aofm.origin_source is None and aofm.verification_notes.endswith("policy rate.")
+
+    def test_expected_inflation_contract_fields(self):
+        d = MacroSeriesRegistry.get("TR_EXPECTED_INFLATION_12M_PKA")
+        assert (d.canonical_key, d.provider, d.provider_series_code) == (
+            "TR_EXPECTED_INFLATION_12M_PKA", "TCMB_EVDS", "TP.ENFBEK.PKA12ENF")
+        assert (d.category, d.unit, d.frequency) == (MacroCategory.INFLATION_EXPECTATION, MacroUnit.PERCENT,
+                                                     MacroFrequency.MONTHLY)
+        assert d.freshness_basis == FreshnessBasis.PUBLISHED_AT and d.source_tier == SourceTier.TIER_1_REGULATORY
+        assert d.geography == "TR" and d.contract_status == ContractStatus.VERIFIED and d.is_active is True
+        assert d.expected_release_interval_days == 31
+        assert d.origin_source == "Türkiye Cumhuriyet Merkez Bankası (TCMB / CBRT)"
+        assert d.provider_native_units == "Percent"
+        assert d.category is not MacroCategory.INFLATION_CPI  # expectation is not realized CPI
+        notes = (d.verification_notes or "").lower()
+        for needle in ("bie_enfbek", "market participants", "12-month", "not year-end", "not 24-month",
+                       "not real-sector", "not household", "not realized cpi", "not enag"):
+            assert needle in notes, needle
+
+    def test_new_series_codes_are_unique_and_unaliased(self):
+        codes = [s.provider_series_code for s in MacroSeriesRegistry.list_all()]
+        assert codes.count("TP.BISPOLFAIZ.TUR") == 1 and codes.count("TP.ENFBEK.PKA12ENF") == 1
+        assert not {s.canonical_key for s in MacroSeriesRegistry.list_all()
+                    if s.provider_series_code in ("TP.IYA12ENF", "TP.ENFBEK.PKA12ENF")} - {
+            "TR_EXPECTED_INFLATION_12M_PKA"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key,code,tarih,field,raw,eff", [
+        ("TR_POLICY_RATE", "TP.BISPOLFAIZ.TUR", "2026-7", "TP_BISPOLFAIZ_TUR", "37.00000000", date(2026, 7, 1)),
+        ("TR_EXPECTED_INFLATION_12M_PKA", "TP.ENFBEK.PKA12ENF", "2026-9", "TP_ENFBEK_PKA12ENF", "23.70000000",
+         date(2026, 9, 1)),
+    ])
+    async def test_canonical_key_resolves_through_evds3_provider(self, key, code, tarih, field, raw, eff):
+        payload = {"totalCount": 1, "items": [{"Tarih": tarih, field: raw, "UNIXTIME": {"$numberLong": "1"}}]}
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.get.return_value = MagicMock(status_code=200, json=MagicMock(return_value=payload))
+        provider = TCMBEVDSProvider(api_key="key", http_client=client)
+        response = await provider.fetch(FetchContext(
+            observation_type="MACRO", provider_symbol=key,
+            request_parameters={"startDate": "01-01-2026", "endDate": "30-09-2026"}))
+        args, kwargs = client.get.call_args
+        assert args == (TCMBEVDSProvider.base_url + f"series={code}&startDate=01-01-2026&endDate=30-09-2026&type=json",)
+        assert "params" not in kwargs and key not in args[0]
+        assert response.status == DataStatus.COMPLETE and response.effective_date == eff
+        assert response.published_at is None  # no publication timestamp is inferred from the period label
+        assert provider.normalize(response.raw)["value"] == float(raw)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key,field", [("TR_POLICY_RATE", "TP_BISPOLFAIZ_TUR"),
+                                           ("TR_EXPECTED_INFLATION_12M_PKA", "TP_ENFBEK_PKA12ENF")])
+    async def test_zero_is_observed_and_missing_is_unavailable(self, key, field):
+        for raw, expected in (("0", DataStatus.COMPLETE), ("0.00000000", DataStatus.COMPLETE),
+                              ("", DataStatus.UNAVAILABLE), (None, DataStatus.UNAVAILABLE)):
+            payload = {"totalCount": 1, "items": [{"Tarih": "2026-7", field: raw}]}
+            client = AsyncMock(spec=httpx.AsyncClient)
+            client.get.return_value = MagicMock(status_code=200, json=MagicMock(return_value=payload))
+            response = await TCMBEVDSProvider(api_key="key", http_client=client).fetch(
+                FetchContext(observation_type="MACRO", provider_symbol=key))
+            assert response.status == expected
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -136,11 +136,22 @@ def test_bad_keys_are_rejected_before_rpc() -> None:
         assert _calls_after(dict(canonical_key=key)) == []
 
 
-def test_policy_rate_and_unverified_series_fail_before_rpc() -> None:
+def test_unverified_series_fail_before_rpc() -> None:
     with pytest.raises(ValueError, match=r"^macro series must be active and VERIFIED$"):
-        _history([_row()], canonical_key="TR_POLICY_RATE")
-    assert _calls_after(dict(canonical_key="TR_POLICY_RATE")) == []
-    assert MacroSeriesRegistry.get("TR_POLICY_RATE") is not None
+        _history([_row()], canonical_key="TR_CPI_TUIK_YOY")
+    assert _calls_after(dict(canonical_key="TR_CPI_TUIK_YOY")) == []
+    assert MacroSeriesRegistry.get("TR_CPI_TUIK_YOY") is not None
+
+
+def test_policy_rate_and_expected_inflation_histories_hydrate_exact_decimals() -> None:
+    for key, texts in (("TR_POLICY_RATE", ("37.00", "37.00")), ("TR_EXPECTED_INFLATION_12M_PKA", ("23.69", "23.70"))):
+        rows = [_row("2026-05-01", 1, canonical_key=key, value_text=texts[0]),
+                _row("2026-06-01", 2, canonical_key=key, value_text=texts[1])]
+        result, client = _history(rows, canonical_key=key)
+        assert client.calls[0][1]["p_canonical_key"] == key
+        assert [f.canonical_key for f in result] == [key, key]
+        assert [str(f.value) for f in result] == list(texts) and all(type(f.value) is Decimal for f in result)
+        assert [f.effective_date for f in result] == [date(2026, 5, 1), date(2026, 6, 1)]
 
 
 def test_start_after_end_fails_before_rpc_and_is_not_swapped() -> None:

@@ -104,14 +104,32 @@ def test_unknown_and_unnormalized_series_are_rejected() -> None:
             _fact(canonical_key=key)
 
 
-def test_policy_rate_is_unverified_and_not_aliased_to_aofm() -> None:
+def test_policy_rate_is_verified_and_not_aliased_to_aofm() -> None:
+    # At Phase 17A/17B creation TR_POLICY_RATE was unverified; Phase 17H verified and activated it.
     definition = MacroSeriesRegistry.get("TR_POLICY_RATE")
-    assert definition.contract_status is ContractStatus.UNVERIFIED and definition.is_active is False
-    with pytest.raises(ValueError, match=r"^macro series must be active and VERIFIED$"):
-        _fact(canonical_key="TR_POLICY_RATE")
+    assert definition.contract_status is ContractStatus.VERIFIED and definition.is_active is True
+    policy = _fact(canonical_key="TR_POLICY_RATE", value=Decimal("37.00"))
+    assert policy.canonical_key == "TR_POLICY_RATE" and policy.value == Decimal("37.00")
+    assert type(policy.value) is Decimal and str(policy.value) == "37.00"
+    assert (policy.category, policy.unit, policy.frequency, policy.geography, policy.provider) == (
+        MacroCategory.INTEREST_RATE, MacroUnit.PERCENT, MacroFrequency.MONTHLY, "TR", "TCMB_EVDS")
     aofm = _fact(canonical_key="TR_TCMB_AOFM", value=Decimal("47.5"))
     assert aofm.canonical_key == "TR_TCMB_AOFM"  # AOFM is a distinct verified series, never a policy-rate alias
+    assert aofm.frequency is MacroFrequency.BUSINESS_DAILY
     assert MacroSeriesRegistry.get("TR_TCMB_AOFM").verification_notes.endswith("policy rate.")
+
+
+def test_expected_inflation_12m_is_accepted_with_registry_derived_taxonomy() -> None:
+    fact = _fact(canonical_key="TR_EXPECTED_INFLATION_12M_PKA", value=Decimal("23.70"))
+    assert fact.value == Decimal("23.70") and type(fact.value) is Decimal
+    assert (fact.category, fact.unit, fact.frequency, fact.geography, fact.provider) == (
+        MacroCategory.INFLATION_EXPECTATION, MacroUnit.PERCENT, MacroFrequency.MONTHLY, "TR", "TCMB_EVDS")
+
+
+def test_still_unverified_series_remain_fail_closed() -> None:
+    assert MacroSeriesRegistry.get("TR_CPI_TUIK_YOY").is_active is False
+    with pytest.raises(ValueError, match=r"^macro series must be active and VERIFIED$"):
+        _fact(canonical_key="TR_CPI_TUIK_YOY")
 
 
 def test_inactive_or_non_verified_registry_entries_are_rejected(monkeypatch) -> None:

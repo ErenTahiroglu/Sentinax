@@ -15,8 +15,9 @@ Architectural Invariants:
     - I/O boundary: the Supabase/PostgREST-compatible client is injected (must expose a callable `rpc`); no
       environment, secret, factory, global client, ambient clock, UUID generation or randomness.
     - Every query has an explicit `effective_date`, `mode` and aware `as_of`; there is no implicit "current" query.
-      The series must be an active VERIFIED registry series (checked before any RPC); `TR_POLICY_RATE` fails
-      closed and is never aliased to `TR_TCMB_AOFM`.
+      The series must be an active VERIFIED registry series (checked before any RPC); genuinely unverified series
+      (e.g. `TR_CPI_TUIK_YOY`) fail closed, and `TR_POLICY_RATE` (verified in Phase 17H) is never aliased to
+      `TR_TCMB_AOFM`.
     - The RPC returns at most one row: `[]` -> None (no eligible persisted observation), exactly one mapping with the
       exact expected key set -> hydrated fact; anything else fails closed (never "take row zero").
       A returned explicit UNAVAILABLE row (value_text NULL) yields a real fact whose value is None, which stays

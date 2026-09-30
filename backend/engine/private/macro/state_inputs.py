@@ -16,8 +16,8 @@ Architectural Invariants:
       binary float cannot be turned back into the original economic value.
     - Registry authority: `canonical_key` must resolve through `MacroSeriesRegistry.get` to an ACTIVE, VERIFIED
       series (no aliasing, no normalization). Category, unit, frequency, geography and provider are derived
-      read-only from that definition, never caller-supplied. `TR_POLICY_RATE` (unverified, inactive) fails closed
-      and is never mapped to `TR_TCMB_AOFM`.
+      read-only from that definition, never caller-supplied. Genuinely unverified series (e.g. `TR_CPI_TUIK_YOY`) fail closed. (`TR_POLICY_RATE` was
+      unverified when this boundary was created; Phase 17H verified it. It is never mapped to `TR_TCMB_AOFM`.)
     - Missing is never zero: `None` means missing. COMPLETE requires a finite Decimal; UNAVAILABLE requires None.
       PARTIAL / DEGRADED / STALE describe data that exists, so they still require an observed Decimal (no
       fabricated zero). Confidence never creates or alters availability.

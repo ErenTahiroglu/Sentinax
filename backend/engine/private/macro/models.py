@@ -38,6 +38,7 @@ class MacroCategory(Enum):
     MONEY_SUPPLY = "money_supply"
     RESERVES = "reserves"
     FINANCIAL_STRESS = "financial_stress"
+    INFLATION_EXPECTATION = "inflation_expectation"
 
 
 class MacroFrequency(Enum):

@@ -8,7 +8,8 @@ Verified Series Catalog:
         * TR_FX_USDTRY (TP.DK.USD.A.YTL) -> VERIFIED
         * TR_FX_EURTRY (TP.DK.EUR.A.YTL) -> VERIFIED
         * TR_TCMB_AOFM (TP.APIFON4 - Ağırlıklı Ortalama Fonlama Maliyeti) -> VERIFIED
-        * TR_POLICY_RATE -> UNVERIFIED (Disabled pending official EVDS policy rate code verification)
+        * TR_POLICY_RATE (TP.BISPOLFAIZ.TUR, BIS upstream, monthly) -> VERIFIED (Phase 17H; unverified at creation)
+        * TR_EXPECTED_INFLATION_12M_PKA (TP.ENFBEK.PKA12ENF) -> VERIFIED (Phase 17H)
     - TÜİK SDMX (TR):
         * All series marked UNVERIFIED (is_active=False) pending official SDMX codelist catalog discovery
     - ENAG Manual (TR):
@@ -116,19 +117,64 @@ class MacroSeriesRegistry:
         "TR_POLICY_RATE": MacroSeriesDefinition(
             canonical_key="TR_POLICY_RATE",
             provider="TCMB_EVDS",
-            provider_series_code="UNVERIFIED",
+            provider_series_code="TP.BISPOLFAIZ.TUR",
             category=MacroCategory.INTEREST_RATE,
-            description="TCMB 1 Hafta Vadeli Repo İhale Faiz Oranı / Politika Faizi (%) — DOĞRULANMAMIŞ",
+            description="Türkiye (TUR) Merkez Bankası Politika Faiz Oranı (%) — aylık, BIS kaynaklı",
             unit=MacroUnit.PERCENT,
-            frequency=MacroFrequency.BUSINESS_DAILY,
+            frequency=MacroFrequency.MONTHLY,
             freshness_basis=FreshnessBasis.EFFECTIVE_DATE,
             source_tier=SourceTier.TIER_1_REGULATORY,
             geography="TR",
-            contract_status=ContractStatus.UNVERIFIED,
-            expected_release_interval_days=1,
-            source_url="https://evds2.tcmb.gov.tr/",
-            verification_notes="Policy rate EVDS series code not yet officially verified. Disabled to prevent incorrect proxy data.",
-            is_active=False,
+            origin_source="Bank for International Settlements (BIS)",
+            contract_status=ContractStatus.VERIFIED,
+            expected_release_interval_days=31,
+            source_url="https://evds3.tcmb.gov.tr/",
+            verification_source=(
+                "TCMB EVDS3 series metadata (datagroup bie_bispolfaiz) verified 2026-09-30; "
+                "BIS central bank policy rates documentation"
+            ),
+            verification_notes=(
+                "Monthly EVDS evidence (aggregation: last). EVDS metadata names it 'Türkiye (TUR) Central Bank Policy "
+                "Interest Rate'; the upstream source is the BIS, EVDS is only the distributor. NOT TP.APIFON4 and NOT "
+                "AOFM (TR_TCMB_AOFM is a separate series). The current TCMB policy instrument is the one-week repo "
+                "auction rate; the official TCMB 1-week-repo / PPK publications remain the semantic cross-check "
+                "authority. This is not an intramonth or PPK event-date series: the observation date is a monthly "
+                "period label, never a meeting date. As of 2026-09-30 the EVDS range was observed only through July "
+                "2026, so the series identity is verified but its current freshness must be evaluated independently "
+                "(expected_release_interval_days=31); an old observation must not be treated as a current snapshot, "
+                "and later PPK decisions are never back-filled into this series."
+            ),
+            is_active=True,
+        ),
+        "TR_EXPECTED_INFLATION_12M_PKA": MacroSeriesDefinition(
+            canonical_key="TR_EXPECTED_INFLATION_12M_PKA",
+            provider="TCMB_EVDS",
+            provider_series_code="TP.ENFBEK.PKA12ENF",
+            category=MacroCategory.INFLATION_EXPECTATION,
+            description=(
+                "Piyasa katılımcılarının 12 ay sonrası yıllık enflasyon beklentileri (%) / "
+                "Annual inflation expectations of market participants (12-month ahead, %)"
+            ),
+            unit=MacroUnit.PERCENT,
+            frequency=MacroFrequency.MONTHLY,
+            freshness_basis=FreshnessBasis.PUBLISHED_AT,
+            source_tier=SourceTier.TIER_1_REGULATORY,
+            geography="TR",
+            provider_native_units="Percent",
+            origin_source="Türkiye Cumhuriyet Merkez Bankası (TCMB / CBRT)",
+            release_name="Piyasa Katılımcıları Anketi (EVDS datagroup bie_enfbek)",
+            contract_status=ContractStatus.VERIFIED,
+            expected_release_interval_days=31,
+            source_url="https://evds3.tcmb.gov.tr/",
+            verification_source="TCMB EVDS3 series metadata (datagroup bie_enfbek) verified 2026-09-30",
+            verification_notes=(
+                "EVDS metadata (datagroup bie_enfbek): 'Annual inflation expectations of market participants (12-month ahead, %)', monthly "
+                "(aggregation: average), source TCMB / CBRT. It is the market participants 12-month-ahead annual "
+                "inflation expectation. NOT year-end expectation, NOT 24-month expectation, NOT real-sector "
+                "expectation, NOT household expectation, NOT realized CPI and NOT ENAG. The monthly period label is not "
+                "a publication timestamp; no published_at is inferred."
+            ),
+            is_active=True,
         ),
 
         # ─────────────────────────────────────────────────────────────────────

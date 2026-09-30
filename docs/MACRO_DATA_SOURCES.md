@@ -117,9 +117,9 @@ Phase 17 is the macro + technical roadmap. The continuous macro state itself (Gr
 
 - **Exact Decimal only.** `value` is an exact `Decimal` or `None`; float, int, bool, str, Fraction and Decimal subclasses are rejected, and non-finite Decimals are rejected. There is no float-to-Decimal rehabilitation: `Decimal(str(float_value))` would only spell an already rounded binary float, so the legacy `MacroObservationRecord.value: float` provider layer is not accepted as analytical authority. That legacy layer (and its G4 baseline entries) is unchanged.
 - **Missing is not zero.** `None` is missing. COMPLETE requires a finite Decimal; UNAVAILABLE requires `None`; PARTIAL, DEGRADED and STALE describe existing data and still require an observed Decimal. A present `Decimal("0")` is an observed zero.
-- **Registry authority.** `canonical_key` must resolve through `MacroSeriesRegistry.get` to an active, VERIFIED series, with no aliasing or normalization. Category, unit, frequency, geography and provider are derived from the registry definition, never supplied by the caller. Unverified or inactive series such as `TR_POLICY_RATE` fail closed and are never mapped to `TR_TCMB_AOFM`, which is not the statutory policy rate.
+- **Registry authority.** `canonical_key` must resolve through `MacroSeriesRegistry.get` to an active, VERIFIED series, with no aliasing or normalization. Category, unit, frequency, geography and provider are derived from the registry definition, never supplied by the caller. Unverified or inactive series (such as `TR_CPI_TUIK_YOY`) fail closed. At Phase 17A/17B creation time `TR_POLICY_RATE` was also unverified; Phase 17H later verified and activated it, and it is never mapped to `TR_TCMB_AOFM`, which is not the policy rate.
 - **Explicit PIT.** `SYSTEM_AS_OF` requires `ingested_at <= as_of` and `published_at` null or `<= as_of`. `SOURCE_AS_OF` requires `coalesce(published_at, observed_at) <= as_of`. In both modes `superseded_at` must be null or strictly after `as_of`, matching migration 006's `get_macro_observation_as_of`. There is no CURRENT_REPORTED mode, and the module performs no resolver or database call, ambient clock read or UUID generation.
-- **Not included.** Macro scores or composites, regime labels, real policy stance (no verified 12-month expectation series exists in the registry, and ENAG is not a monetary-policy expectation input), technical indicators or signals, optimizer inputs and tactical tilts.
+- **Not included.** Macro scores or composites, regime labels, real policy stance (at Phase 17A no verified 12-month expectation series existed; Phase 17H later added `TR_EXPECTED_INFLATION_12M_PKA`, and ENAG is still not a monetary-policy expectation input), technical indicators or signals, optimizer inputs and tactical tilts.
 
 ## 7. Phase 17B — Exact Persisted PIT Macro State Query Bridge
 
@@ -128,11 +128,11 @@ Phase 17B makes the Phase 17A `MacroStateInputFact` usable from persisted data w
 - **One PIT authority.** Migration 006's `get_pit_macro_observation` remains the winner-selection authority. Migration 022 only wraps it (`get_pit_macro_state_input`): it does not copy the SYSTEM_AS_OF / SOURCE_AS_OF algorithm, and it additionally requires the series to be the requested key, active and `verified`. It is `STABLE`, `SECURITY INVOKER`, has an explicit `search_path`, writes no data, revokes execute from PUBLIC and anon, and grants it to `authenticated` and `service_role`.
 - **Exact numeric transport.** PostgREST returns NUMERIC as a JSON number that a client may decode into a float, so it is not trusted for exact analytics. The database casts the value to text (`o.value::text AS value_text`) and Python parses that text directly into `Decimal` (finite, no quantization). No provider or legacy float is rehabilitated, and the Python service never queries `macro_observations` directly.
 - **AsOfMode transport token.** The Python `AsOfMode` enum values are lower-case domain serialization (`system_as_of` / `source_as_of`), while migration 006's historical SQL contract accepts upper-case RPC tokens (`SYSTEM_AS_OF` / `SOURCE_AS_OF`). `MacroStateInputQueryService` therefore performs an explicit transport mapping, and migration 022 forwards that SQL token unchanged. The returned fact still carries the caller's domain enum.
-- **Explicit queries.** Every query supplies `canonical_key`, `effective_date`, `mode` and an aware `as_of`; there is no implicit current query and no clock. The series is checked against the active VERIFIED registry before any RPC, so `TR_POLICY_RATE` fails closed and is never aliased to `TR_TCMB_AOFM`.
+- **Explicit queries.** Every query supplies `canonical_key`, `effective_date`, `mode` and an aware `as_of`; there is no implicit current query and no clock. The series is checked against the active VERIFIED registry before any RPC, so genuinely unverified series (e.g. `TR_CPI_TUIK_YOY`) fail closed. `TR_POLICY_RATE` failed closed at Phase 17B creation time; Phase 17H later verified it, and it is never aliased to `TR_TCMB_AOFM`.
 - **Strict response handling.** The RPC returns `[]` or exactly one row with exactly the expected columns; anything else (more than one row, a non-list, a non-mapping row, missing or extra keys) fails closed. Returned `canonical_key` and `effective_date` must equal the request. Enums are decoded exactly, with no normalization or fallback. Timestamps and UUIDs are parsed strictly.
 - **Phase 17A stays the final defense.** The row is passed to `build_macro_state_input_fact`, so PIT eligibility, supersession and value/status rules propagate unchanged.
 - **Missing versus unavailable.** No eligible row returns `None`. A returned explicit UNAVAILABLE row (`value_text` NULL) returns a fact whose value is `None`. These two cases stay distinct, and neither means numerical zero.
-- **Still deferred.** Legacy float provider layer, a verified Turkish policy-rate source, a verified 12-month expectations source, macro normalization, the continuous macro state formulas and the technical overlay.
+- **Still deferred.** Legacy float provider layer, (at Phase 17B time) a verified Turkish policy-rate source and a verified 12-month expectations source (both later closed by Phase 17H), macro normalization, the continuous macro state formulas and the technical overlay.
 
 ## 8. Phase 17C — PIT-Safe Exact Macro History Window
 
@@ -144,8 +144,8 @@ Phase 17C adds a bounded history query over `MacroStateInputFact` with `supabase
 - **Ordered immutable tuple.** SQL orders by `effective_date ASC`; Python verifies rows are within the inclusive range, match the requested key and are strictly increasing (no duplicates), and never sorts or repairs. The result is a `tuple[MacroStateInputFact, ...]`.
 - **No synthetic periods.** Frequency is owned by the registry. There is no resampling, forward fill, interpolation or gap row.
 - **Three distinct states.** `()` means no eligible history. A missing period is simply an absent effective date. An explicit persisted UNAVAILABLE observation is a real fact with `value is None`. None of these is zero.
-- **Validation.** `canonical_key` must be an exact registered active VERIFIED key (`TR_POLICY_RATE` fails closed), both dates exact `date`, `start <= end` (never swapped), exact `AsOfMode` and aware `as_of`, all before the single RPC call.
-- **Still deferred.** Historical transforms, robust normalization, GrowthImpulse / PolicyInflationState / FinancialStress, verified TR policy-rate and 12-month expectation series, broad USD and market-stress inputs, technical overlay and Phase 17 CI consolidation.
+- **Validation.** `canonical_key` must be an exact registered active VERIFIED key (unverified series such as `TR_CPI_TUIK_YOY` fail closed; `TR_POLICY_RATE` did at Phase 17C time until Phase 17H), both dates exact `date`, `start <= end` (never swapped), exact `AsOfMode` and aware `as_of`, all before the single RPC call.
+- **Still deferred.** Historical transforms, robust normalization, GrowthImpulse / PolicyInflationState / FinancialStress, verified TR policy-rate and 12-month expectation series (closed later by Phase 17H), broad USD and market-stress inputs, technical overlay and Phase 17 CI consolidation.
 
 ## 9. Phase 17D — Exact U.S. Treasury Yield-Curve Slope Evidence
 
@@ -228,7 +228,7 @@ The builder returns ONE `USMacroEvidenceSnapshot` (there is no `build_*_history`
 
 ## 13. Phase 17H-P0 — TCMB EVDS3 Transport
 
-`TCMBEVDSProvider` (version `1.1.0`) now uses the current EVDS3 REST data service. This is a transport change only: no registry contract, macro category, series activation or methodology changed, and `TR_POLICY_RATE` stays UNVERIFIED / inactive.
+`TCMBEVDSProvider` (version `1.1.0`) now uses the current EVDS3 REST data service. This is a transport change only: no registry contract, macro category, series activation or methodology changed, and at that checkpoint `TR_POLICY_RATE` was still UNVERIFIED / inactive (activated afterwards in Phase 17H, below).
 
 As of the 2026-09-30 authenticated Sentinax compatibility check, the legacy provider URL returned the EVDS3 HTML application shell rather than the expected JSON data contract, while the EVDS3 `igmevdsms-dis` data service returned JSON. No broader claim is made about the EVDS2 service's lifecycle, and there is no EVDS2 fallback (a silent old/new fallback would hide contract drift).
 
@@ -239,3 +239,29 @@ As of the 2026-09-30 authenticated Sentinax compatibility check, the legacy prov
 - **Fail closed.** An HTML or otherwise non-JSON body raises the schema error and is never scraped; JSON without observation items is UNAVAILABLE.
 - **Unchanged.** Legacy macro values remain `float` (the exact-Decimal path for precious metals is untouched); provider calls still resolve canonical registry keys to provider codes (`TR_FX_USDTRY` -> `TP.DK.USD.A.YTL`, `TR_TCMB_AOFM` -> `TP.APIFON4`).
 - **Manual smoke.** `scripts/smoke_evds.py` (never run in CI) prints no part of the API key and also transport-probes the raw monthly codes `TP.ENFBEK.PKA12ENF` and `TP.BISPOLFAIZ.TUR`. A successful probe is not registry verification and not a statement that either is the final methodology authority.
+
+## 14. Phase 17H — Verified Turkey Policy Rate & 12M Inflation Expectation Inputs
+
+Phase 17H activates two raw Turkey evidence contracts through the existing EVDS3 provider transport (Phase 17H-P0; no provider change). It calculates nothing: no `PolicyRate - ExpectedInflation12m`, no real policy stance, `PolicyInflationState`, normalization, weight, score or regime.
+
+### Policy rate — `TR_POLICY_RATE`
+- EVDS `TP.BISPOLFAIZ.TUR` (datagroup `bie_bispolfaiz`), verified against authenticated EVDS3 series metadata on 2026-09-30: "Türkiye (TUR) Merkez Bankası Politika Faiz Oranı" / "Türkiye (TUR) Central Bank Policy Interest Rate", monthly (`AYLIK`, aggregation `last`).
+- **Upstream identity.** The metadata names the Bank for International Settlements as the data source; EVDS is only the distributor, so `origin_source` is BIS, not TCMB. EVDS supplies no unit field, so no provider-native unit is invented; the unit is `PERCENT`. Category `INTEREST_RATE`, `freshness_basis=EFFECTIVE_DATE`, `expected_release_interval_days=31`, `TIER_1_REGULATORY`, VERIFIED and active.
+- **Semantic authority.** The current TCMB policy instrument is the one-week repo auction rate. The official TCMB 1-week-repo / PPK publications remain the semantic cross-check authority (PPK of 2026-09-10: 37%); the verified EVDS monthly series is the automated monthly evidence input. The monthly observation date is a period label and is never a PPK meeting date.
+- **Freshness limitation (deliberate evidence).** As of 2026-09-30 the EVDS range ends at July 2026 (value 37.0). The series identity is verified; its current freshness is NOT assumed. A consumer must not treat an old monthly observation as a current snapshot, and August / September 2026 values known from PPK publications are never inserted into this BIS-distributed series (that would fabricate provider observations; source lineages stay separate).
+- **Not AOFM.** `TR_TCMB_AOFM` (`TP.APIFON4`, business-daily weighted average funding cost) is unchanged and remains a separate series; there is no alias, fallback or substitution in either direction.
+
+### 12-month inflation expectation — `TR_EXPECTED_INFLATION_12M_PKA`
+- EVDS `TP.ENFBEK.PKA12ENF` (datagroup `bie_enfbek`), metadata verified 2026-09-30: "Annual inflation expectations of market participants (12-month ahead, %)", monthly (aggregation `average`), source TCMB / CBRT, range 2015-01 to 2026-09 (2026-09 = 23.70).
+- New category `MacroCategory.INFLATION_EXPECTATION` (appended last). Expectation is not realized CPI. No migration is needed: migration 006 stores `category VARCHAR(32)` with no allow-list CHECK (guarded by a test across all migrations).
+- Unit `PERCENT`, `freshness_basis=PUBLISHED_AT`, `expected_release_interval_days=31`, `TIER_1_REGULATORY`, VERIFIED and active. It is the market participants' 12-month-ahead annual inflation expectation; it is NOT a year-end, 24-month, real-sector or household expectation, realized CPI or ENAG.
+
+### PIT semantics
+- EVDS effective period does not prove an exact publication timestamp. No `published_at` timestamp is fabricated, and nothing is inferred from `effective_date == publication`. `SOURCE_AS_OF` keeps its conservative fallback to `observed_at`.
+- Phase 17A/17B/17C now accept both keys as active VERIFIED contracts with registry-derived taxonomy and exact `Decimal` values; unverified series such as `TR_CPI_TUIK_YOY` still fail closed before any RPC.
+
+### Activity remains deferred
+The Turkey activity input remains deferred pending exact current official seasonally-adjusted series-code verification.
+
+### Also deferred
+RealPolicyStance calculation, `PolicyInflationState`, Turkey `GrowthImpulse`, `FinancialStress_t`, final MacroState, macro weights, structural-break detector, technical overlay, tactical allocation and Phase 17 CI consolidation.

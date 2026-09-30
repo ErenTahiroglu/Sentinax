@@ -655,10 +655,11 @@ class TestFREDALFREDProviderHardening:
 
     def test_43_financial_stress_category_and_no_db_category_allow_list(self):
         assert MacroCategory.FINANCIAL_STRESS.value == "financial_stress"
-        assert [c.name for c in MacroCategory][:9] == [
+        assert [c.name for c in MacroCategory] == [
             "FX", "INTEREST_RATE", "INFLATION_CPI", "INFLATION_PPI", "LABOR", "OUTPUT", "INDUSTRIAL_ACTIVITY",
-            "MONEY_SUPPLY", "RESERVES"]
-        assert len(MacroCategory) == 10
+            "MONEY_SUPPLY", "RESERVES", "FINANCIAL_STRESS", "INFLATION_EXPECTATION"]
+        assert MacroCategory.INFLATION_EXPECTATION.value == "inflation_expectation"
+        assert len(MacroCategory) == 11
         migrations = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../supabase/migrations"))
         with open(os.path.join(migrations, "006_macro_series.sql"), "r", encoding="utf-8") as f:
             sql = "\n".join(line.split("--", 1)[0] for line in f.read().splitlines())
