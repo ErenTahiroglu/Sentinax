@@ -118,3 +118,21 @@ jobs:
           backend/tests/test_tefas_fund_expected_shortfall.py \
           backend/tests/test_tefas_fund_volatility.py \
           -q --disable-socket
+
+    - name: Phase 17 macro PIT and evidence correctness
+      run: |
+        python -m pytest \
+          backend/tests/test_macro_state_inputs.py \
+          backend/tests/test_macro_state_query.py \
+          backend/tests/test_macro_state_history.py \
+          backend/tests/test_us_treasury_curve.py \
+          backend/tests/test_us_macro_evidence.py \
+          -q --disable-socket
+
+    - name: Phase 17 macro provider contracts
+      run: |
+        python -m pytest \
+          backend/tests/test_macro_providers.py \
+          backend/tests/test_fred_alfred.py \
+          backend/tests/test_precious_metals.py \
+          -q
