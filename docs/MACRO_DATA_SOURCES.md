@@ -188,3 +188,40 @@ Phase 17F activates two more raw evidence inputs as registry contracts only, bot
 - A missing value (`.`) stays UNAVAILABLE, zero stays an observation. `published_at` is never fabricated; freshness uses the existing fallback chain.
 - These close raw evidence gaps only: no normalization, macro-state construction, interpretation or portfolio effect.
 - Provider floats remain non-authoritative for Phase 17 analytics; exact analytics still consume persisted PIT-safe `MacroStateInputFact` values.
+
+## 12. Phase 17G — PIT-Safe Monthly U.S. Macro Evidence Transforms
+
+Phase 17G adds `backend/engine/private/macro/us_macro_evidence.py`: a pure calculation layer (`build_us_macro_evidence_snapshot`) over Phase 17C `MacroStateInputFact` histories and Phase 17D `USTreasuryCurveSlopePoint` histories. It produces evidence only: no MacroState, score, regime, weight or portfolio action.
+
+### PIT semantics
+> A Phase17G snapshot is valid only for its single explicit `mode/as_of`. Historical decision paths must rebuild the snapshot separately at each historical cutoff. Earlier months inside a current-as-of input history are normalization evidence, not historical decision-state authority.
+
+The builder returns ONE `USMacroEvidenceSnapshot` (there is no `build_*_history` for evidence states). Histories are exact tuples bound to their canonical keys, strictly increasing by `effective_date` (validated, never sorted), carrying the caller's `mode` and `as_of`. Any `effective_date` after `as_of.date()` is rejected, never filtered.
+
+### Monthly sampling
+- A month is `date(year, month, 1)`; `reference_month` is that key, not a publication or observation date. Source objects keep their real effective date and are retained by identity.
+- Daily / weekly series use the last actual object of each calendar month (no average, interpolation, nearest date or synthetic month-end). An explicit UNAVAILABLE that is latest in the month (or overall) wins; there is no backward search and no fallback to an earlier month.
+- Components may have different `reference_month`s (release lags differ); nothing is forward-filled to a common month. An empty history gives a `None` component; an explicit UNAVAILABLE gives a component with `raw = None`.
+
+### Growth
+- Source `US_INDUSTRIAL_PRODUCTION` / INDPRO (already seasonally adjusted). Transform 3m/3m SAAR: `100 x [(recent 3m sum / previous 3m sum)^4 - 1]` in percentage points over six consecutive calendar-month slots (`t-5 ... t`, `None` for an absent month). Any absent or UNAVAILABLE slot gives `raw = None` (no bridging, no zero). A numeric index `<= 0` raises; two facts in one calendar month raise.
+
+### Real rate
+- Source `DFII10` (`US_TREASURY_REAL_10Y_YIELD`); raw latest level in percent. Negative values are valid. No change, momentum, CPI or Fed Funds combination.
+
+### Yield curve
+- Primary `10Y - 3M`; diagnostic `10Y - 2Y`; both taken as supplied by Phase 17D (no recomputation, no averaging). Only the primary is normalized. A latest point without `10Y - 3M` gives `primary = None` with no fallback.
+
+### Broad dollar
+- Source `DTWEXBGS` (`US_BROAD_DOLLAR_INDEX`); raw level only (no YoY / MoM / momentum / DXY proxy).
+
+### Financial stress
+- Source `STLFSI4` (`US_FINANCIAL_STRESS_INDEX`); raw level only. It is already an official standardized index: no second normalization, winsorization or rescaling, and no interpretation of its sign or size.
+
+### Robust normalization
+- Applied to growth, real yield, `10Y - 3M` and broad dollar. Window: the 120 immediately preceding calendar months (`t-120 ... t-1`), current month excluded, all required; otherwise `normalization = None` (no 119/60-month, expanding or "last 120 observations" fallback). A fully normalized growth value therefore needs about 126 consecutive industrial-production months.
+- `median`; `MAD = median(|x - median|)`; `scaled_MAD = 1.4826 x MAD`; `z = (current - median) / scaled_MAD`. `MAD == 0` keeps median / MAD / scaled MAD and gives `z = None` (no standard-deviation fallback, no epsilon). No winsorization or clipping; economic direction is never inverted.
+- Decimal: a fresh context (prec 50, `ROUND_HALF_EVEN`, `MIN_EMIN` / `MAX_EMAX`), independent of the ambient context, never mutated; no float; no output quantization. Overflow raises the static `ValueError("US macro evidence exceeds supported Decimal analytics range")`.
+
+### Explicitly deferred
+`GrowthImpulse_t`, `PolicyInflationState_t`, `FinancialStress_t`, final MacroState, macro regime labels, component weights, structural-break detector, winsorization, recession prediction, broad-dollar momentum, real-yield momentum, curve inversion interpretation, Turkey activity composite, Turkey verified policy rate, Turkey 12m inflation expectations, technical overlay, portfolio tactical tilt, optimizer integration.
