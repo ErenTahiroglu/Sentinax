@@ -572,3 +572,46 @@ def test_module_is_clean_for_static_guards() -> None:
         "PrivateImport:backend.engine.private.macro.us_treasury_curve",
     }
     assert rel not in sg.PURE_MANIFEST
+
+
+# --- Phase 17G-R1: decimal context isolation -------------------------------------------------------------------
+
+def test_no_module_global_decimal_context() -> None:
+    leaked = [n for n, v in vars(module_under_test).items() if isinstance(v, decimal.Context)]
+    assert leaked == []
+    tree = ast.parse(_source())
+    for node in tree.body:
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            for sub in ast.walk(node.value):
+                assert not (isinstance(sub, ast.Attribute) and sub.attr == "Context"), ast.dump(node)
+
+
+def test_evidence_context_factory_returns_fresh_clean_contexts() -> None:
+    c1, c2 = module_under_test._evidence_context(), module_under_test._evidence_context()
+    assert c1 is not c2
+    for c in (c1, c2):
+        assert (c.prec, c.rounding, c.Emin, c.Emax) == (
+            50, decimal.ROUND_HALF_EVEN, decimal.MIN_EMIN, decimal.MAX_EMAX)
+        assert not any(c.flags.values())
+    c1.divide(Decimal(1), Decimal(3))
+    assert c1.flags[decimal.Inexact] and c1.flags[decimal.Rounded]
+    c3 = module_under_test._evidence_context()
+    assert not any(c3.flags.values()) and not any(c2.flags.values())
+
+
+def test_each_public_build_gets_its_own_context(monkeypatch) -> None:
+    created = []
+    real_factory = module_under_test._evidence_context
+
+    def spy():
+        ctx = real_factory()
+        created.append(ctx)
+        return ctx
+    monkeypatch.setattr(module_under_test, "_evidence_context", spy)
+    kw = _decimal_inputs()
+    first = _build(**kw)
+    assert len(created) == 1
+    second = _build(**kw)
+    assert len(created) == 2 and created[0] is not created[1]
+    assert first.growth == second.growth and first.real_yield == second.real_yield
+    assert created[0].flags[decimal.Inexact]  # used by the first build only, second context is separate

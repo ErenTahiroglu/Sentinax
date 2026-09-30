@@ -20,7 +20,7 @@ Architectural Invariants:
     - Robust normalization (growth, real yield, broad dollar, 10Y-3M only): the 120 immediately preceding calendar
       months, current month excluded, all required, no partial fallback. median, MAD, 1.4826 * MAD and
       z = (current - median) / scaled MAD; MAD == 0 gives z = None. No winsorization or clipping.
-    - Analytics use a fresh explicit Decimal context (prec 50, ROUND_HALF_EVEN, MIN_EMIN / MAX_EMAX), independent of
+    - Analytics use a fresh explicit Decimal context per public build (prec 50, ROUND_HALF_EVEN, MIN_EMIN / MAX_EMAX), independent of
       and never touching the ambient context. No float, no output rounding. Overflow becomes a static ValueError.
 """
 
@@ -43,13 +43,6 @@ _KEY_STRESS = "US_FINANCIAL_STRESS_INDEX"
 _WINDOW_MONTHS = 120
 _GROWTH_SLOTS = 6
 _MAD_SCALE = Decimal("1.4826")
-
-_CTX = decimal.Context(
-    prec=50,
-    rounding=decimal.ROUND_HALF_EVEN,
-    Emin=decimal.MIN_EMIN,
-    Emax=decimal.MAX_EMAX,
-)
 
 _ERR_MODE_TYPE = "mode must be an exact AsOfMode instance"
 _ERR_AS_OF_TYPE = "as_of must be an exact timezone-aware datetime instance"
@@ -119,6 +112,16 @@ class USMacroEvidenceSnapshot:
     financial_stress: FinancialStressEvidence | None
 
 
+def _evidence_context() -> decimal.Context:
+    """A fresh, isolated analytics context (one per public build; signal flags are sticky, so never shared)."""
+    return decimal.Context(
+        prec=50,
+        rounding=decimal.ROUND_HALF_EVEN,
+        Emin=decimal.MIN_EMIN,
+        Emax=decimal.MAX_EMAX,
+    )
+
+
 def _month_of(day: date) -> date:
     return date(day.year, day.month, 1)
 
@@ -180,16 +183,16 @@ def _last_per_month(items: tuple) -> dict[date, object]:
     return monthly
 
 
-def _median(sorted_values: list[Decimal]) -> Decimal:
+def _median(sorted_values: list[Decimal], ctx: decimal.Context) -> Decimal:
     count = len(sorted_values)
     middle = count // 2
     if count % 2 == 1:
         return sorted_values[middle]
-    return _CTX.divide(_CTX.add(sorted_values[middle - 1], sorted_values[middle]), Decimal(2))
+    return ctx.divide(ctx.add(sorted_values[middle - 1], sorted_values[middle]), Decimal(2))
 
 
 def _normalize(
-    current: Decimal | None, raw_by_month: dict[date, Decimal | None], reference_month: date,
+    current: Decimal | None, raw_by_month: dict[date, Decimal | None], reference_month: date, ctx: decimal.Context,
 ) -> RobustNormalizationEvidence | None:
     """Robust normalization over the 120 calendar months before `reference_month` (current excluded)."""
     if current is None:
@@ -201,10 +204,10 @@ def _normalize(
         if value is None:
             return None
         window.append(value)
-    median = _median(sorted(window))
-    mad = _median(sorted(_CTX.abs(_CTX.subtract(value, median)) for value in window))
-    scaled_mad = _CTX.multiply(_MAD_SCALE, mad)
-    z = None if mad == 0 else _CTX.divide(_CTX.subtract(current, median), scaled_mad)
+    median = _median(sorted(window), ctx)
+    mad = _median(sorted(ctx.abs(ctx.subtract(value, median)) for value in window), ctx)
+    scaled_mad = ctx.multiply(_MAD_SCALE, mad)
+    z = None if mad == 0 else ctx.divide(ctx.subtract(current, median), scaled_mad)
     return RobustNormalizationEvidence(
         window_start_month=start,
         window_end_month=_shift_month(reference_month, -1),
@@ -215,20 +218,24 @@ def _normalize(
     )
 
 
-def _growth_raw(facts_by_month: dict[date, MacroStateInputFact], month: date) -> Decimal | None:
+def _growth_raw(
+    facts_by_month: dict[date, MacroStateInputFact], month: date, ctx: decimal.Context,
+) -> Decimal | None:
     values: list[Decimal] = []
     for offset in range(-(_GROWTH_SLOTS - 1), 1):
         fact = facts_by_month.get(_shift_month(month, offset))
         if fact is None or fact.value is None:
             return None
         values.append(fact.value)
-    prior_sum = _CTX.add(_CTX.add(values[0], values[1]), values[2])
-    recent_sum = _CTX.add(_CTX.add(values[3], values[4]), values[5])
-    ratio = _CTX.divide(recent_sum, prior_sum)
-    return _CTX.multiply(Decimal(100), _CTX.subtract(_CTX.power(ratio, Decimal(4)), Decimal(1)))
+    prior_sum = ctx.add(ctx.add(values[0], values[1]), values[2])
+    recent_sum = ctx.add(ctx.add(values[3], values[4]), values[5])
+    ratio = ctx.divide(recent_sum, prior_sum)
+    return ctx.multiply(Decimal(100), ctx.subtract(ctx.power(ratio, Decimal(4)), Decimal(1)))
 
 
-def _growth_evidence(ip_history: tuple[MacroStateInputFact, ...]) -> GrowthMomentumEvidence | None:
+def _growth_evidence(
+    ip_history: tuple[MacroStateInputFact, ...], ctx: decimal.Context,
+) -> GrowthMomentumEvidence | None:
     if not ip_history:
         return None
     by_month: dict[date, MacroStateInputFact] = {}
@@ -241,20 +248,22 @@ def _growth_evidence(ip_history: tuple[MacroStateInputFact, ...]) -> GrowthMomen
         by_month[month] = fact
     reference_month = _month_of(ip_history[-1].effective_date)
     slots = tuple(by_month.get(_shift_month(reference_month, offset)) for offset in range(-(_GROWTH_SLOTS - 1), 1))
-    raw = _growth_raw(by_month, reference_month)
+    raw = _growth_raw(by_month, reference_month, ctx)
     normalization = None
     if raw is not None:
         raw_by_month = {
-            _shift_month(reference_month, offset): _growth_raw(by_month, _shift_month(reference_month, offset))
+            _shift_month(reference_month, offset): _growth_raw(by_month, _shift_month(reference_month, offset), ctx)
             for offset in range(-_WINDOW_MONTHS, 0)
         }
-        normalization = _normalize(raw, raw_by_month, reference_month)
+        normalization = _normalize(raw, raw_by_month, reference_month, ctx)
     return GrowthMomentumEvidence(
         reference_month=reference_month, source_facts=slots, raw_3m3m_saar=raw, normalization=normalization,
     )
 
 
-def _level_evidence(history: tuple[MacroStateInputFact, ...]) -> NormalizedMacroLevelEvidence | None:
+def _level_evidence(
+    history: tuple[MacroStateInputFact, ...], ctx: decimal.Context,
+) -> NormalizedMacroLevelEvidence | None:
     if not history:
         return None
     monthly = _last_per_month(history)
@@ -265,11 +274,13 @@ def _level_evidence(history: tuple[MacroStateInputFact, ...]) -> NormalizedMacro
         reference_month=reference_month,
         source_fact=source,
         raw_value=source.value,
-        normalization=_normalize(source.value, raw_by_month, reference_month),
+        normalization=_normalize(source.value, raw_by_month, reference_month, ctx),
     )
 
 
-def _curve_evidence(history: tuple[USTreasuryCurveSlopePoint, ...]) -> YieldCurveEvidence | None:
+def _curve_evidence(
+    history: tuple[USTreasuryCurveSlopePoint, ...], ctx: decimal.Context,
+) -> YieldCurveEvidence | None:
     if not history:
         return None
     monthly = _last_per_month(history)
@@ -281,7 +292,7 @@ def _curve_evidence(history: tuple[USTreasuryCurveSlopePoint, ...]) -> YieldCurv
         source_point=source,
         primary_10y_3m=source.slope_10y_3m,
         diagnostic_10y_2y=source.slope_10y_2y,
-        normalization=_normalize(source.slope_10y_3m, raw_by_month, reference_month),
+        normalization=_normalize(source.slope_10y_3m, raw_by_month, reference_month, ctx),
     )
 
 
@@ -304,6 +315,7 @@ def build_us_macro_evidence_snapshot(
     mode: AsOfMode,
     as_of: datetime,
 ) -> USMacroEvidenceSnapshot:
+    ctx = _evidence_context()
     if type(mode) is not AsOfMode:
         raise TypeError(_ERR_MODE_TYPE)
     if type(as_of) is not datetime or as_of.tzinfo is None or as_of.utcoffset() is None:
@@ -319,10 +331,10 @@ def build_us_macro_evidence_snapshot(
         return USMacroEvidenceSnapshot(
             mode=mode,
             as_of=as_of,
-            growth=_growth_evidence(ip),
-            real_yield=_level_evidence(real),
-            yield_curve=_curve_evidence(curve),
-            broad_dollar=_level_evidence(usd),
+            growth=_growth_evidence(ip, ctx),
+            real_yield=_level_evidence(real, ctx),
+            yield_curve=_curve_evidence(curve, ctx),
+            broad_dollar=_level_evidence(usd, ctx),
             financial_stress=_stress_evidence(stress),
         )
     except decimal.Overflow:
