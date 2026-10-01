@@ -12,10 +12,19 @@ diagonal view-noise covariance of Phase 20A, all consumed ONLY through one `User
     S = P U P' + Omega                 innovation covariance (full U, one symmetric calculation path)
     d = q - P m                        view innovation (zero is valid: a view still carries information)
     m_post = m + U P' S^-1 d           posterior expected returns
-    U_post = U - U P' S^-1 P U         posterior expected-return uncertainty
+    U_post = U - U P' S^-1 P U         posterior expected-return uncertainty (mathematical definition)
 
 `U_post` is the posterior epistemic covariance of the expected-return ESTIMATES; it is not the historical return
 covariance, not a future realized-return covariance and not a portfolio covariance, and nothing is added to it.
+
+Joseph-stabilized covariance: the canonical covariance construction is the algebraically equivalent Joseph form
+
+    K = U P' S^-1,   A = I - K P,   U_post = A U A' + K Omega K'
+
+(K = Z' for Z = S^-1 P U because S and U are symmetric). The direct subtraction U - U P' S^-1 P U is not used: it subtracts
+two nearly equal matrices and can leave tiny negative rounding residue in a direction that should be exactly zero under
+noiseless views. The Joseph form reduces that cancellation-driven loss of positive semidefiniteness; it does not make
+rounding error impossible and carries no absolute numerical guarantee.
 
 Solve, never invert: this module never forms S^-1, U^-1 or Omega^-1 and has no inverse, pseudo-inverse, determinant or
 adjugate. S is factored by a deterministic LDL-transposed decomposition (unit lower L, no row reordering) in the 50-digit
@@ -34,9 +43,9 @@ Posterior support and geometry:
     - U_post must be symmetric (each entry i <= j is computed once and mirrored) and positive semidefinite, checked by a
       deterministic LDL-style test: a negative pivot is invalid; a zero pivot requires the remaining cross terms to be
       exactly zero. Unlike the prior, U_post may be singular (a full-confidence view removes all uncertainty along its
-      direction). The PSD test is exact and does not tolerate rounding noise: a posterior whose exact-zero direction is
-      polluted by 50-digit rounding noise below zero is rejected rather than repaired (no epsilon, eigenvalue clipping or
-      nearest-PSD). Exact zeros are normalized to Decimal 0 (never signed zero).
+      direction). The PSD test stays exact and does not tolerate rounding noise: a posterior whose exact-zero direction is
+      still polluted below zero by 50-digit rounding noise is rejected rather than repaired (no epsilon, tolerance,
+      eigenvalue clipping, jitter or nearest-PSD). Exact zeros are normalized to Decimal 0 (never signed zero).
     - For one isolated view with s = p U p' and omega = ((1 - c) / c) s: p m_post = p m + c (q - p m) and
       p U_post p' = (1 - c) s. The posterior uncertainty is independent of the targets q; targets move only the mean.
 
@@ -243,12 +252,49 @@ def _matvec_rows(rows: tuple[tuple[Decimal, ...], ...], vector: list[Decimal], c
     return result
 
 
+def _joseph_covariance(view_set: UserReturnViewSet, kalman_rows: list[list[Decimal]], ctx: decimal.Context) -> _Matrix:
+    """U_post = A U A' + K Omega K' with A = I - K P; kalman_rows[i][k] = K[i][k]. Entries i <= j are computed once and mirrored."""
+    uncertainty = _prior_uncertainty(view_set)
+    rows = view_set.view_matrix
+    noise = _noise_variances(view_set)
+    size, count = len(uncertainty), len(rows)
+    adjust: _Matrix = []  # A = I - K P
+    for i in range(size):
+        line: list[Decimal] = []
+        for j in range(size):
+            product = Decimal(0)
+            for k in range(count):
+                product = ctx.add(product, ctx.multiply(kalman_rows[i][k], rows[k][j]))
+            line.append(ctx.subtract(Decimal(1) if i == j else Decimal(0), product))
+        adjust.append(line)
+    adjusted: _Matrix = []  # A U
+    for i in range(size):
+        line = []
+        for j in range(size):
+            total = Decimal(0)
+            for a in range(size):
+                total = ctx.add(total, ctx.multiply(adjust[i][a], uncertainty[a][j]))
+            line.append(total)
+        adjusted.append(line)
+    result: _Matrix = [[Decimal(0)] * size for _ in range(size)]
+    for i in range(size):
+        for j in range(i, size):
+            total = Decimal(0)
+            for b in range(size):
+                total = ctx.add(total, ctx.multiply(adjusted[i][b], adjust[j][b]))  # (A U A')_ij
+            for k in range(count):
+                total = ctx.add(total, ctx.multiply(ctx.multiply(kalman_rows[i][k], noise[k]), kalman_rows[j][k]))  # (K Omega K')_ij
+            value = _clean(total)
+            result[i][j] = value
+            result[j][i] = value
+    return result
+
+
 def _canonical_posterior(view_set: UserReturnViewSet) -> tuple[tuple[Decimal, ...], tuple[tuple[Decimal, ...], ...]]:
     """Single canonical Bayesian update shared by the builder and the constructor verification."""
     ctx = _analytics_context()
     try:
         prior = _prior_returns(view_set)
-        uncertainty = _prior_uncertainty(view_set)
         size, count = len(prior), len(view_set.views)
         innovation = _innovations(view_set, ctx)
         lower, diagonal = _factor_spd(_innovation_matrix(view_set, ctx), ctx)  # S = L D L'
@@ -262,17 +308,9 @@ def _canonical_posterior(view_set: UserReturnViewSet) -> tuple[tuple[Decimal, ..
             means.append(_clean(ctx.add(prior[i], shift)))
         if any(value < Decimal(-1) for value in means):
             raise ValueError(_ERR_SUPPORT)
-        # S Z = P U: column j of P U is row j of W (U is symmetric)
+        # S Z = P U: column j of P U is row j of W (U is symmetric); K = Z' so K[i][k] = Z[k][i] = z_columns[i][k]
         z_columns = _solve_ldl_matrix(lower, diagonal, [gain[j] for j in range(size)], ctx)
-        posterior_uncertainty: _Matrix = [[Decimal(0)] * size for _ in range(size)]
-        for i in range(size):
-            for j in range(i, size):
-                correction = Decimal(0)
-                for k in range(count):
-                    correction = ctx.add(correction, ctx.multiply(gain[i][k], z_columns[j][k]))
-                value = _clean(ctx.subtract(uncertainty[i][j], correction))
-                posterior_uncertainty[i][j] = value
-                posterior_uncertainty[j][i] = value
+        posterior_uncertainty = _joseph_covariance(view_set, z_columns, ctx)
         _require_psd(posterior_uncertainty, ctx)
     except decimal.Overflow:
         raise ValueError(_ERR_RANGE) from None

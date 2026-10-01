@@ -18,6 +18,7 @@ import ast
 import dataclasses
 import decimal
 import itertools
+import re
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
@@ -129,6 +130,27 @@ def _reference(viewset: UserReturnViewSet):
     gS = [[sum(gain[i][a] * S_inv[a][b] for a in range(k)) for b in range(k)] for i in range(n)]
     U_post = [[U[i][j] - sum(gS[i][b] * PU[b][j] for b in range(k)) for j in range(n)] for i in range(n)]
     return m_post, U_post, S, d
+
+
+def _reference_joseph(viewset: UserReturnViewSet):
+    """Independent exact-Fraction Joseph form: K = U P' S^-1, A = I - K P, U_post = A U A' + K Omega K'."""
+    m = [F(v) for v in viewset.source.expected_returns]
+    U = [[F(v) for v in row] for row in viewset.source.uncertainty_covariance]
+    n, k = len(m), len(viewset.views)
+    P = [[F(v) for v in view.loadings] for view in viewset.views]
+    c = [F(view.confidence) for view in viewset.views]
+    PU = [[sum(P[a][i] * U[i][j] for i in range(n)) for j in range(n)] for a in range(k)]
+    PUP = [[sum(PU[a][j] * P[b][j] for j in range(n)) for b in range(k)] for a in range(k)]
+    omega = [((1 - c[a]) / c[a]) * PUP[a][a] for a in range(k)]
+    S = [[PUP[a][b] + (omega[a] if a == b else 0) for b in range(k)] for a in range(k)]
+    S_inv = _inverse(S)
+    UPt = [[sum(U[i][j] * P[a][j] for j in range(n)) for a in range(k)] for i in range(n)]
+    K = [[sum(UPt[i][a] * S_inv[a][b] for a in range(k)) for b in range(k)] for i in range(n)]
+    A = [[F(int(i == j)) - sum(K[i][a] * P[a][j] for a in range(k)) for j in range(n)] for i in range(n)]
+    AU = [[sum(A[i][a] * U[a][j] for a in range(n)) for j in range(n)] for i in range(n)]
+    J1 = [[sum(AU[i][b] * A[j][b] for b in range(n)) for j in range(n)] for i in range(n)]
+    J2 = [[sum(K[i][a] * omega[a] * K[j][a] for a in range(k)) for j in range(n)] for i in range(n)]
+    return K, A, [[J1[i][j] + J2[i][j] for j in range(n)] for i in range(n)]
 
 
 def _assert_matches_reference(posterior: BayesianExpectedReturnPosterior) -> None:
@@ -361,13 +383,78 @@ def test_algebraic_dependence_alone_is_not_the_rejection_criterion() -> None:
     assert len(rows) == 3 and len(rows[0]) == 2  # three views over two assets are necessarily linearly dependent
 
 
-def test_known_limitation_exact_posterior_zero_directions_polluted_by_rounding_noise_fail_closed() -> None:
-    """Characterization, not endorsement: the PSD check is exact (no epsilon), so two exact views on a correlated prior can
-    leave 50-digit rounding noise below zero in a mathematically exact-zero direction and are rejected, never repaired."""
-    exact_views = [_view(KIND.ABSOLUTE, ("0", "1", "0"), "0.06", "1"), _view(KIND.ABSOLUTE, ("1", "0", "0"), "0.07", "1")]
+EXACT_PAIR = [_view(KIND.ABSOLUTE, ("0", "1", "0"), "0.06", "1"), _view(KIND.ABSOLUTE, ("1", "0", "0"), "0.07", "1")]
+
+
+def test_two_independent_full_confidence_views_on_correlated_prior_are_supported() -> None:
+    """Phase 20B-R1 primary regression (the former known-limitation fixture, unchanged): two exact views on a correlated prior."""
+    posterior = _posterior(CORR3, M3, EXACT_PAIR)
+    for view, value in zip(posterior.views, posterior.posterior_view_returns):
+        assert abs(F(value) - F(view.target_return)) <= TOL  # p m_post = q for every exact view
+        quadratic = sum(
+            F(view.loadings[i]) * F(posterior.uncertainty_covariance[i][j]) * F(view.loadings[j]) for i in range(3) for j in range(3)
+        )
+        assert abs(quadratic) <= TOL  # p U_post p' = 0 along every exact direction
+    assert module_under_test._require_psd([list(row) for row in posterior.uncertainty_covariance], _ctx()) is None  # strict validator, no tolerance
+    _assert_matches_reference(posterior)
+    assert posterior.uncertainty_covariance[2][2] != 0  # the unviewed asset keeps its (reduced) uncertainty
+    assert _posterior(CORR3, M3, EXACT_PAIR[:1]).uncertainty_covariance[0][1] == 0
+
+
+def test_known_remaining_limitation_an_exact_relative_view_can_still_leave_rounding_noise_and_fails_closed() -> None:
+    """Characterization, not endorsement: the Joseph form reduces but does not eliminate cancellation noise. In this valid case an
+    exact (c = 1) relative view next to a noisy relative view still leaves 50-digit noise below zero in an exact-zero direction;
+    the strict PSD check rejects it (no tolerance, clipping or repair). The same case passed under the old subtractive form."""
+    prior = [["1.06", "0.12", "0.03"], ["0.12", "2.71", "-0.18"], ["0.03", "-0.18", "1.14"]]
+    views = [_view(KIND.RELATIVE, ("1", "0", "-1"), "0.01", "1"), _view(KIND.RELATIVE, ("1", "-1", "0"), "0.01", "0.7")]
     with pytest.raises(ValueError, match=ERR_PSD):
-        _posterior(CORR3, M3, exact_views)
-    assert _posterior(CORR3, M3, exact_views[:1]).uncertainty_covariance[0][1] == 0
+        _posterior(prior, M3, views)
+
+
+def test_all_asset_exact_views_collapse_the_uncertainty_to_the_zero_matrix_without_signed_zero() -> None:
+    views = [_view(KIND.ABSOLUTE, ("1", "0", "0"), "0.07", "1"), _view(KIND.ABSOLUTE, ("0", "1", "0"), "0.06", "1"),
+             _view(KIND.ABSOLUTE, ("0", "0", "1"), "0.05", "1")]
+    posterior = _posterior(CORR3, M3, views)
+    assert posterior.expected_returns == (D("0.07"), D("0.06"), D("0.05"))
+    assert all(value == 0 and not value.is_signed() for row in posterior.uncertainty_covariance for value in row)
+
+
+def test_joseph_form_is_algebraically_equivalent_to_the_gaussian_posterior_covariance() -> None:
+    for views in ([ABS_B], [ABS_B, REL_AB], [ABS_B, REL_AB, REL_GROUP], EXACT_PAIR, _dependent("0.5", "0.5", "0.5")):
+        matrix, returns = (DIAG2, M2) if views is not EXACT_PAIR and len(views[0].loadings) == 2 else (CORR3, M3)
+        viewset = _viewset(matrix, returns, views)
+        K, A, joseph = _reference_joseph(viewset)
+        _, subtractive, _, _ = _reference(viewset)
+        assert joseph == subtractive  # exact rational identity A U A' + K Omega K' = U - U P' S^-1 P U
+        posterior = build_bayesian_expected_return_posterior(view_set=viewset)
+        for i, row in enumerate(posterior.uncertainty_covariance):
+            for j, got in enumerate(row):
+                assert abs(F(got) - joseph[i][j]) <= TOL
+        assert len(K) == viewset.source.dimension and len(A) == viewset.source.dimension
+
+
+def test_covariance_is_built_in_joseph_form_without_the_subtractive_update() -> None:
+    functions = {n.name for n in ast.walk(_TREE) if isinstance(n, ast.FunctionDef)}
+    assert "_joseph_covariance" in functions
+    canonical = next(n for n in ast.walk(_TREE) if isinstance(n, ast.FunctionDef) and n.name == "_canonical_posterior")
+    called = {c.func.id for c in ast.walk(canonical) if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+    assert "_joseph_covariance" in called and "_require_psd" in called
+
+
+_TOLERANCE_FRAGMENTS = ("tolerance", "epsilon", "near_zero", "ulp", "jitter", "nearest", "clip", "clamp", "repair", "projection", "symmetrize")
+
+
+def test_no_tolerance_clipping_or_repair_surface_and_no_precision_escalation() -> None:
+    identifiers = {n.id for n in ast.walk(_TREE) if isinstance(n, ast.Name)} | {n.attr for n in ast.walk(_TREE) if isinstance(n, ast.Attribute)}
+    identifiers |= {n.name for n in ast.walk(_TREE) if isinstance(n, (ast.FunctionDef, ast.ClassDef))} | {n.arg for n in ast.walk(_TREE) if isinstance(n, ast.arg)}
+    for identifier in identifiers:
+        for fragment in _TOLERANCE_FRAGMENTS:
+            assert fragment not in identifier.lower(), identifier
+    calls = {c.func.id for c in ast.walk(_TREE) if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+    assert not calls & {"max", "min", "abs", "round", "float", "Fraction"}  # no flooring, absolute value or averaging of pivots
+    assert re.findall(r"prec\s*=\s*(\d+)", _SOURCE) == ["50"]  # no precision escalation, no second Decimal context
+    assert [f.name for f in ast.walk(_TREE) if isinstance(f, ast.FunctionDef) for c in ast.walk(f)
+            if isinstance(c, ast.Call) and getattr(c.func, "attr", "") == "Context"] == ["_analytics_context"]
 
 
 # --- domain support ----------------------------------------------------------------------------------------------
@@ -652,6 +739,6 @@ def test_no_tau_inverse_equilibrium_allocation_or_persistence_surface() -> None:
 
 def test_documents_the_methodology() -> None:
     doc = module_under_test.__doc__ or ""
-    for needle in ("Black-Litterman-LIKE", "S = P U P' + Omega", "never forms", "strictly positive definite", "positive semidefinite",
+    for needle in ("Black-Litterman-LIKE", "Joseph", "S = P U P' + Omega", "never forms", "strictly positive definite", "positive semidefinite",
                    "singular", "simple-return support", "no tau", "independent of the targets", "does not tolerate rounding noise"):
         assert needle in doc, needle

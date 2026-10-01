@@ -148,6 +148,23 @@ U_post = U - U P' S^-1 P U              posterior expected-return uncertainty
 `U_post` is the posterior epistemic covariance of the expected-return **estimates**. It is not the historical return
 covariance, a future realized-return covariance or a portfolio covariance, and nothing is added to it.
 
+### Joseph-stabilized posterior covariance
+
+The posterior covariance is built in the **Joseph form**:
+
+```text
+K      = U P' S^-1                    (K = Z' with Z = S^-1 P U, because S and U are symmetric; from the same LDL solves)
+A      = I - K P
+U_post = A U A' + K Omega K'
+```
+
+This is algebraically equivalent to the Gaussian posterior covariance `U - U P' S^-1 P U` and is used to reduce
+cancellation-driven loss of positive semidefiniteness: the direct subtraction of two nearly equal matrices can leave tiny
+negative rounding residue in a direction that should be exactly zero under noiseless views. The subtractive form is no longer
+used in production. Omega still comes only from Phase 20A's `view_noise_variances`; the posterior mean path is unchanged.
+Each `U_post[i][j]` with `i <= j` is computed once and mirrored. PSD validation remains **exact**: no epsilon, tolerance,
+clipping, jitter, nearest-PSD or precision escalation is used.
+
 ### Solve, not invert
 
 `S^-1` is never formed (no inverse, pseudo-inverse, determinant or adjugate). `S` is factored by a deterministic
@@ -198,11 +215,13 @@ One fresh `Context(prec=50, ROUND_HALF_EVEN, Emin=MIN_EMIN, Emax=MAX_EMAX)` per 
 never used. A genuine overflow is `user-view posterior analytics exceeds supported Decimal range`. The result constructor
 recomputes the canonical posterior and rejects forged means or covariances.
 
-**Known limitation.** The posterior PSD test is exact and does **not** tolerate rounding noise (nothing is clipped, no
-epsilon, no nearest-PSD). A mathematically exact-zero direction of `U_post` can therefore be polluted by 50-digit rounding noise
-and rejected as not positive semidefinite. Observed: two exact (`c = 1`) absolute views on two correlated assets of a
-three-asset prior with non-terminating intermediate quotients; one exact view, or all three assets exact, pass. The outcome is
-fail-closed (never a wrong posterior). A tolerance for exact-view directions would be a separate, explicit decision.
+**Remaining limitation (reported, not guaranteed away).** The Joseph form is not an absolute numerical guarantee. On a random
+stress of 600 small three-asset fixtures (random positive definite priors; absolute and relative views, confidence `1` and
+`< 1`), 21 (3.5%) are still rejected as not positive semidefinite versus 152 (25%) under the former subtractive form; 140
+cases that failed before now pass and 9 that passed before now fail. Observed failures involve exact (`c = 1`) relative views
+whose exact-zero direction is still polluted by 50-digit rounding noise. The outcome is always fail-closed (never a wrong
+posterior). The former two-exact-absolute-view case on a correlated prior is now supported. Closing the remainder would need a
+separate, explicit decision about a tolerance policy, which this phase deliberately does not add.
 
 ### Explicit non-goals of 20B
 
