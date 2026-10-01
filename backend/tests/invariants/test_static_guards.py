@@ -60,6 +60,7 @@ EXPECTED_MANIFEST = (
     "backend/engine/private/allocation_matrix.py",
     "backend/engine/private/allocation_benchmarks.py",
     "backend/engine/private/allocation_risk_parity.py",
+    "backend/engine/private/allocation_hrp.py",
 )
 
 

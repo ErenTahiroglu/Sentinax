@@ -8,7 +8,7 @@ checkpoints so that each mathematical layer is locked before the next one depend
 | 18A | Aligned monthly return panel + exact Decimal sample covariance | this document |
 | 18B | Equal weight + inverse volatility | see Phase 18B below |
 | 18C | Equal risk contribution (risk parity) | see Phase 18C below |
-| 18D | Hierarchical risk parity | deferred |
+| 18D | Hierarchical risk parity | see Phase 18D below |
 | 19 | CVaR optimizer | deferred |
 
 Sentinax is a decision-support system. These benchmarks never send orders and never recommend a trade.
@@ -299,9 +299,111 @@ no HRP: correlation distance, clustering, linkage, quasi-diagonalization, recurs
 no VaR / CVaR / Expected Shortfall, scenario optimization
 ```
 
+## Phase 18D
+
+Module: `backend/engine/private/allocation_hrp.py` (pure Private Engine module, in the static-guard `PURE_MANIFEST`;
+its only Private Engine dependencies are `allocation_matrix` and `allocation_benchmarks`). It does not use the
+Phase 18C ERC module.
+
+One canonical Hierarchical Risk Parity benchmark with no options (no linkage, distance or split variants):
+
+```text
+covariance -> correlation -> correlation distance -> distance-of-distance -> single-linkage clustering
+           -> quasi-diagonal order -> recursive bisection -> cluster inverse-variance allocation -> exact weights
+```
+
+No expected returns, no matrix inversion, no quadratic optimizer, no clustering library.
+
+### Correlation, distance and distance-of-distance
+
+```text
+rho_ij = Sigma_ij / sqrt(Sigma_ii * Sigma_jj)     (i != j, one calculation per pair => rho_ij == rho_ji)
+rho_ii = 1                                          (exactly, not recomputed)
+d_ij   = sqrt((1 - rho_ij) / 2),   d_ii = 0
+D_ij   = sqrt( sum_k (d_ki - d_kj)^2 ),   D_ii = 0   # Euclidean distance between correlation-distance profiles
+```
+
+`D` (not `d`) is the clustering input; there is no normalization and no Ward transform. Every off-diagonal `rho_ij`
+must lie in `[-1, 1]`; a value outside is `INVALID_CORRELATION_GEOMETRY` and is never clipped, capped or made absolute.
+Perfect correlation (`rho = +1`, distance 0) and perfect anti-correlation (`rho = -1`, distance 1) are valid.
+
+### Single linkage and deterministic tie-breaking
+
+Bottom-up single linkage only. Leaves are `0 .. N-1` in canonical instrument order; merged clusters receive ids
+`N, N+1, ...` in merge order. `distance(A, B) = min D_ij` over `i in A, j in B`, maintained with the exact recurrence
+`distance(C, X) = min(distance(A, X), distance(B, X))`. Each step selects the pair by the exact key
+
+```text
+(linkage_distance, min(cluster_id_a, cluster_id_b), max(cluster_id_a, cluster_id_b))
+```
+
+lexicographically, so ties never depend on dict, set or hash order or on a library. The smaller id is always the
+**left** child and the larger the **right** child; orientation is never changed by variance, size or distance.
+
+### Quasi-diagonal order and recursive bisection
+
+The order is the left subtree then the right subtree of the final merge, expanded to leaf indices, with no post-sort.
+Recursive bisection then splits that **order** (not the dendrogram branch sizes) with `split = len(group) // 2`,
+`left = group[:split]`, `right = group[split:]` (for odd lengths the left half is the smaller one, e.g.
+`(0,1,2,3,4) -> (0,1) | (2,3,4)`). Complete levels are processed left to right and only non-singleton children are
+carried to the next level. Internal weights are mapped back to canonical `source.instrument_ids` order.
+
+### Inverse-variance cluster allocation and split factor
+
+HRP uses inverse **variance**, not the Phase 18B inverse **volatility**:
+
+```text
+raw_i = 1 / Sigma_ii         (NOT 1 / sqrt(Sigma_ii))
+q_i   = raw_i / sum(raw)
+V(C)  = q' Sigma_C q          # full covariance inside the cluster
+alpha = V_right / (V_left + V_right),   left weights *= alpha,   right weights *= 1 - alpha
+```
+
+For a diagonal covariance matrix HRP therefore equals the global inverse-variance portfolio `w_i ~ 1 / Sigma_ii`, which
+differs materially from Inverse Volatility whenever the variances are unequal.
+
+### Singular covariance and unavailable semantics
+
+Singular (rank-deficient) covariance is supported: there is no determinant, inverse, positive-definiteness or
+`T > N` requirement. HRP is available whenever every variance is positive, the correlation geometry is valid and every
+child cluster variance used in a split is positive.
+
+```text
+ZERO_VARIANCE                any Sigma_ii == 0 (correlation undefined; no epsilon, dropped asset or fallback)
+INVALID_CORRELATION_GEOMETRY a covariance-derived correlation outside [-1, 1]
+DEGENERATE_CLUSTER_VARIANCE  a child cluster variance <= 0 (e.g. a perfectly anti-correlated equal-variance pair);
+                             no 0/100 split and no epsilon variance
+```
+
+A genuine Decimal analytical overflow or exact-closure resource failure is the distinct static error
+`hierarchical risk parity exceeds supported Decimal analytics range`, never an availability reason.
+
+Known limitation: the correlation check is exact and does not tolerate rounding noise. Perfectly collinear series whose
+variances have no finite 50-digit representation could, in principle, produce a correlation a few units in the 50th digit
+outside `[-1, 1]` and therefore be reported as `INVALID_CORRELATION_GEOMETRY` (a fail-closed result, never a wrong
+weight). This is deliberate: nothing is clipped.
+
+### Decimal context and exact stored-weight closure
+
+One fresh `Context(prec=50, ROUND_HALF_EVEN, Emin=MIN_EMIN, Emax=MAX_EMAX)` is passed through the whole build; the
+ambient context is never used. Preliminary weights are closed to an exact Decimal sum of `1` with the reviewed Phase 18B
+context-free coefficient closure (`_close_to_one`, `_sums_to_exactly_one`), reused intentionally and not duplicated.
+`HierarchicalRiskParityResult` stores `source`, `weights` and `unavailable_reason`, retains the source by identity and
+recomputes the complete canonical build on construction, rejecting forged weights, reasons or pairings. The derived,
+non-stored views `quasi_diagonal_order` and `ordered_instrument_ids` are `None` for an unavailable result.
+
+### Explicit non-goals of 18D
+
+```text
+no expected returns, Black-Litterman, user views or conviction
+no matrix inversion / pseudo-inverse / determinant / Cholesky
+no quadratic optimizer, objective, gradient, solver, minimum variance, mean variance, CVaR
+no configurable linkage (ward / average / complete), distance, split policy, cluster count
+no score, rank, confidence or recommendation
+```
+
 ## Deferred
 
 | Checkpoint | Scope |
 |---|---|
-| 18D | Hierarchical Risk Parity benchmark (correlation / distance semantics locked first) |
 | 19 | CVaR optimizer |
