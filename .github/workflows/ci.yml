@@ -166,3 +166,10 @@ jobs:
           backend/tests/test_allocation_rebalance.py \
           backend/tests/test_allocation_rebalance_policy.py \
           -q --disable-socket
+
+    - name: Phase 22 candidate universe correctness
+      run: |
+        python -m pytest \
+          backend/tests/test_allocation_universe_composition.py \
+          backend/tests/test_allocation_candidate_universe.py \
+          -q --disable-socket
