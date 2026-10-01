@@ -56,7 +56,12 @@ no numeric type or arithmetic. Materiality is contextual, so the vocabulary is o
 financing / liquidity, governance, legal / regulatory, ownership / control, capital structure, macro exposure, other). They carry no
 direction, magnitude, score or weight; `VALUATION` is only a label, not a price-target or expected-return effect. The tuple is non-empty,
 unique and in enum declaration order (validated, never sorted; representation only, no priority meaning); `OTHER` is the explicit
-"none of the named", an empty tuple never means unknown. There is no portfolio, rebalance or position dimension: portfolio consequence
+"none of the named", an empty tuple never means unknown.
+
+**`OTHER` is mutually exclusive.** `(OTHER,)` means none of the named analytical dimensions applies. If any named dimension is present,
+`OTHER` must be absent. The implementation rejects mixed named + `OTHER` tuples (for example `(GOVERNANCE, OTHER)` or the full enum)
+with `ValueError`, rather than sorting, dropping or repairing them. Named dimensions still compose freely when unique and in canonical
+order (for example `(EARNINGS, VALUATION)`). There is no portfolio, rebalance or position dimension: portfolio consequence
 belongs to 23C.
 
 ## Methodology key and assessment provenance

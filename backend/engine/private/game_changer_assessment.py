@@ -26,7 +26,8 @@ Claim limits:
     - Thesis impact is not an instruction: WEAKENED is not SELL, STRENGTHENED is not BUY, INVALIDATED is not liquidation. Urgency is
       a review priority only: it schedules, notifies, freezes and quarantines nothing.
     - `impact_dimensions` are affected analytical channels only (no direction, magnitude or weight) and are non-empty, unique and in
-      enum declaration order (representation only, validated and never sorted); OTHER is the explicit "none of the named" value.
+      enum declaration order (representation only, validated and never sorted). OTHER is the explicit "none of the named" value and is
+      mutually exclusive: (OTHER,) is valid, OTHER together with any named dimension is rejected, never dropped or repaired.
       There is deliberately no portfolio, rebalance or position dimension.
 
 Provenance: `methodology_key` is a strict lowercase version identity (it proves no methodology quality) and
@@ -68,6 +69,7 @@ _ERR_THESIS = "thesis_impact must be an exact GameChangerThesisImpact instance"
 _ERR_BASIS = "materiality_basis must be an exact GameChangerMaterialityBasis instance"
 _ERR_DIMENSIONS_TYPE = "impact_dimensions must be a tuple of exact GameChangerImpactDimension instances"
 _ERR_DIMENSIONS_VALUE = "impact_dimensions must be non-empty, unique and in canonical enum declaration sequence"
+_ERR_DIMENSIONS_OTHER = "OTHER is exclusive: it must be the only impact dimension when present"
 _ERR_KEY_TYPE = "methodology_key must be an exact str instance"
 _ERR_KEY_VALUE = "methodology_key must be a canonical lowercase identifier of at most 128 characters"
 _ERR_SHA_TYPE = "assessment_provenance_sha256 must be an exact str instance"
@@ -150,6 +152,8 @@ class GameChangerMaterialityAssessment:
         positions = [_DECLARATION_POSITION[d] for d in self.impact_dimensions]
         if not positions or any(left >= right for left, right in zip(positions, positions[1:])):
             raise ValueError(_ERR_DIMENSIONS_VALUE)
+        if GameChangerImpactDimension.OTHER in self.impact_dimensions and self.impact_dimensions != (GameChangerImpactDimension.OTHER,):
+            raise ValueError(_ERR_DIMENSIONS_OTHER)
         if type(self.materiality_basis) is not GameChangerMaterialityBasis:
             raise TypeError(_ERR_BASIS)
         if type(self.methodology_key) is not str:

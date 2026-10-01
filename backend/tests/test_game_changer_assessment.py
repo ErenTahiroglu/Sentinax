@@ -141,7 +141,8 @@ def test_enum_fields_are_exact() -> None:
 
 def test_impact_dimension_contract() -> None:
     assert assess(impact_dimensions=(DIM.OTHER,)).impact_dimensions == (DIM.OTHER,)
-    assert assess(impact_dimensions=tuple(DIM)).impact_dimensions == tuple(DIM)
+    named = tuple(d for d in DIM if d is not DIM.OTHER)
+    assert assess(impact_dimensions=named).impact_dimensions == named                         # every named dimension composes
     for bad in ([DIM.EARNINGS], None, "earnings", (DIM.EARNINGS, "valuation"), ("earnings",), (M.LOW,), (None,)):
         with pytest.raises(TypeError):
             assess(impact_dimensions=bad)
@@ -151,7 +152,28 @@ def test_impact_dimension_contract() -> None:
         assess(impact_dimensions=(DIM.EARNINGS, DIM.EARNINGS))
     with pytest.raises(ValueError):
         assess(impact_dimensions=(DIM.VALUATION, DIM.EARNINGS))                               # never silently sorted
-    assert assess(impact_dimensions=(DIM.GOVERNANCE, DIM.OTHER)).impact_dimensions == (DIM.GOVERNANCE, DIM.OTHER)
+    for valid in ((DIM.EARNINGS,), (DIM.EARNINGS, DIM.VALUATION), (DIM.GOVERNANCE, DIM.LEGAL_REGULATORY),
+                  (DIM.CAPITAL_STRUCTURE, DIM.MACRO_EXPOSURE), (DIM.EARNINGS, DIM.CASH_FLOW, DIM.BALANCE_SHEET, DIM.VALUATION)):
+        assert assess(impact_dimensions=valid).impact_dimensions == valid
+
+
+def test_other_is_mutually_exclusive_with_every_named_dimension() -> None:
+    for bad in ((DIM.EARNINGS, DIM.OTHER), (DIM.GOVERNANCE, DIM.OTHER), (DIM.MACRO_EXPOSURE, DIM.OTHER), tuple(DIM)):
+        with pytest.raises(ValueError):
+            assess(impact_dimensions=bad)
+    for named in DIM:                                                                         # exhaustive: survives future enum additions
+        if named is not DIM.OTHER:
+            with pytest.raises(ValueError):
+                assess(impact_dimensions=(named, DIM.OTHER))                                   # canonical order, OTHER last
+    with pytest.raises(ValueError):
+        assess(impact_dimensions=(DIM.OTHER, DIM.EARNINGS))                                    # still rejected (also misordered)
+    assert assess(impact_dimensions=(DIM.OTHER,)).impact_dimensions == (DIM.OTHER,)           # the explicit catch-all stays valid
+    with pytest.raises(ValueError):
+        assess(impact_dimensions=())                                                           # empty is never "unknown"
+    with pytest.raises(ValueError):
+        GameChangerMaterialityAssessment(binding=binding(), materiality=M.LOW, urgency=U.ROUTINE, thesis_impact=TI.UNCHANGED,
+                                         impact_dimensions=(DIM.EARNINGS, DIM.OTHER), materiality_basis=B.NATURE, methodology_key=KEY,
+                                         assessment_provenance_sha256=ASSESSMENT_SHA)           # direct construction cannot bypass it
 
 
 # --- methodology key / provenance --------------------------------------------------------------------------------
