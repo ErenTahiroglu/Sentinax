@@ -145,3 +145,10 @@ jobs:
           backend/tests/test_allocation_risk_parity.py \
           backend/tests/test_allocation_hrp.py \
           -q --disable-socket
+
+    - name: Phase 19 CVaR authority and optimizer correctness
+      run: |
+        python -m pytest \
+          backend/tests/test_allocation_cvar.py \
+          backend/tests/test_allocation_cvar_optimizer.py \
+          -q --disable-socket
