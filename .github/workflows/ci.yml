@@ -152,3 +152,10 @@ jobs:
           backend/tests/test_allocation_cvar.py \
           backend/tests/test_allocation_cvar_optimizer.py \
           -q --disable-socket
+
+    - name: Phase 20 user view overlay correctness
+      run: |
+        python -m pytest \
+          backend/tests/test_allocation_user_views.py \
+          backend/tests/test_allocation_user_view_posterior.py \
+          -q --disable-socket
