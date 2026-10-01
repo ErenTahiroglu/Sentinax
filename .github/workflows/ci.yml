@@ -159,3 +159,10 @@ jobs:
           backend/tests/test_allocation_user_views.py \
           backend/tests/test_allocation_user_view_posterior.py \
           -q --disable-socket
+
+    - name: Phase 21 rebalance policy correctness
+      run: |
+        python -m pytest \
+          backend/tests/test_allocation_rebalance.py \
+          backend/tests/test_allocation_rebalance_policy.py \
+          -q --disable-socket
