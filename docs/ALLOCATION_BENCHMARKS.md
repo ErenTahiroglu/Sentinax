@@ -166,19 +166,29 @@ is not zero. Equal Weight can never be unavailable.
 
 ### Decimal context and exact-sum residual closure
 
-Preliminary weights use a fresh `Context(prec=50, ROUND_HALF_EVEN, Emin=MIN_EMIN, Emax=MAX_EMAX)`; the ambient context
-is never used. The sum of weights is then closed to exactly `1`:
+All analytical arithmetic (division, `sqrt`, inverse-volatility raw weights, normalization) runs in ONE fresh
+`Context(prec=50, ROUND_HALF_EVEN, Emin=MIN_EMIN, Emax=MAX_EMAX)`; the ambient context is never used and no second
+Decimal context exists. The sum of the stored weights is then closed to exactly `1` with context-free integer
+arithmetic on the exact finite representations produced by that context:
 
 ```text
-residual = 1 - sum(preliminary_weights)      # exact arithmetic
+weight_i  = coefficient_i x 10^exponent_i                 # from Decimal.as_tuple()
+common    = min(exponent_i, 0)
+residual  = 10^(-common) - sum_i(coefficient_i x 10^(exponent_i - common))     # integers only
 ```
 
 The residual is added to exactly one preliminary weight: the largest, and the lowest canonical source index on ties
-(instrument order is the Phase 18A canonical UUID-string order, so the rule is input-order independent). This is
-numerical representation closure only. It is not an economic preference or an allocation signal. Every closed weight
-must be finite with `0 < w <= 1` and the exact total must be `1`; otherwise the calculation fails closed with
-`allocation benchmark exceeds supported Decimal analytics range` (no clamping). The closure arithmetic runs in a second
-fresh exact context that traps `Inexact`, so a pathological volatility ratio fails closed instead of being rounded.
+(instrument order is the Phase 18A canonical UUID-string order, so the rule is input-order independent). The closed
+weight is constructed exactly from sign, digits and exponent; nothing is rounded. A zero residual leaves every weight
+untouched. This is numerical representation closure only. It is not an economic preference or an allocation signal.
+Every closed weight must be finite with `0 < w <= 1` and the exact total must be `1`.
+
+**Resource / representation ceiling.** Exact closure aligns weights at their common exponent, which costs integer
+memory proportional to the exponent spread. `_MAX_CLOSURE_DECIMAL_PLACES = 1000` bounds that spread in base-10 places.
+It is a memory/representation ceiling only; it is not an analytical precision, numeric accuracy or a Decimal
+calculation precision. A spread beyond it (a pathological volatility ratio) fails closed with
+`allocation benchmark exceeds supported Decimal analytics range`. The tiny weight is never rounded, dropped, zeroed,
+clamped or floored.
 
 `AllocationBenchmarkResult` retains its source by identity, aligns `weights[i]` with `source.instrument_ids[i]`, and
 recomputes the canonical result on construction, rejecting forged weights, order, method, availability or reason.

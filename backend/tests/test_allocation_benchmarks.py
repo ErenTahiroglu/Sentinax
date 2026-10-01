@@ -11,8 +11,10 @@ from __future__ import annotations
 import ast
 import dataclasses
 import decimal
+import re
 from decimal import Decimal
 from enum import Enum
+from fractions import Fraction
 from pathlib import Path
 from uuid import UUID
 
@@ -51,12 +53,22 @@ def _cov(*columns: list[str]) -> AllocationCovarianceMatrix:
     return build_allocation_covariance_matrix(return_panel=panel)
 
 
-def _exact_sum(values) -> Decimal:
-    ctx = decimal.Context(prec=5000, Emin=decimal.MIN_EMIN, Emax=decimal.MAX_EMAX, traps=[decimal.Inexact, decimal.InvalidOperation])
-    total = Decimal(0)
-    for value in values:
-        total = ctx.add(total, value)
-    return total
+def _exact_sum(values) -> Fraction:
+    """Context-independent exact sum: Fraction(Decimal) is exact and no Decimal context participates."""
+    return sum((Fraction(value) for value in values), Fraction(0))
+
+
+def _coefficient_sum_is_one(weights) -> bool:
+    """Exact coefficient arithmetic from Decimal.as_tuple() at the common exponent (no Decimal arithmetic at all)."""
+    parts = []
+    for weight in weights:
+        sign, digits, exponent = weight.as_tuple()
+        coefficient = 0
+        for digit in digits:
+            coefficient = coefficient * 10 + digit
+        parts.append((-coefficient if sign else coefficient, exponent))
+    common = min([e for _, e in parts] + [0])
+    return sum(c * 10 ** (e - common) for c, e in parts) == 10 ** (0 - common)
 
 
 def _third() -> Decimal:
@@ -264,8 +276,8 @@ def test_weights_follow_the_source_instrument_order() -> None:
     assert flipped.instrument_ids == (UUIDS[0], UUIDS[1])
 
 
-def test_extreme_volatility_ratio_fails_closed_with_the_static_range_error() -> None:
-    covariance = _cov(A, ["0", "1E+1000", "2E+1000"])
+def test_extreme_volatility_ratio_beyond_the_representation_ceiling_fails_closed() -> None:
+    covariance = _cov(A, ["0", "1E+1100", "2E+1100"])
     with pytest.raises(ValueError, match="allocation benchmark exceeds supported Decimal analytics range"):
         build_inverse_volatility_benchmark(covariance=covariance)
 
@@ -504,3 +516,103 @@ def test_documents_the_diagonal_only_dependency_and_that_it_is_not_risk_parity()
     doc = module_under_test.__doc__ or ""
     assert "diagonal" in doc and "not" in doc.lower()
     assert "residual" in doc
+
+
+# --- Phase 18B-R1: one analytics Decimal context + context-free exact residual closure ---------------------------
+
+def _context_constructions() -> list[str]:
+    owners: list[str] = []
+    for func in [n for n in ast.walk(_TREE) if isinstance(n, ast.FunctionDef)]:
+        for call in [n for n in ast.walk(func) if isinstance(n, ast.Call)]:
+            if getattr(call.func, "attr", "") == "Context":
+                owners.append(func.name)
+    return owners
+
+
+def test_r1_only_the_analytics_context_constructs_a_decimal_context() -> None:
+    assert _context_constructions() == ["_analytics_context"]
+    assert not hasattr(module_under_test, "_closure_context")
+    assert "_closure_context" not in _SOURCE
+    names = {n.id for n in ast.walk(_TREE) if isinstance(n, ast.Name)} | {n.attr for n in ast.walk(_TREE) if isinstance(n, ast.Attribute)}
+    assert "Inexact" not in names and "localcontext" not in names and "getcontext" not in names and "setcontext" not in names
+
+
+def test_r2_no_second_precision_regime() -> None:
+    assert not hasattr(module_under_test, "_CLOSURE_PRECISION")
+    assert "_CLOSURE_PRECISION" not in _SOURCE
+    assert re.findall(r"prec\s*=\s*(\d+)", _SOURCE) == ["50"]
+
+
+def test_r3_three_way_equal_weight_closes_exactly_by_coefficient_arithmetic() -> None:
+    weights = build_equal_weight_benchmark(covariance=_cov(A, B_POS, B_NEG)).weights
+    assert _coefficient_sum_is_one(weights)
+    assert _exact_sum(weights) == 1
+    # the stored Decimals are exactly the 50-digit analytics values plus the single-weight residual
+    assert weights[0].as_tuple() == D("0.33333333333333333333333333333333333333333333333334").as_tuple()
+    assert weights[1].as_tuple() == D("0.33333333333333333333333333333333333333333333333333").as_tuple()
+    assert weights[2].as_tuple() == weights[1].as_tuple()
+
+
+@pytest.mark.parametrize("builder", [build_equal_weight_benchmark, build_inverse_volatility_benchmark])
+def test_r3_exact_coefficient_sum_for_every_dimension(builder) -> None:
+    for count in range(1, 9):
+        covariance = _cov(*[[str(j * (i + 1) + (i % 3)) for j in range(4)] for i in range(count)])
+        result = builder(covariance=covariance)
+        if result.is_available:
+            assert _coefficient_sum_is_one(result.weights) and _exact_sum(result.weights) == 1
+
+
+def test_r4_hostile_ambient_context_does_not_alter_the_exact_closure() -> None:
+    covariance = _cov(A, B_POS, B_NEG)
+    baseline = build_equal_weight_benchmark(covariance=covariance).weights
+    for hostile in _hostile_contexts():
+        with decimal.localcontext(hostile) as ambient:
+            ambient.clear_flags()
+            weights = build_equal_weight_benchmark(covariance=covariance).weights
+            assert not any(ambient.flags.values())
+        assert [w.as_tuple() for w in weights] == [w.as_tuple() for w in baseline]
+        assert _coefficient_sum_is_one(weights)
+
+
+def _wide_spread_covariance(exponent: int) -> AllocationCovarianceMatrix:
+    return _cov(A, ["0", f"1E+{exponent}", f"2E+{exponent}"])
+
+
+def test_r5_failure_is_classified_as_the_explicit_resource_ceiling(monkeypatch) -> None:
+    assert module_under_test._MAX_CLOSURE_DECIMAL_PLACES == 1000
+    covariance = _wide_spread_covariance(30)
+    assert build_inverse_volatility_benchmark(covariance=covariance).is_available  # fine under the real ceiling
+    monkeypatch.setattr(module_under_test, "_MAX_CLOSURE_DECIMAL_PLACES", 10)
+    with pytest.raises(ValueError, match="allocation benchmark exceeds supported Decimal analytics range"):
+        build_inverse_volatility_benchmark(covariance=covariance)
+    monkeypatch.undo()
+    with pytest.raises(ValueError, match="allocation benchmark exceeds supported Decimal analytics range"):
+        build_inverse_volatility_benchmark(covariance=_wide_spread_covariance(1100))
+
+
+def test_r5_hostile_exponents_are_rejected_before_any_large_allocation() -> None:
+    covariance = _cov(A)
+    good = build_equal_weight_benchmark(covariance=covariance)
+    forged = (D("1E-999999999"),)
+    with pytest.raises(ValueError):
+        AllocationBenchmarkResult(source=good.source, method=good.method, weights=forged, unavailable_reason=None)
+
+
+def test_r6_large_exponent_spread_below_the_ceiling_succeeds_and_sums_exactly() -> None:
+    result = build_inverse_volatility_benchmark(covariance=_wide_spread_covariance(900))
+    assert result.is_available
+    assert _coefficient_sum_is_one(result.weights) and _exact_sum(result.weights) == 1
+    assert all(w.is_finite() and 0 < w <= 1 for w in result.weights)
+    assert result.weights[1] == D("1E-900")  # the tiny weight is neither dropped, zeroed nor floored
+    assert _exact_sum(result.weights[:1]) == 1 - Fraction(1, 10**900)  # the residual lands on the largest weight
+
+
+def test_r7_reference_economics_are_unchanged_down_to_as_tuple() -> None:
+    ctx = decimal.Context(prec=50, rounding=decimal.ROUND_HALF_EVEN)
+    two_thirds, one_third = ctx.divide(D(2), D(3)), ctx.divide(D(1), D(3))
+    inverse = build_inverse_volatility_benchmark(covariance=_cov(A, B_POS)).weights
+    assert [w.as_tuple() for w in inverse] == [two_thirds.as_tuple(), one_third.as_tuple()]  # zero residual: untouched
+    half = build_equal_weight_benchmark(covariance=_cov(A, B_POS)).weights
+    assert [w.as_tuple() for w in half] == [D("0.5").as_tuple(), D("0.5").as_tuple()]
+    single = build_equal_weight_benchmark(covariance=_cov(A)).weights
+    assert [w.as_tuple() for w in single] == [D("1").as_tuple()]

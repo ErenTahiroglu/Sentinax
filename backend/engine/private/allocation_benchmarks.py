@@ -23,19 +23,25 @@ Zero volatility:
       100% allocation, zero weight or carried-forward volatility is substituted: undefined is never zero.
 
 Exact-sum residual closure:
-    - Preliminary weights are computed with a fresh 50-digit ROUND_HALF_EVEN context. Because quantities such as
-      1/3 have no finite Decimal form, the residual 1 - sum(preliminary) is computed in exact arithmetic and added to
-      exactly one preliminary weight: the largest one, the lowest canonical source index on ties (instrument order
-      is the canonical UUID-string order of Phase 18A, hence input-order independent). The result sums to exactly 1.
-      This residual closure is numerical representation closure only; it is NOT an economic preference or an
-      allocation signal. Each closed weight must be finite with 0 < w <= 1; otherwise the calculation fails closed
-      with a static analytical-range error (no clamping).
+    - Preliminary weights are computed with ONE fresh 50-digit ROUND_HALF_EVEN analytics context. Because quantities
+      such as 1/3 have no finite Decimal form, the residual 1 - sum(preliminary) is computed by context-free exact
+      integer coefficient arithmetic on `Decimal.as_tuple()` at the common base-10 exponent (no Decimal context takes
+      part) and added to exactly one preliminary weight: the largest one, the lowest canonical source index on ties
+      (instrument order is the canonical UUID-string order of Phase 18A, hence input-order independent). The closed
+      weight is constructed exactly from sign/digits/exponent. The stored weights sum to exactly 1. A zero residual
+      leaves every weight untouched. This residual closure is numerical representation closure only; it is NOT an
+      economic preference or an allocation signal. Each closed weight must be finite with 0 < w <= 1; otherwise the
+      calculation fails closed with a static analytical-range error (no clamping).
+    - Resource / representation ceiling: exact closure aligns weights at their common exponent, which costs integer
+      memory proportional to the exponent spread. A spread beyond `_MAX_CLOSURE_DECIMAL_PLACES` base-10 places fails
+      closed with the static range error (never rounded, dropped, zeroed or floored). It bounds memory only; it is
+      not an analytical precision.
 
 Architectural Invariants:
     - Pure domain module: standard library plus `allocation_matrix` only. Zero network, filesystem, database,
       ambient clock, randomness, float arithmetic, numpy/pandas/scipy, persistence, provider or resolver calls.
-    - Decimal arithmetic never touches the ambient context. Each calculation builds fresh contexts (a 50-digit
-      analytics context and an exact closure context that traps Inexact); no module-global mutable Context exists.
+    - Decimal arithmetic never touches the ambient context. Each calculation builds one fresh 50-digit analytics
+      context; closure uses integers only; no module-global mutable Context exists.
     - `weights[i]` corresponds to `source.instrument_ids[i]`; instrument ids are not duplicated as stored fields.
     - `AllocationBenchmarkResult` retains its covariance source by identity and recomputes the canonical result
       through the same private helper as the builders, rejecting forged values.
@@ -64,7 +70,8 @@ _ERR_WEIGHT_SUM = "weights must sum to exactly 1"
 _ERR_MATCH = "benchmark must match the canonical calculation exactly"
 _ERR_RANGE = "allocation benchmark exceeds supported Decimal analytics range"
 
-_CLOSURE_PRECISION = 1000
+# Resource / representation ceiling for exact closure (base-10 places of exponent spread). Not an analytical precision.
+_MAX_CLOSURE_DECIMAL_PLACES = 1000
 
 
 class AllocationBenchmarkMethod(Enum):
@@ -85,45 +92,60 @@ def _analytics_context() -> decimal.Context:
     )
 
 
-def _closure_context() -> decimal.Context:
-    """Fresh exact-arithmetic context: any inexact closure step is a deterministic range failure, never rounded."""
-    return decimal.Context(
-        prec=_CLOSURE_PRECISION,
-        rounding=decimal.ROUND_HALF_EVEN,
-        Emin=decimal.MIN_EMIN,
-        Emax=decimal.MAX_EMAX,
-        traps=[decimal.InvalidOperation, decimal.DivisionByZero, decimal.Overflow, decimal.Inexact],
-    )
+def _split(value: Decimal) -> tuple[int, int]:
+    """Exact (signed integer coefficient, base-10 exponent) of a finite Decimal, without any Decimal arithmetic."""
+    sign, digits, exponent = value.as_tuple()
+    coefficient = 0
+    for digit in digits:
+        coefficient = coefficient * 10 + digit
+    return (-coefficient if sign else coefficient, exponent)  # type: ignore[return-value]
 
 
-def _exact_total(weights: tuple[Decimal, ...]) -> Decimal:
-    closure = _closure_context()
-    try:
-        total = Decimal(0)
-        for weight in weights:
-            total = closure.add(total, weight)
-    except (decimal.Overflow, decimal.Inexact):
-        raise ValueError(_ERR_RANGE) from None
-    return total
+def _aligned(weights: tuple[Decimal, ...]) -> tuple[list[int], int, int]:
+    """Coefficients of the weights and of exact 1 at the common exponent; refuses oversized exponent spreads first."""
+    parts = [_split(weight) for weight in weights]
+    common = min([exponent for _, exponent in parts] + [0])
+    if any(exponent - common > _MAX_CLOSURE_DECIMAL_PLACES for _, exponent in parts) or (
+        0 - common > _MAX_CLOSURE_DECIMAL_PLACES
+    ):
+        raise ValueError(_ERR_RANGE)
+    coefficients = [coefficient * 10 ** (exponent - common) for coefficient, exponent in parts]
+    return (coefficients, 10 ** (0 - common), common)
+
+
+def _sums_to_exactly_one(weights: tuple[Decimal, ...]) -> bool:
+    coefficients, one, _ = _aligned(weights)
+    return sum(coefficients) == one
+
+
+def _exact_decimal(coefficient: int, exponent: int) -> Decimal:
+    """Exact positive Decimal from coefficient * 10**exponent; the tuple constructor never rounds."""
+    digits: list[int] = []
+    remaining = coefficient
+    while remaining:
+        remaining, digit = divmod(remaining, 10)
+        digits.append(digit)
+    return Decimal((0, tuple(reversed(digits)) or (0,), exponent))
 
 
 def _close_to_one(preliminary: list[Decimal]) -> tuple[Decimal, ...]:
-    """Apply the residual 1 - sum(preliminary) to the largest preliminary weight (lowest index on ties)."""
-    closure = _closure_context()
-    try:
-        residual = closure.subtract(Decimal(1), _exact_total(tuple(preliminary)))
+    """Apply the exact residual 1 - sum(preliminary) to the largest preliminary weight (lowest index on ties)."""
+    coefficients, one, common = _aligned(tuple(preliminary))
+    residual = one - sum(coefficients)
+    closed = list(preliminary)
+    if residual != 0:
         target = 0
         for index, weight in enumerate(preliminary):
             if weight > preliminary[target]:  # strict: ties keep the lowest canonical index
                 target = index
-        closed = list(preliminary)
-        closed[target] = closure.add(preliminary[target], residual)
-    except (decimal.Overflow, decimal.Inexact):
-        raise ValueError(_ERR_RANGE) from None
+        closed_coefficient = coefficients[target] + residual
+        if closed_coefficient <= 0:
+            raise ValueError(_ERR_RANGE)
+        closed[target] = _exact_decimal(closed_coefficient, common)
     if any(not w.is_finite() or not (w > Decimal(0) and w <= Decimal(1)) for w in closed):
         raise ValueError(_ERR_RANGE)
     result = tuple(closed)
-    if _exact_total(result) != Decimal(1):
+    if not _sums_to_exactly_one(result):
         raise ValueError(_ERR_RANGE)
     return result
 
@@ -191,7 +213,7 @@ class AllocationBenchmarkResult:
                 raise ValueError(_ERR_SHAPE)
             if any(not w.is_finite() or not (w > Decimal(0) and w <= Decimal(1)) for w in self.weights):
                 raise ValueError(_ERR_WEIGHT_RANGE)
-            if _exact_total(self.weights) != Decimal(1):
+            if not _sums_to_exactly_one(self.weights):
                 raise ValueError(_ERR_WEIGHT_SUM)
         if (self.weights, self.unavailable_reason) != _canonical_benchmark(self.source, self.method):
             raise ValueError(_ERR_MATCH)
