@@ -4,8 +4,8 @@ Phase 21 builds the rebalance layer of the Private Investment Decision Engine in
 
 | Checkpoint | Scope | Status |
 |---|---|---|
-| 21A | Exact target / current-state reconciliation + frictionless cash-first reference plan | this document |
-| 21B | Rebalance bands, no-trade region, partial rebalance, minimal-sales policy, explicit transaction-friction evidence | deferred |
+| 21A | Exact target / current-state reconciliation + frictionless cash-first reference plan | implemented |
+| 21B | Trigger / destination bands, no-trade region, exact minimum-sale authority, explicit proportional friction tie resolution | implemented (below) |
 
 Sentinax is a decision-support system. The plan is a notional reference plan: it is not an order, not a ledger event and it
 is never executed.
@@ -98,15 +98,85 @@ is attached to them.
 ```text
 no tax, tax-law inference, capital gain, tax lot, cost basis, FIFO / LIFO / HIFO or Turkey / US tax rate
 no commission, spread, slippage or fee model (historical Phase 14 fee/tax evidence is not a future cost model)
-no rebalance band, threshold, minimum drift or hidden trigger: the caller explicitly requested exact-target reconciliation
+no rebalance band, threshold, minimum drift or hidden trigger in 21A itself (bands are the separate 21B policy layer)
 no quantities, prices, share counts, lot-size rounding, limit / market orders or broker execution
 no PortfolioTransaction / ledger event, no persistence, no API or frontend
 no allocation optimizer call and no decision about the target
 ```
 
-## Phase 21B (DEFERRED, not implemented)
+## Phase 21B: band-aware rebalance policy
 
-Phase 21B: rebalance bands / no-trade region / partial rebalance / minimal-sales policy / explicit transaction-friction evidence.
+Module: `backend/engine/private/allocation_rebalance_policy.py` (pure, in the static-guard `PURE_MANIFEST`; imports only the Phase
+21A exact helpers). Entry point:
 
-Future transaction and tax friction must be supplied by an authoritative upstream model; Phase 21 will not infer tax law from
-historical fee/tax observations.
+```python
+build_band_aware_rebalance_plan(*, target, state, policy: RebalanceBandPolicy, friction: RebalanceFrictionProfile) -> BandAwareRebalancePlan
+```
+
+Phase 21A is unchanged and remains the exact-target reference.
+
+### Explicit policy inputs (no defaults)
+
+- `RebalanceBandPolicy`: per-asset `trigger_drifts` and `destination_drifts`, finite unsigned `Decimal`s with
+  `0 <= destination <= trigger <= 1`, as fractions of total wealth `W`.
+- `RebalanceFrictionProfile`: per-asset proportional `buy_friction_rates` and `sell_friction_rates`, finite unsigned, no upper
+  bound, no implicit zero fill. They are explicit caller inputs, **not** inferred from historical fee/tax evidence.
+- Same canonical UUID universe as the target and state; any mismatch fails closed.
+
+### Trigger band (amount space) and no-trade region
+
+```text
+W = sum(v_i) + investable_cash          T_i = w_i * W
+breach_i  <=>  |v_i - T_i| > trigger_i * W      (exactly equal is INSIDE; no tolerance; weights are never rounded)
+```
+
+Uninvested cash counts in `W`, so it can create a breach. If no asset breaches there are **no trades and the investable cash is
+retained** (cash is not deployed merely because it exists). If any asset breaches, the plan is triggered and cash is fully
+deployed (`post_trade_cash == 0`).
+
+### Destination band and mandatory repairs
+
+```text
+L_i = max(T_i - destination_i * W, 0)      U_i = T_i + destination_i * W        (sum L <= W <= sum U always)
+MS_i = max(v_i - U_i, 0)   MB_i = max(L_i - v_i, 0)      S0 = sum MS_i   B0 = sum MB_i   C = investable cash
+```
+
+`destination = 0` collapses the band to the exact target and reproduces the Phase 21A plan (same trades and staging).
+
+### Exact minimum gross sale (closed form, no solver)
+
+```text
+S_min      = max(S0, B0 - C, 0)
+extra_sell = S_min - S0          extra_buy = C + S_min - B0          (mutually exclusive, both >= 0)
+```
+
+Lexicographic priority: **minimum gross sale first**, never traded against friction. Among plans with gross sale `S_min`,
+**minimum explicit friction second**: the discretionary `extra_sell` / `extra_buy` is allocated greedily over exact capacities
+(lowest friction rate first, canonical UUID order on ties). This is exact for a linear single-constraint box problem; no LP, QP or
+numerical solver is used. No round trips: an asset is never both bought and sold. Staging is the Phase 21A three-stage order
+(cash-funded buys, sells, sale-funded buys).
+
+Note: no destination-feasible alternative with a larger gross sale can be cheaper than the canonical plan under this model, so
+minimum-sale and minimum-friction never conflict; friction only chooses *which* assets absorb the discretionary amount.
+
+### Friction is a planning diagnostic
+
+`estimated_buy_friction`, `estimated_sell_friction`, `estimated_total_friction` are derived (not stored) exact products of the
+explicit rates and the notionals. Friction is never deducted from notionals, wealth or cash; no execution cost is settled.
+Weight drifts (`current_weight_drifts`, `post_trade_weight_drifts`) are diagnostic only and never drive a trigger.
+
+### Narrow optimality claim and non-goals
+
+The plan is optimal only in the lexicographic sense above (minimum gross sale, then minimum explicit friction). It is not globally
+optimal for any other objective, tax outcome or execution cost.
+
+```text
+no tax, tax-law inference, capital gain, lot, cost basis or FIFO / LIFO / HIFO
+no tax-aware or after-tax objective; no historical fee/tax evidence used as a cost model
+no solver, no quantity / price / order translation, no quantization of notionals
+no persistence, ledger event, API, frontend or CI widening
+```
+
+Plan authority: `BandAwareRebalancePlan` retains target, state, policy and friction by identity and recomputes the canonical trades on
+construction, rejecting forged, missing, extra, mis-staged, mis-ordered or trades when no trigger fired
+(`rebalance plan must match the canonical band-aware plan exactly`).

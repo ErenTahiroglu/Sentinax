@@ -67,6 +67,7 @@ PURE_MANIFEST: tuple[str, ...] = (
     "backend/engine/private/allocation_user_views.py",
     "backend/engine/private/allocation_user_view_posterior.py",
     "backend/engine/private/allocation_rebalance.py",
+    "backend/engine/private/allocation_rebalance_policy.py",
 )
 _MANIFEST_MODULES = frozenset(p[: -len(".py")].replace("/", ".") for p in PURE_MANIFEST)
 
