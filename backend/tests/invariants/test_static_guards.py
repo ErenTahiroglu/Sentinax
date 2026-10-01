@@ -66,6 +66,7 @@ EXPECTED_MANIFEST = (
     "backend/engine/private/allocation_user_view_posterior.py",
     "backend/engine/private/allocation_rebalance.py",
     "backend/engine/private/allocation_rebalance_policy.py",
+    "backend/engine/private/allocation_universe_composition.py",
 )
 
 
