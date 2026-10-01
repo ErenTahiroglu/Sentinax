@@ -136,3 +136,12 @@ jobs:
           backend/tests/test_fred_alfred.py \
           backend/tests/test_precious_metals.py \
           -q
+
+    - name: Phase 18 allocation benchmark correctness
+      run: |
+        python -m pytest \
+          backend/tests/test_allocation_matrix.py \
+          backend/tests/test_allocation_benchmarks.py \
+          backend/tests/test_allocation_risk_parity.py \
+          backend/tests/test_allocation_hrp.py \
+          -q --disable-socket
