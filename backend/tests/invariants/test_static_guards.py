@@ -63,6 +63,7 @@ EXPECTED_MANIFEST = (
     "backend/engine/private/allocation_hrp.py",
     "backend/engine/private/allocation_cvar.py",
     "backend/engine/private/allocation_user_views.py",
+    "backend/engine/private/allocation_user_view_posterior.py",
 )
 
 

@@ -6,7 +6,7 @@ base model. It is split into two checkpoints.
 | Checkpoint | Scope | Status |
 |---|---|---|
 | 20A | Expected-return prior + user-view contracts + confidence-to-uncertainty mapping | this document |
-| 20B | Bayesian posterior expected-return overlay | deferred |
+| 20B | Bayesian posterior expected-return overlay | IMPLEMENTED (see Phase 20B below) |
 
 Sentinax is a decision-support system. Nothing here sends orders, ranks assets or recommends a trade.
 
@@ -120,16 +120,102 @@ no persistence, migration, repository, user or owner identity, API or frontend
 no LLM-generated or behavior-inferred confidence
 ```
 
-## Phase 20B formula (DEFERRED, not implemented)
+## Phase 20B (IMPLEMENTED)
 
-With `m` the prior expected-return vector, `U` the prior uncertainty covariance, `P` the view matrix, `q` the view targets and
-`Omega` the view-error covariance, Phase 20B intends to compute
+Module: `backend/engine/private/allocation_user_view_posterior.py` (pure Private Engine module, in the static-guard
+`PURE_MANIFEST`; its only Private Engine dependency is `allocation_user_views`). Public entry point:
 
-```text
-S      = P U P' + Omega
-m_post = m + U P' S^-1 (q - P m)
-U_post = U - U P' S^-1 P U
+```python
+build_bayesian_expected_return_posterior(*, view_set: UserReturnViewSet) -> BayesianExpectedReturnPosterior
 ```
 
-`U` is **not** silently replaced with the historical return covariance. A future prior-building phase may choose a principled
-relationship between expected-return uncertainty and historical covariance; 20A does not.
+It is a **Black-Litterman-LIKE Bayesian user-view overlay**, not the canonical Black-Litterman market-equilibrium model,
+because Sentinax still has no market-equilibrium prior. There is no `tau`, risk aversion, market weight or historical
+covariance input, and the output is **no allocation**: it is a belief about expected returns, not weights.
+
+### Equations
+
+With `m` the prior expected-return vector, `U` the prior expected-return uncertainty covariance, `P` the view matrix, `q` the
+view targets and `Omega` the diagonal view-noise covariance of Phase 20A (all read through one `UserReturnViewSet`):
+
+```text
+S      = P U P' + Omega                 innovation covariance, full U, one symmetric calculation path
+d      = q - P m                        view innovation (zero is valid)
+m_post = m + U P' S^-1 d                posterior expected returns
+U_post = U - U P' S^-1 P U              posterior expected-return uncertainty
+```
+
+`U_post` is the posterior epistemic covariance of the expected-return **estimates**. It is not the historical return
+covariance, a future realized-return covariance or a portfolio covariance, and nothing is added to it.
+
+### Solve, not invert
+
+`S^-1` is never formed (no inverse, pseudo-inverse, determinant or adjugate). `S` is factored by a deterministic
+LDL-transposed decomposition (`S = L D L'`, unit lower `L`, no row reordering) in the 50-digit Decimal context, and
+`S y = d` and `S Z = P U` are solved by forward, diagonal and back substitution; then `m_post = m + U P' y` and
+`U_post = U - (U P') Z`. Every `U_post[i][j]` with `i <= j` is computed once and mirrored, so it is exactly symmetric.
+
+### Strictly positive definite `S` and dependent views
+
+Every LDL pivot of `S` must be `> 0`, otherwise the build fails closed with
+`user-view posterior system is singular or non-positive-definite` (no jitter, epsilon diagonal, dropped view, lowered
+confidence, pseudo-inverse or least squares). This can legitimately happen with several exact (confidence `1`, zero noise)
+views that are linearly dependent, e.g. `A` exact, `B` exact and `A - B` exact over two assets: individually valid but
+redundant noiseless equations. The canonical policy is to **fail closed**. Algebraic dependence of `P` alone is **not** the
+criterion: with enough noise (confidence `< 1`) the same three views give a strictly positive definite `S` and a valid
+posterior.
+
+### Posterior support and geometry
+
+- Posterior expected returns are expected simple returns, so each must be finite and `>= -1`
+  (`user-view posterior expected return violates simple-return support`); there is no clipping, rescaling or confidence
+  change. The bound can be crossed through prior correlation (a view on one asset moving a correlated asset).
+- `U_post` must be **positive semidefinite**, validated by a deterministic LDL-style test: a negative pivot is invalid; a zero
+  pivot requires the remaining cross terms to be exactly zero (`user-view posterior uncertainty is not positive
+  semidefinite`). Unlike the prior, `U_post` may be singular and may have zero diagonal entries: a full-confidence view
+  removes all uncertainty along its direction. Exact zeros are normalized to `Decimal("0")`.
+
+### Single-view semantics and invariants
+
+For one isolated view with `s = p U p'` and `omega = ((1 - c) / c) s`:
+
+```text
+p m_post     = p m + c (q - p m)         c = 1 -> p m_post = q ;  c = 0.5 -> midpoint ;  c = 0.25 -> 25% of the innovation
+p U_post p'  = (1 - c) s                 c = 1 -> 0 (singular PSD posterior, allowed)
+```
+
+The posterior uncertainty is **independent of the targets** `q` (same prior, `P` and confidence give an identical `U_post`;
+only the mean moves). A zero innovation (`q = P m`) leaves the mean unchanged but still reduces the uncertainty. A view on one
+asset moves other assets through the prior correlations `U P'`; the same diagonal with different off-diagonal `U` changes the
+unviewed assets. View order never matters (Phase 20A canonical order). Derived, non-stored diagnostics:
+`projected_prior_returns` (`P m`), `view_innovations` (`d`), `innovation_covariance` (`S`), `posterior_view_returns`
+(`P m_post`; noisy views need not equal `q`) and `posterior_shift` (`m_post - m`, the overlay). The prior and the views are
+retained by identity and never mutated.
+
+### Decimal authority and known limitation
+
+One fresh `Context(prec=50, ROUND_HALF_EVEN, Emin=MIN_EMIN, Emax=MAX_EMAX)` per canonical calculation; the ambient context is
+never used. A genuine overflow is `user-view posterior analytics exceeds supported Decimal range`. The result constructor
+recomputes the canonical posterior and rejects forged means or covariances.
+
+**Known limitation.** The posterior PSD test is exact and does **not** tolerate rounding noise (nothing is clipped, no
+epsilon, no nearest-PSD). A mathematically exact-zero direction of `U_post` can therefore be polluted by 50-digit rounding noise
+and rejected as not positive semidefinite. Observed: two exact (`c = 1`) absolute views on two correlated assets of a
+three-asset prior with non-terminating intermediate quotients; one exact view, or all three assets exact, pass. The outcome is
+fail-closed (never a wrong posterior). A tolerance for exact-view directions would be a separate, explicit decision.
+
+### Explicit non-goals of 20B
+
+```text
+no tau, risk aversion, market weights, reverse optimization, CAPM or implied equilibrium returns
+no historical return panel or covariance access; no allocation, benchmark, optimizer or CVaR call
+no ranking, score, recommendation or buy / sell / hold
+no persistence, API or frontend
+```
+
+## Deferred
+
+| Checkpoint | Scope |
+|---|---|
+| Phase 21 | Cash-first rebalance |
+| later | A principled relationship between prior uncertainty and historical covariance; correlated view errors; a tolerance policy for exact-view directions |
