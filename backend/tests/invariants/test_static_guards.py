@@ -58,6 +58,7 @@ EXPECTED_MANIFEST = (
     "backend/engine/private/risk_evidence_investment_goal_schema.py",
     "backend/engine/private/risk_evidence_investment_goal_resolution.py",
     "backend/engine/private/allocation_matrix.py",
+    "backend/engine/private/allocation_benchmarks.py",
 )
 
 

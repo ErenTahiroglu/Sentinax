@@ -6,7 +6,7 @@ checkpoints so that each mathematical layer is locked before the next one depend
 | Checkpoint | Scope | Status |
 |---|---|---|
 | 18A | Aligned monthly return panel + exact Decimal sample covariance | this document |
-| 18B | Equal weight + inverse volatility | deferred |
+| 18B | Equal weight + inverse volatility | see Phase 18B below |
 | 18C | Equal risk contribution (risk parity) | deferred |
 | 18D | Hierarchical risk parity | deferred |
 | 19 | CVaR optimizer | deferred |
@@ -118,11 +118,85 @@ no recommendation, score, rank, rebalance or target allocation
 no persistence, migration, repository or frontend
 ```
 
+## Phase 18B
+
+Module: `backend/engine/private/allocation_benchmarks.py` (pure Private Engine module, in the static-guard
+`PURE_MANIFEST`; its only Private Engine dependency is the Phase 18A `allocation_matrix`).
+
+Two closed-form, long-only, descriptive benchmarks over an `AllocationCovarianceMatrix`. They are not
+recommendations, optimizer outputs, suitability decisions, tactical tilts or trade instructions.
+
+### Equal Weight
+
+```text
+w_i = 1 / N
+```
+
+Always mathematically available for any valid Phase 18A covariance source, including a single asset and a source
+with a zero-variance asset. Two assets give exactly `0.5 / 0.5`. Three assets have no finite Decimal form for `1/3`,
+so the stored values differ only by the residual closure below.
+
+### Inverse Volatility
+
+```text
+sigma_i = sqrt(Sigma_ii)
+raw_i   = 1 / sigma_i
+w_i     = raw_i / sum_j(raw_j)
+```
+
+Inverse Volatility is **not** Equal-Risk-Contribution / risk parity. It uses only the covariance diagonal and
+deliberately ignores off-diagonal covariance, correlation, marginal portfolio risk and risk contribution; those begin
+in 18C. Two sources with the same variances but different covariance or correlation produce identical weights. Zero
+or negative off-diagonal covariance is accepted and changes nothing. No annualization is applied: all assets share the
+monthly frequency and a common scaling cancels in the normalization. Sample means are never read; these are
+risk/structure benchmarks, not expected-return strategies.
+
+### Zero-volatility semantics
+
+Phase 18A admits variance `0` as a valid observed value. If **any** `Sigma_ii == 0`, `1 / sigma_i` is undefined and the
+Inverse Volatility result is unavailable:
+
+```text
+weights            = None
+unavailable_reason = ZERO_VOLATILITY
+```
+
+No epsilon, floor, dropped asset, 100% allocation, zero weight or carried-forward volatility is substituted. Undefined
+is not zero. Equal Weight can never be unavailable.
+
+### Decimal context and exact-sum residual closure
+
+Preliminary weights use a fresh `Context(prec=50, ROUND_HALF_EVEN, Emin=MIN_EMIN, Emax=MAX_EMAX)`; the ambient context
+is never used. The sum of weights is then closed to exactly `1`:
+
+```text
+residual = 1 - sum(preliminary_weights)      # exact arithmetic
+```
+
+The residual is added to exactly one preliminary weight: the largest, and the lowest canonical source index on ties
+(instrument order is the Phase 18A canonical UUID-string order, so the rule is input-order independent). This is
+numerical representation closure only. It is not an economic preference or an allocation signal. Every closed weight
+must be finite with `0 < w <= 1` and the exact total must be `1`; otherwise the calculation fails closed with
+`allocation benchmark exceeds supported Decimal analytics range` (no clamping). The closure arithmetic runs in a second
+fresh exact context that traps `Inexact`, so a pathological volatility ratio fails closed instead of being rounded.
+
+`AllocationBenchmarkResult` retains its source by identity, aligns `weights[i]` with `source.instrument_ids[i]`, and
+recomputes the canonical result on construction, rejecting forged weights, order, method, availability or reason.
+
+### Explicit non-goals of 18B
+
+```text
+no ERC / risk parity / risk contribution / marginal risk
+no portfolio volatility, correlation or distance matrix
+no optimizer, objective, solver, minimum variance, mean variance, CVaR
+no expected return, Sharpe, Sortino
+no rank, score, recommendation, rebalance, target or tactical tilt
+```
+
 ## Deferred
 
 | Checkpoint | Scope |
 |---|---|
-| 18B | Equal Weight + Inverse Volatility benchmarks |
 | 18C | Equal-Risk-Contribution (risk parity) benchmark |
 | 18D | Hierarchical Risk Parity benchmark (correlation / distance semantics locked first) |
 | 19 | CVaR optimizer |
