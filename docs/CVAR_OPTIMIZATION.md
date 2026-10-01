@@ -6,7 +6,7 @@ numerical solver depends on it.
 | Checkpoint | Scope | Status |
 |---|---|---|
 | 19A | Exact historical portfolio scenarios + Rockafellar-Uryasev CVaR objective for GIVEN weights | this document |
-| 19B | Minimum-CVaR linear-program optimizer | deferred |
+| 19B | Minimum-CVaR linear-program optimizer | IMPLEMENTED (see Phase 19B below) |
 
 Sentinax is a decision-support system. Nothing here sends orders or recommends a trade.
 
@@ -108,20 +108,107 @@ no user views, Black-Litterman or conviction (Phase 20)
 no bootstrap, Monte Carlo, random or synthetic stress scenarios
 ```
 
-## Planned Phase 19B formulation (DEFERRED, not implemented)
+## Phase 19B (IMPLEMENTED)
 
-The first optimizer will be pure minimum-CVaR over the same scenarios (Rockafellar-Uryasev linear program):
+Module: `backend/engine/private/allocation_cvar_optimizer.py`. Public entry point:
 
-```text
-decision variables:   w_i   (i = 1..N),   zeta,   u_t   (t = 1..T)
-
-objective:            minimize   zeta + 1 / [T (1 - alpha)] * sum_t u_t
-
-constraints:          u_t >= L_t(w) - zeta        for every scenario t
-                      u_t >= 0
-                      sum_i w_i = 1
-                      w_i >= 0
+```python
+optimize_minimum_cvar_portfolio(*, return_panel: AllocationReturnPanel, confidence_level: Decimal) -> MinimumCVarOptimizationResult
 ```
 
-The 19A objective and canonical minimum are the exact reference a 19B solution must reproduce for its returned weights.
-Solver choice, dependency and numerical tolerances are decided in 19B.
+A long-only, fully invested minimum historical CVaR optimizer. No expected-return constraint, return target, turnover,
+fees, holdings, user views, short selling or leverage; the solver configuration is canonical and not configurable.
+
+### Two numerical domains
+
+```text
+economic authority   Phase 19A: exact Decimal scenarios, exact weights, exact Rockafellar-Uryasev objective
+numerical engine     SciPy linprog, HiGHS dual simplex, binary64
+```
+
+The solver output is a **candidate**. The public `weights`, `threshold` and `conditional_value_at_risk` are reconstructed
+and validated through Phase 19A. The raw solver `x`, the raw solver `zeta`, the slacks `u_t` and the raw solver objective are
+**not** stored and are **not** the economic authority (the solver objective is only a post-validation cross-check).
+The module is deliberately **outside** the static-guard `PURE_MANIFEST` because it crosses from exact Decimal to
+binary64; Phase 19A stays in it. Targeted G1-G5 are still zero on the optimizer module.
+
+### Linear program
+
+Variables, in this exact order, for `N` assets and `T` scenarios (dimension `N + 1 + T`):
+
+```text
+x = [ w_0 .. w_(N-1), zeta, u_0 .. u_(T-1) ]
+
+minimize     zeta + 1 / [T (1 - alpha)] * sum_t u_t        (cost of every w_i is 0)
+subject to   u_t >= L_t(w) - zeta ,  L_t(w) = -sum_i r_it w_i
+             sum_i w_i = 1
+bounds       0 <= w_i <= 1 ,  zeta in (-inf, +inf) ,  u_t >= 0
+```
+
+In SciPy form `A_ub x <= b_ub`, scenario row `t` is `-r_it` on every weight column, `-1` on the `zeta` column, `-1` on its own
+`u_t` and `0` on every other `u`, with `b_ub = 0`. `A_eq` has a single row of ones on the weight columns with `b_eq = 1`.
+The `zeta` bound is passed explicitly as `(None, None)`. The program is continuous (no integrality), has no regularizer, no
+epsilon coefficient and no tie-break objective.
+
+### Solver configuration
+
+```text
+method = "highs-ds"                      (no automatic solver selection)
+presolve = True
+primal_feasibility_tolerance = 1e-9
+dual_feasibility_tolerance   = 1e-9
+simplex_dual_edge_weight_strategy = "steepest-devex"
+maxiter = 100000
+disp = False
+no time_limit                            (acceptance never depends on machine speed)
+```
+
+These are numerical solver tolerances and a deterministic resource cap. They are not financial thresholds, risk
+tolerances, allocation preferences or confidence levels. Only options documented for SciPy's `highs-ds` interface are used.
+SciPy is pinned in `backend/requirements.txt` as `scipy==1.18.0` (the root `requirements.txt` remains a pure proxy and
+`highspy` is not added) because the result constructor canonically re-runs the solver and must see identical behavior.
+
+### Binary64 boundary and support envelope
+
+Decimal reaches binary64 only through `_decimal_to_solver64` (the decimal string; no built-in `float`, no ambient
+Decimal arithmetic). Every coefficient must be finite. Every **nonzero** return coefficient and the generated objective
+coefficient `1 / [T (1 - alpha)]` must additionally satisfy `1e-9 <= |value| <= 1e15` after conversion (exact zero is valid
+zero). Otherwise the input is refused with `minimum CVaR solver input exceeds supported binary64 range` before the solver is
+called. This conservative envelope is not an economic filter: a small coefficient is never rounded up or zeroed and a
+large one is never clipped. Consequently the exact Phase 19A domain is a superset of the supported optimizer domain: an
+extreme confidence level (objective scale above `1e15`) can be evaluated exactly but is not optimized.
+
+### Raw candidate validation and exact reconstruction
+
+1. Accept only `status == 0`, `success is True`, a finite `x` of length `N + 1 + T` and a finite objective; every other
+   state (status 1 iteration limit, 2 infeasible, 3 unbounded, 4 numerical failure, malformed result) fails with
+   `minimum CVaR solver did not return an optimal solution`. No partial weights are returned and volatile HiGHS message text
+   is never the error authority.
+2. A raw weight in `[-1e-9, 0]` becomes exact `Decimal("0")` (signed zero included); in `[1, 1 + 1e-9]` exact
+   `Decimal("1")`; outside `[-1e-9, 1 + 1e-9]` it fails exact post-validation. Other weights use `Decimal(str(binary64))`.
+3. A zero-allowing exact closure (Phase 18B context-free coefficient helpers): zeros stay zero and the residual `1 - sum` is
+   added to the largest weight (lowest canonical index on ties). The residual must be `<= 1e-8` beforehand; a materially
+   infeasible candidate is never force-closed.
+4. The closed weights pass the Phase 19A `CVarPortfolioWeights` constructor; the scenarios are rebuilt exactly (solver slacks
+   are never used as losses); Phase 19A supplies the public `threshold` (its smallest-minimizer rule) and CVaR.
+5. The exact CVaR must agree with the solver objective within `1e-8`.
+   Any failure raises `minimum CVaR solver candidate failed exact post-validation`; Phase 19A range errors are preserved.
+
+### Non-unique optimum
+
+The returned weights are **one solver-selected optimal candidate**. The model does not claim the weight vector is
+mathematically unique: identical assets or CVaR plateaus have several optimal vectors with the same exact CVaR, and no
+secondary objective, epsilon perturbation or economic tie-break (minimum turnover, closest to equal weight, minimum norm)
+is added. The result constructor re-runs the canonical optimization and rejects forged results; this is canonical
+implementation identity under the pinned solver, not a claim that other optimal portfolios are economically inferior.
+
+### Explicit non-goals of 19B
+
+```text
+no expected-return, target-return or mean constraint, no Sharpe / utility
+no turnover, fees, tax, holdings, cash-first logic (Phase 21)
+no Black-Litterman, user views or conviction (Phase 20)
+no short selling, leverage, cardinality or lot constraints
+no Monte Carlo, bootstrap or random portfolio search
+no covariance, sample means, ERC / HRP / benchmark dependence in production (tests may compare against them)
+```

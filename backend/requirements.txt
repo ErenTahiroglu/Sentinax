@@ -99,3 +99,4 @@ prometheus-client
 prometheus-fastapi-instrumentator
 redis
 ruff
+scipy==1.18.0
