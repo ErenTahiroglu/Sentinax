@@ -27,22 +27,33 @@
 -- ============================================================================
 -- 0. Legacy watchlist compatibility bridge (name collision on public.portfolios)
 -- ============================================================================
--- The legacy Buffett/watchlist setup (infrastructure/database/*.sql) created a DIFFERENT aggregate under the same
--- name: public.portfolios(user_id PRIMARY KEY, tickers JSONB, updated_at TIMESTAMPTZ). CREATE TABLE IF NOT EXISTS below
--- would silently keep that table and the owner_id index would then fail. This block makes the migration replay-safe:
---   * no table                      -> nothing to do
---   * private-engine shape already  -> nothing to do (idempotent re-run)
---   * exact legacy watchlist shape  -> RENAME (data, RLS, policies and constraints travel with the table) to
---                                      public.legacy_portfolio_watchlists and rename its portfolios_pkey
---   * anything else / collisions    -> RAISE EXCEPTION (never guess, never merge, never overwrite)
+-- The legacy Buffett/watchlist setup created a DIFFERENT aggregate under the same name: public.portfolios holding
+-- per-user ticker lists. CREATE TABLE IF NOT EXISTS below would silently keep that table and the owner_id index would
+-- then fail. This block makes the migration replay-safe. The set of non-dropped user columns is classified EXACTLY:
+--   * no table                          -> nothing to do
+--   * complete private identity surface -> nothing to do (idempotent re-run); never with user_id / tickers
+--   * Legacy V1 = {user_id, tickers, updated_at}
+--   * Legacy V2 = {id, user_id, tickers, updated_at}, PRIMARY KEY (id)   (the shape found on the linked Supabase DB)
+--       both with user_id uuid, tickers jsonb, updated_at timestamptz
+--                                       -> RENAME (data, RLS, policies, FK travel with the table) to
+--                                          public.legacy_portfolio_watchlists and free the portfolios_pkey name
+--   * anything else / collisions        -> RAISE EXCEPTION (never guess, never merge, never overwrite)
+-- `id` is shared by both families, so it is never proof of the private schema. No uniqueness on user_id is invented.
 -- No legacy row is dropped, rewritten, copied or reinterpreted as a private portfolio.
 DO $legacy_watchlist_bridge$
 DECLARE
     v_oid oid := to_regclass('public.portfolios');
     v_relkind "char";
-    v_private_markers integer;
-    v_legacy_markers integer;
+    v_legacy_v1 CONSTANT text[] := ARRAY['tickers', 'updated_at', 'user_id'];
+    v_legacy_v2 CONSTANT text[] := ARRAY['id', 'tickers', 'updated_at', 'user_id'];
+    v_private_required CONSTANT text[] := ARRAY[
+        'archived_at', 'base_currency', 'created_at', 'id', 'mode', 'name', 'owner_id',
+        'source_portfolio_id', 'source_snapshot_time'
+    ];
+    v_columns text[];
     v_pk_name name;
+    v_pk_cols smallint[];
+    v_id_attnum smallint;
 BEGIN
     IF v_oid IS NULL THEN
         RETURN;
@@ -53,19 +64,39 @@ BEGIN
         RAISE EXCEPTION 'migration 011: public.portfolios exists but is not a table (unsupported shape)';
     END IF;
 
-    SELECT
-        count(*) FILTER (WHERE attname IN ('id', 'owner_id', 'mode', 'base_currency')),
-        count(*) FILTER (WHERE attname IN ('user_id', 'tickers', 'updated_at'))
-    INTO v_private_markers, v_legacy_markers
+    SELECT array_agg(attname::text ORDER BY attname::text)
+    INTO v_columns
     FROM pg_attribute
     WHERE attrelid = v_oid AND attnum > 0 AND NOT attisdropped;
 
-    IF v_private_markers = 4 THEN
+    IF v_private_required <@ v_columns THEN
+        IF v_columns && ARRAY['user_id', 'tickers'] THEN
+            RAISE EXCEPTION 'migration 011: existing public.portfolios mixes private engine and legacy watchlist columns (unsupported shape)';
+        END IF;
         RETURN;
     END IF;
 
-    IF v_private_markers <> 0 OR v_legacy_markers <> 3 THEN
-        RAISE EXCEPTION 'migration 011: existing public.portfolios has an unsupported shape (neither the private engine schema nor the legacy user_id/tickers/updated_at watchlist schema)';
+    IF v_columns = v_legacy_v1 OR v_columns = v_legacy_v2 THEN
+        IF (SELECT count(*) FROM pg_attribute
+            WHERE attrelid = v_oid AND NOT attisdropped
+              AND ((attname = 'user_id' AND format_type(atttypid, atttypmod) = 'uuid')
+                OR (attname = 'tickers' AND format_type(atttypid, atttypmod) = 'jsonb')
+                OR (attname = 'updated_at' AND format_type(atttypid, atttypmod) = 'timestamp with time zone')
+                OR (attname = 'id' AND format_type(atttypid, atttypmod) = 'uuid'))
+           ) <> cardinality(v_columns) THEN
+            RAISE EXCEPTION 'migration 011: existing public.portfolios legacy watchlist columns have unsupported types (unsupported shape)';
+        END IF;
+
+        IF v_columns = v_legacy_v2 THEN
+            SELECT attnum INTO v_id_attnum FROM pg_attribute
+            WHERE attrelid = v_oid AND attname = 'id' AND NOT attisdropped;
+            SELECT conkey INTO v_pk_cols FROM pg_constraint WHERE conrelid = v_oid AND contype = 'p';
+            IF v_pk_cols IS DISTINCT FROM ARRAY[v_id_attnum] THEN
+                RAISE EXCEPTION 'migration 011: existing public.portfolios legacy watchlist variant with id requires PRIMARY KEY (id) (unsupported shape)';
+            END IF;
+        END IF;
+    ELSE
+        RAISE EXCEPTION 'migration 011: existing public.portfolios has an unsupported shape (neither the private engine schema nor a known legacy watchlist schema)';
     END IF;
 
     IF to_regclass('public.legacy_portfolio_watchlists') IS NOT NULL THEN

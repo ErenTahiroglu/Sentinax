@@ -532,3 +532,63 @@ class TestLegacyWatchlistNameCollision:
         assert re.search(r"ALTER\s+TABLE\s+public\.legacy_portfolio_watchlists\s+ENABLE\s+ROW\s+LEVEL\s+SECURITY", sql,
                          re.IGNORECASE)
         assert "owner_id" not in sql.split("legacy_portfolio_watchlists", 1)[1].split(");", 1)[0]
+
+
+# ============================================================================
+# Phase 17 DB chain repair R1: exact two-variant legacy watchlist detection
+# ============================================================================
+
+
+def _bridge_array(bridge_block: str, var_name: str) -> set:
+    match = re.search(rf"{var_name}\s+(?:CONSTANT\s+)?text\[\]\s*:=\s*ARRAY\[(.*?)\]", bridge_block,
+                      re.DOTALL | re.IGNORECASE)
+    assert match, f"bridge must declare {var_name} as an explicit column-name array"
+    return set(re.findall(r"'([a-z_]+)'", match.group(1)))
+
+
+class TestLegacyWatchlistVariantDetection:
+    """R1: the real linked Supabase table is `id, user_id, tickers, updated_at` (PK on id)."""
+
+    def test_r1_legacy_v2_with_id_is_an_explicit_exact_column_family(self, bridge_block: str):
+        assert _bridge_array(bridge_block, "v_legacy_v2") == {"id", "user_id", "tickers", "updated_at"}
+        assert _bridge_array(bridge_block, "v_legacy_v1") == {"user_id", "tickers", "updated_at"}
+        # id alone is not private-schema proof any more
+        assert "v_private_markers" not in bridge_block
+
+    def test_r2_legacy_families_are_matched_exactly_not_by_loose_marker_counting(self, bridge_block: str):
+        assert "v_legacy_markers" not in bridge_block
+        assert re.search(r"v_columns\s*=\s*v_legacy_v1", bridge_block)
+        assert re.search(r"v_columns\s*=\s*v_legacy_v2", bridge_block)
+        # containment (@>, <@, &&) must never decide that a table is a legacy watchlist
+        for legacy_var in ("v_legacy_v1", "v_legacy_v2"):
+            assert not re.search(rf"v_columns\s*@>\s*{legacy_var}", bridge_block)
+            assert not re.search(rf"{legacy_var}\s*<@\s*v_columns", bridge_block)
+
+    def test_r3_private_noop_requires_the_complete_private_identity_surface(self, bridge_block: str):
+        assert _bridge_array(bridge_block, "v_private_required") == {
+            "id", "owner_id", "mode", "name", "base_currency", "created_at", "archived_at",
+            "source_portfolio_id", "source_snapshot_time",
+        }
+        assert re.search(r"v_private_required\s*<@\s*v_columns", bridge_block)
+        # hybrid private/legacy tables must not be silently treated as private
+        assert re.search(r"v_columns\s*&&\s*ARRAY\[\s*'user_id'\s*,\s*'tickers'\s*\]", bridge_block)
+
+    def test_r4_legacy_v2_requires_primary_key_on_id(self, bridge_block: str):
+        assert "conkey" in bridge_block
+        assert re.search(r"attname\s*=\s*'id'", bridge_block)
+        assert "contype = 'p'" in bridge_block
+
+    def test_r4b_legacy_column_types_are_validated(self, bridge_block: str):
+        for type_name in ("uuid", "jsonb", "timestamp with time zone"):
+            assert f"'{type_name}'" in bridge_block, type_name
+        assert "format_type" in bridge_block
+
+    def test_r5_no_user_id_uniqueness_or_pk_is_invented(self, sql_without_comments: str, bridge_block: str):
+        for forbidden in (r"UNIQUE\s*\(\s*user_id\s*\)", r"PRIMARY\s+KEY\s*\(\s*user_id\s*\)", r"ADD\s+CONSTRAINT",
+                          r"CREATE\s+(UNIQUE\s+)?INDEX", r"ADD\s+PRIMARY\s+KEY"):
+            assert not re.search(forbidden, bridge_block, re.IGNORECASE), forbidden
+        assert not re.search(r"legacy_portfolio_watchlists[^;]*UNIQUE", sql_without_comments, re.IGNORECASE)
+
+    def test_legacy_user_fk_and_policies_are_not_touched(self, bridge_block: str):
+        for forbidden in (r"portfolios_user_id_fkey", r"\bPOLICY\b", r"DISABLE\s+ROW", r"DROP\s+CONSTRAINT"):
+            assert not re.search(forbidden, bridge_block, re.IGNORECASE), forbidden
