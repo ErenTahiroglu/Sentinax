@@ -7,7 +7,7 @@ checkpoints so that each mathematical layer is locked before the next one depend
 |---|---|---|
 | 18A | Aligned monthly return panel + exact Decimal sample covariance | this document |
 | 18B | Equal weight + inverse volatility | see Phase 18B below |
-| 18C | Equal risk contribution (risk parity) | deferred |
+| 18C | Equal risk contribution (risk parity) | see Phase 18C below |
 | 18D | Hierarchical risk parity | deferred |
 | 19 | CVaR optimizer | deferred |
 
@@ -203,10 +203,105 @@ no expected return, Sharpe, Sortino
 no rank, score, recommendation, rebalance, target or tactical tilt
 ```
 
+## Phase 18C
+
+Module: `backend/engine/private/allocation_risk_parity.py` (pure Private Engine module, in the static-guard
+`PURE_MANIFEST`; its only Private Engine dependencies are the Phase 18A `allocation_matrix` and the Phase 18B
+`allocation_benchmarks`, both already in the manifest).
+
+A true Equal Risk Contribution (ERC / risk parity) benchmark over the **full** Phase 18A covariance matrix. It is a
+long-only, unlevered, descriptive benchmark: not a recommendation, trade instruction or optimizer output.
+
+### Definition
+
+For weights `w_i > 0`, `sum(w_i) = 1`, and portfolio variance `V = w' Sigma w > 0`:
+
+```text
+RRC_i = w_i (Sigma w)_i / V          # relative risk contribution
+ERC   : RRC_i = 1 / N for every asset (within the numerical tolerance)
+```
+
+### Difference from Inverse Volatility
+
+Inverse Volatility (18B) uses only `diag(Sigma)`. ERC uses the diagonal and the off-diagonal covariance, so two
+sources with identical variances but different covariance produce identical Inverse Volatility weights and different
+ERC weights (tested on three assets). For a diagonal covariance matrix, and for two assets with any admissible
+correlation, the ERC solution coincides with Inverse Volatility. Sample means are never read and there is no
+expected-return input, leverage, target volatility, custom risk budget, constraint, HRP or CVaR logic.
+
+### Solver: cyclical coordinate descent
+
+Standard risk-budgeting formulation with equal budgets `b_i = 1 / N`. Find a positive `x` with
+`x_i (Sigma x)_i = b_i`; the weights are `w_i = x_i / sum(x)`.
+
+```text
+initialization:  w0 = Inverse Volatility weights (18B), sigma0 = sqrt(w0' Sigma w0) > 0, x_i = w0_i / sigma0
+coordinate i:    a = Sigma_ii,  c = sum_{j != i} Sigma_ij x_j,  b = 1 / N
+                 solve a x_i^2 + c x_i - b = 0 for the positive root
+                 d = sqrt(c^2 + 4ab)
+                 x_i = 2b / (c + d)      if c >= 0
+                 x_i = (d - c) / (2a)    if c <  0        # cancellation-free branches
+```
+
+Coordinates are updated sequentially (`i = 0 .. N-1`) within a cycle, never in parallel. There is no randomness.
+
+### Convergence
+
+The initialization is checked first, so `cycles = 0` is valid (diagonal and some constant-correlation cases).
+Afterwards convergence is tested only after each **complete** cycle (`cycles += 1`, then the full state):
+
+```text
+max_i | RRC_i(x) - 1/N | <= _ERC_RELATIVE_TOLERANCE = 1E-24
+```
+
+`RRC` is invariant to positive scaling of `x`, so the unnormalized auxiliary vector is used directly.
+`_ERC_RELATIVE_TOLERANCE` is a **numerical solver tolerance**, not economic significance, data accuracy, forecast
+confidence or an allocation threshold. `_ERC_MAX_CYCLES = 10000` is a deterministic **computational resource cap**,
+not a financial threshold.
+
+### Decimal analytics and exact stored-weight closure
+
+All iterative analytics run through one fresh `Context(prec=50, ROUND_HALF_EVEN, Emin=MIN_EMIN, Emax=MAX_EMAX)` passed
+explicitly; the ambient context is never used. `x / sum(x)` is then closed to an exact Decimal sum of `1` with the
+reviewed Phase 18B coefficient closure (`_close_to_one`, `_sums_to_exactly_one`). The reuse is intentional
+package-internal reuse; it is not duplicated and Phase 18B is unchanged. After closure the risk contributions are
+recomputed from the **stored** weights; if the stored portfolio misses the tolerance the result is `NON_CONVERGENCE`
+and the pre-closure vector is never claimed.
+
+### Unavailable semantics
+
+```text
+ZERO_VARIANCE            any Sigma_ii == 0 (no epsilon floor, dropped asset, zero weight or inverse-volatility fallback)
+DEGENERATE_RISK_GEOMETRY a positive-weight portfolio has w' Sigma w <= 0, e.g. two perfectly anti-correlated
+                         equal-volatility assets; relative risk contributions are undefined, none are fabricated
+NON_CONVERGENCE          the cycle cap is reached, or the stored weights miss the tolerance; no partial weights
+```
+
+A genuine Decimal analytical overflow is a distinct static error
+(`equal risk contribution exceeds supported Decimal analytics range`), never `NON_CONVERGENCE`.
+
+### Result
+
+`EqualRiskContributionResult` stores exactly `source`, `weights`, `cycles`, `unavailable_reason`. It retains the source
+by identity, aligns `weights[i]` with `source.instrument_ids[i]` and recomputes the complete canonical solve on
+construction, rejecting forged weights, cycles or reasons. Derived (non-stored) diagnostics: `portfolio_variance`
+(`w' Sigma w`), `portfolio_volatility` (`sqrt(V)`, no annualization), `relative_risk_contributions` (never clipped or
+made absolute) and `max_relative_risk_contribution_error`; all are `None` for an unavailable result. Their sum is 1
+within arithmetic tolerance and they are diagnostics, not stored allocations.
+
+### Explicit non-goals of 18C
+
+```text
+no expected returns, leverage, borrowing, target volatility
+no custom or group / factor risk budgets (equal budgets only)
+no min/max weights, turnover, sector or transaction-cost constraints, no solver package
+no HRP: correlation distance, clustering, linkage, quasi-diagonalization, recursive bisection
+no VaR / CVaR / Expected Shortfall, scenario optimization
+```
+
 ## Deferred
 
 | Checkpoint | Scope |
 |---|---|
-| 18C | Equal-Risk-Contribution (risk parity) benchmark |
 | 18D | Hierarchical Risk Parity benchmark (correlation / distance semantics locked first) |
 | 19 | CVaR optimizer |
