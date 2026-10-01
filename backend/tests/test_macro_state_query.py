@@ -517,8 +517,28 @@ def test_module_is_clean_for_g1_g2_g4_g5_and_g3_only_flags_the_required_imports(
 
 # --- migration 022 (static contract) ---------------------------------------------------------------------------------------------------------------------
 
-def _sql() -> str:
+def _full_sql() -> str:
     return "\n".join(line.split("--", 1)[0] for line in MIGRATION_022.read_text(encoding="utf-8").splitlines())
+
+
+_RPC_START = re.compile(r"CREATE\s+OR\s+REPLACE\s+FUNCTION\s+public\.get_pit_macro_state_input\b", re.I)
+
+
+def _split_022() -> tuple[str, str]:
+    """(deployment compatibility prelude, Phase 17B read-only RPC section) of the comment-stripped migration 022."""
+    full = _full_sql()
+    start = _RPC_START.search(full)
+    assert start is not None, "migration 022 must still define public.get_pit_macro_state_input"
+    return full[: start.start()], full[start.start():]
+
+
+def _sql() -> str:
+    """The analytical RPC section only: purity/contract tests apply to it, never to the compatibility prelude."""
+    return _split_022()[1]
+
+
+def _prelude() -> str:
+    return _split_022()[0]
 
 
 def test_migration_022_exists_and_is_the_only_new_migration() -> None:
@@ -598,3 +618,144 @@ def test_migration_permissions() -> None:
     grants = re.findall(rf"GRANT\s+EXECUTE\s+ON\s+FUNCTION\s+{fn}\s+TO\s+([^;]+);", sql, re.I)
     assert [re.sub(r"\s+", " ", g.strip()) for g in grants] == ["authenticated, service_role"]
     assert "anon" not in "".join(grants)
+
+
+# --- migration 022: legacy macro schema reconciliation prelude (Phase 17 DB chain repair R2) ----------------------------------------------------------------
+
+_TIERS = {"tier_1", "tier_2", "tier_3", "tier_4", "tier_5"}
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _function_body(sql: str, name: str) -> str:
+    m = re.search(rf"CREATE\s+OR\s+REPLACE\s+FUNCTION\s+public\.{name}\(\).*?\$\$\s+LANGUAGE\s+plpgsql\s*;", sql, re.I | re.S)
+    assert m is not None, name
+    return _norm(m.group(0))
+
+
+def _reconciliation_block() -> str:
+    m = re.search(r"DO\s+\$macro_schema_reconciliation\$(.*?)\$macro_schema_reconciliation\$\s*;", _prelude(), re.I | re.S)
+    assert m is not None, "022 must contain the macro schema reconciliation DO block before the RPC"
+    return m.group(1)
+
+
+def test_r1_prelude_precedes_the_rpc_and_is_a_reconciliation_block() -> None:
+    prelude = _prelude()
+    assert "$macro_schema_reconciliation$" in prelude
+    assert len(_reconciliation_block()) > 500
+    assert prelude.index("$macro_schema_reconciliation$") < _RPC_START.search(_full_sql()).start()
+
+
+def test_r2_repair_is_gated_on_both_macro_tables_being_empty_before_any_ddl() -> None:
+    block = _reconciliation_block()
+    assert re.search(r"count\(\*\)[^;]*FROM\s+public\.macro_series\b", block, re.I)
+    assert re.search(r"count\(\*\)[^;]*FROM\s+public\.macro_observations\b", block, re.I)
+    assert "migration 022 macro schema reconciliation requires empty legacy macro tables" in block
+    assert block.lower().index("count(*)") < block.upper().index("ALTER TABLE")
+    # the empty-table gate must never be satisfied by inventing data
+    assert not re.search(r"\b(INSERT|UPDATE|DELETE|TRUNCATE)\b", block, re.I)
+
+
+def test_gate_requires_tables_and_fails_closed_on_unknown_or_hybrid_shapes() -> None:
+    block = _reconciliation_block()
+    assert "to_regclass('public.macro_series')" in block and "to_regclass('public.macro_observations')" in block
+    assert re.search(r"relkind", block) and "'r'" in block and "'p'" in block
+    exceptions = re.findall(r"RAISE\s+EXCEPTION\s+'([^']+)'", block, re.I)
+    assert len(exceptions) >= 5
+    assert any("unsupported" in e.lower() for e in exceptions)
+    assert not re.search(r"CREATE\s+TABLE", block, re.I)  # never silently creates the macro tables
+
+
+def test_r3_contract_status_is_added_with_the_current_006_contract_and_never_backfilled() -> None:
+    block = _reconciliation_block()
+    assert re.search(r"ALTER\s+TABLE\s+public\.macro_series\s+ADD\s+COLUMN\s+contract_status\s+VARCHAR\(32\)\s+NOT\s+NULL\s+DEFAULT\s+'verified'", block, re.I)
+    assert not re.search(r"\bUPDATE\b", block, re.I)
+    # same contract as the authoritative migration 006
+    m006 = _strip_sql_comments((MIGRATIONS / "006_macro_series.sql").read_text(encoding="utf-8"))
+    assert re.search(r"contract_status\s+VARCHAR\(32\)\s+NOT\s+NULL\s+DEFAULT\s+'verified'", m006, re.I)
+
+
+def test_r4_macro_series_silent_defaults_are_removed() -> None:
+    block = _reconciliation_block()
+    assert re.search(r"ALTER\s+TABLE\s+public\.macro_series\s+ALTER\s+COLUMN\s+source_tier\s+DROP\s+DEFAULT", block, re.I)
+    assert re.search(r"ALTER\s+TABLE\s+public\.macro_series\s+ALTER\s+COLUMN\s+geography\s+DROP\s+DEFAULT", block, re.I)
+    assert not re.search(r"SET\s+DEFAULT", block, re.I)
+
+
+def test_r5_observation_silent_defaults_are_removed() -> None:
+    block = _reconciliation_block()
+    for column in ("data_status", "confidence_level", "source_tier"):
+        assert re.search(rf"ALTER\s+TABLE\s+public\.macro_observations\s+ALTER\s+COLUMN\s+{column}\s+DROP\s+DEFAULT", block, re.I), column
+
+
+def _check_clause(block: str, table: str, name: str) -> str:
+    m = re.search(rf"ALTER\s+TABLE\s+public\.{table}\s+ADD\s+CONSTRAINT\s+{name}\s+CHECK\s*\((.*?)\)\s*;", block, re.I | re.S)
+    assert m is not None, name
+    return _norm(m.group(1))
+
+
+def test_r6_all_hardening_check_constraints_are_restored_with_exact_semantics() -> None:
+    block = _reconciliation_block()
+    for table, name in (("macro_series", "chk_macro_series_source_tier"), ("macro_observations", "chk_macro_obs_source_tier")):
+        assert set(re.findall(r"'(tier_\d)'", _check_clause(block, table, name))) == _TIERS
+    assert set(re.findall(r"'([a-z_]+)'", _check_clause(block, "macro_series", "chk_macro_series_contract_status"))) == {"verified", "unverified", "disabled"}
+    assert set(re.findall(r"'([a-z_]+)'", _check_clause(block, "macro_observations", "chk_macro_obs_data_status"))) == {"complete", "partial", "degraded", "stale", "unavailable"}
+    assert set(re.findall(r"'([a-z_]+)'", _check_clause(block, "macro_observations", "chk_macro_obs_confidence"))) == {"high", "medium", "low", "none"}
+    assert _check_clause(block, "macro_observations", "chk_macro_obs_complete_has_value") == "data_status != 'complete' OR value IS NOT NULL"
+
+
+def test_r7_availability_precision_is_nullable_default_free_with_the_exact_check() -> None:
+    block = _reconciliation_block()
+    assert re.search(r"ALTER\s+TABLE\s+public\.macro_observations\s+ALTER\s+COLUMN\s+availability_precision\s+DROP\s+NOT\s+NULL", block, re.I)
+    assert re.search(r"ALTER\s+TABLE\s+public\.macro_observations\s+ALTER\s+COLUMN\s+availability_precision\s+DROP\s+DEFAULT", block, re.I)
+    assert _check_clause(block, "macro_observations", "chk_macro_obs_precision") == "availability_precision IS NULL OR availability_precision IN ('DATE', 'TIMESTAMP')"
+    assert not re.search(r"availability_precision[^;]*SET\s+DEFAULT", block, re.I)
+
+
+def test_r8_vintage_index_is_restored_with_the_007_definition() -> None:
+    prelude = _norm(_prelude())
+    assert ("CREATE INDEX IF NOT EXISTS idx_macro_obs_vintage_date ON public.macro_observations "
+            "(macro_series_id, vintage_date DESC) WHERE vintage_date IS NOT NULL;") in prelude
+
+
+def test_r9_immutability_function_is_the_current_007_authority() -> None:
+    m007 = _strip_sql_comments((MIGRATIONS / "007_macro_source_availability.sql").read_text(encoding="utf-8"))
+    body = _function_body(_prelude(), "prevent_macro_observation_tamper")
+    assert body == _function_body(m007, "prevent_macro_observation_tamper")
+    for column in ("source_available_date", "availability_precision", "realtime_end", "vintage_date", "origin_source", "release_name"):
+        assert f"OLD.{column} IS DISTINCT FROM NEW.{column}" in body, column
+
+
+def test_r10_auto_supersession_function_and_trigger_are_restored() -> None:
+    m006 = _strip_sql_comments((MIGRATIONS / "006_macro_series.sql").read_text(encoding="utf-8"))
+    prelude = _prelude()
+    assert _function_body(prelude, "handle_macro_observation_supersession") == _function_body(m006, "handle_macro_observation_supersession")
+    norm = _norm(prelude)
+    assert re.search(r"CREATE TRIGGER trg_auto_supersede_macro_observation AFTER INSERT ON public\.macro_observations "
+                     r"FOR EACH ROW EXECUTE FUNCTION public\.handle_macro_observation_supersession\(\)", norm)
+    assert re.search(r"CREATE TRIGGER trg_protect_macro_observation_immutability BEFORE UPDATE OR DELETE ON public\.macro_observations "
+                     r"FOR EACH ROW EXECUTE FUNCTION public\.prevent_macro_observation_tamper\(\)", norm)
+    assert "DROP TRIGGER IF EXISTS trg_auto_supersede_macro_observation" in norm
+
+
+def test_r11_rpc_keeps_the_verified_only_guard_and_stays_after_the_prelude() -> None:
+    rpc = _sql()
+    assert re.search(r"s\.is_active\s+IS\s+TRUE\s+AND\s+s\.contract_status\s*=\s*'verified'\s*;", rpc, re.I)
+    assert "contract_status" in _prelude() and "contract_status = 'verified'" not in _prelude()
+
+
+def test_r12_rpc_stays_read_only_and_prelude_is_limited_to_approved_schema_ddl() -> None:
+    rpc = _sql()
+    for keyword in (r"\bINSERT\b", r"\bUPDATE\b", r"\bDELETE\b", r"\bTRUNCATE\b", r"\bUPSERT\b", r"ON\s+CONFLICT",
+                    r"\bALTER\b", r"\bDROP\b", r"\bCREATE\s+TABLE\b", r"\bCREATE\s+POLICY\b", r"\bCREATE\s+(UNIQUE\s+)?INDEX\b", r"\bCREATE\s+TRIGGER\b"):
+        assert not re.search(keyword, rpc, re.I), keyword
+    # the prelude outside function bodies: no row writes, no table/policy creation, no destructive object drops
+    outside = re.sub(r"\$\$.*?\$\$", "", _prelude(), flags=re.S)
+    outside = re.sub(r"CREATE\s+TRIGGER\b.*?;", "", outside, flags=re.S | re.I)  # trigger events are not row writes
+    for keyword in (r"\bINSERT\b", r"\bUPDATE\b", r"\bDELETE\b", r"\bTRUNCATE\b", r"\bCREATE\s+TABLE\b", r"\bCREATE\s+POLICY\b",
+                    r"\bDROP\s+TABLE\b", r"\bDROP\s+COLUMN\b", r"\bDROP\s+POLICY\b", r"\bDROP\s+FUNCTION\b", r"\bGRANT\b", r"\bREVOKE\b"):
+        assert not re.search(keyword, outside, re.I), keyword
+    assert "get_pit_macro_observation" not in re.sub(r"\$\$.*?\$\$", "", outside)  # the PIT authority is never redefined here
+    assert not re.search(r"CREATE\s+OR\s+REPLACE\s+FUNCTION\s+public\.get_pit_macro_observation", _prelude(), re.I)
