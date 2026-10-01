@@ -17,14 +17,26 @@ diagonal view-noise covariance of Phase 20A, all consumed ONLY through one `User
 `U_post` is the posterior epistemic covariance of the expected-return ESTIMATES; it is not the historical return
 covariance, not a future realized-return covariance and not a portfolio covariance, and nothing is added to it.
 
-Joseph-stabilized covariance: the canonical covariance construction is the algebraically equivalent Joseph form
+Square-root Joseph posterior covariance, PSD by construction (a square-root factor of the posterior covariance). The mathematical model is the Joseph form
 
     K = U P' S^-1,   A = I - K P,   U_post = A U A' + K Omega K'
 
-(K = Z' for Z = S^-1 P U because S and U are symmetric). The direct subtraction U - U P' S^-1 P U is not used: it subtracts
-two nearly equal matrices and can leave tiny negative rounding residue in a direction that should be exactly zero under
-noiseless views. The Joseph form reduces that cancellation-driven loss of positive semidefiniteness; it does not make
-rounding error impossible and carries no absolute numerical guarantee.
+(K = Z' for Z = S^-1 P U because S and U are symmetric). The direct subtraction U - U P' S^-1 P U is not used (it subtracts
+two nearly equal matrices). Instead the covariance is materialized from an explicit factor:
+
+    U = C C'                  C = L sqrt(D) from the strictly positive definite prior's LDL-transposed decomposition
+    F_prior = A C             F_prior F_prior' = A U A'
+    F_noise = K sqrt(Omega)   F_noise F_noise' = K Omega K'   (sqrt(0) = 0 exactly for confidence 1)
+    F = [F_prior | F_noise]   U_post = F F'
+
+The factor entries are produced by 50-digit analytical arithmetic. The Gram matrix F F' is then assembled by context-free
+EXACT coefficient arithmetic over those finite Decimal entries (Decimal.as_tuple coefficients and exponents, exact integer
+products, exact alignment to a common exponent, exact integer sum): no rounding, no ambient context, no second analytics
+context and no Fraction. The stored covariance is therefore exactly the Gram matrix of a finite Decimal factor: positive
+semidefinite by construction, symmetric (each entry i <= j computed once and mirrored) and free of signed zero. This does not
+claim the numbers are exact real-arithmetic Gaussian outputs; they are the deterministic finite-precision representation of
+the model. Exact alignment is bounded by `_EXACT_GRAM_MAX_DECIMAL_PLACES`, a representation/memory resource ceiling (checked
+before any 10 ** shift) and not an analytics precision, PSD tolerance or accuracy claim.
 
 Solve, never invert: this module never forms S^-1, U^-1 or Omega^-1 and has no inverse, pseudo-inverse, determinant or
 adjugate. S is factored by a deterministic LDL-transposed decomposition (unit lower L, no row reordering) in the 50-digit
@@ -40,12 +52,10 @@ noise make S strictly positive definite and are accepted.
 Posterior support and geometry:
     - Every posterior expected simple return must satisfy >= -1 (simple-return support); otherwise
       `user-view posterior expected return violates simple-return support` (no clipping, rescaling or confidence change).
-    - U_post must be symmetric (each entry i <= j is computed once and mirrored) and positive semidefinite, checked by a
-      deterministic LDL-style test: a negative pivot is invalid; a zero pivot requires the remaining cross terms to be
-      exactly zero. Unlike the prior, U_post may be singular (a full-confidence view removes all uncertainty along its
-      direction). The PSD test stays exact and does not tolerate rounding noise: a posterior whose exact-zero direction is
-      still polluted below zero by 50-digit rounding noise is rejected rather than repaired (no epsilon, tolerance,
-      eigenvalue clipping, jitter or nearest-PSD). Exact zeros are normalized to Decimal 0 (never signed zero).
+    - U_post is exactly the Gram matrix of the factor above, hence symmetric and positive semidefinite by construction; it may
+      be singular (a full-confidence view removes all uncertainty along its direction) and may have zero diagonal entries.
+      There is no separate approximate LDL acceptance gate that could reject the canonical posterior, and no epsilon, tolerance,
+      eigenvalue clipping, jitter, nearest-PSD or repair anywhere. Exact zeros are plain Decimal 0 (never signed zero).
     - For one isolated view with s = p U p' and omega = ((1 - c) / c) s: p m_post = p m + c (q - p m) and
       p U_post p' = (1 - c) s. The posterior uncertainty is independent of the targets q; targets move only the mean.
 
@@ -83,8 +93,10 @@ _ERR_SYMMETRY = "uncertainty_covariance must be exactly symmetric"
 _ERR_MATCH = "posterior must match the canonical Bayesian update exactly"
 _ERR_SINGULAR = "user-view posterior system is singular or non-positive-definite"
 _ERR_SUPPORT = "user-view posterior expected return violates simple-return support"
-_ERR_PSD = "user-view posterior uncertainty is not positive semidefinite"
 _ERR_RANGE = "user-view posterior analytics exceeds supported Decimal range"
+
+# Representation / memory resource ceiling for exact Gram alignment (base-10 places). Not an analytics precision or PSD tolerance.
+_EXACT_GRAM_MAX_DECIMAL_PLACES = 1000
 
 _Matrix = list[list[Decimal]]
 
@@ -146,31 +158,6 @@ def _solve_ldl(lower: _Matrix, diagonal: list[Decimal], rhs: list[Decimal], ctx:
 def _solve_ldl_matrix(lower: _Matrix, diagonal: list[Decimal], columns: list[list[Decimal]], ctx: decimal.Context) -> _Matrix:
     """Solve for several right-hand-side columns; one solution list per column."""
     return [_solve_ldl(lower, diagonal, column, ctx) for column in columns]
-
-
-def _require_psd(matrix: _Matrix, ctx: decimal.Context) -> None:
-    """Positive semidefiniteness by LDL: no negative pivot; a zero pivot needs exactly zero remaining cross terms."""
-    size = len(matrix)
-    lower: _Matrix = [[Decimal(0)] * size for _ in range(size)]
-    pivots: list[Decimal] = []
-    for k in range(size):
-        weighted = Decimal(0)
-        for j in range(k):
-            weighted = ctx.add(weighted, ctx.multiply(ctx.multiply(lower[k][j], lower[k][j]), pivots[j]))
-        pivot = ctx.subtract(matrix[k][k], weighted)
-        if pivot < 0:
-            raise ValueError(_ERR_PSD)
-        pivots.append(pivot)
-        for i in range(k + 1, size):
-            cross = Decimal(0)
-            for j in range(k):
-                cross = ctx.add(cross, ctx.multiply(ctx.multiply(lower[i][j], lower[k][j]), pivots[j]))
-            remainder = ctx.subtract(matrix[i][k], cross)
-            if pivot == 0:
-                if remainder != 0:
-                    raise ValueError(_ERR_PSD)
-            else:
-                lower[i][k] = ctx.divide(remainder, pivot)
 
 
 def _prior_returns(view_set: UserReturnViewSet) -> list[Decimal]:
@@ -252,12 +239,21 @@ def _matvec_rows(rows: tuple[tuple[Decimal, ...], ...], vector: list[Decimal], c
     return result
 
 
-def _joseph_covariance(view_set: UserReturnViewSet, kalman_rows: list[list[Decimal]], ctx: decimal.Context) -> _Matrix:
-    """U_post = A U A' + K Omega K' with A = I - K P; kalman_rows[i][k] = K[i][k]. Entries i <= j are computed once and mirrored."""
+def _prior_factor(uncertainty: _Matrix, ctx: decimal.Context) -> _Matrix:
+    """C = L sqrt(D) from the LDL-transposed decomposition of the strictly positive definite prior: U = C C'."""
+    lower, diagonal = _factor_spd(uncertainty, ctx)
+    roots = [ctx.sqrt(pivot) for pivot in diagonal]
+    size = len(diagonal)
+    return [[ctx.multiply(lower[i][j], roots[j]) for j in range(size)] for i in range(size)]
+
+
+def _joseph_factor(view_set: UserReturnViewSet, kalman_rows: list[list[Decimal]], ctx: decimal.Context) -> _Matrix:
+    """F = [A C | K sqrt(Omega)] with A = I - K P (kalman_rows[i][k] = K[i][k]); F F' = A U A' + K Omega K'."""
     uncertainty = _prior_uncertainty(view_set)
     rows = view_set.view_matrix
-    noise = _noise_variances(view_set)
+    noise_roots = [ctx.sqrt(variance) for variance in _noise_variances(view_set)]  # sqrt(0) = 0 exactly
     size, count = len(uncertainty), len(rows)
+    root = _prior_factor(uncertainty, ctx)
     adjust: _Matrix = []  # A = I - K P
     for i in range(size):
         line: list[Decimal] = []
@@ -267,27 +263,86 @@ def _joseph_covariance(view_set: UserReturnViewSet, kalman_rows: list[list[Decim
                 product = ctx.add(product, ctx.multiply(kalman_rows[i][k], rows[k][j]))
             line.append(ctx.subtract(Decimal(1) if i == j else Decimal(0), product))
         adjust.append(line)
-    adjusted: _Matrix = []  # A U
+    factor: _Matrix = []
     for i in range(size):
         line = []
-        for j in range(size):
+        for j in range(size):  # F_prior = A C
             total = Decimal(0)
             for a in range(size):
-                total = ctx.add(total, ctx.multiply(adjust[i][a], uncertainty[a][j]))
+                total = ctx.add(total, ctx.multiply(adjust[i][a], root[a][j]))
             line.append(total)
-        adjusted.append(line)
-    result: _Matrix = [[Decimal(0)] * size for _ in range(size)]
+        for k in range(count):  # F_noise = K sqrt(Omega)
+            line.append(ctx.multiply(kalman_rows[i][k], noise_roots[k]))
+        factor.append(line)
+    return factor
+
+
+def _exact_parts(value: Decimal) -> tuple[int, int]:
+    """Exact (signed integer coefficient, base-10 exponent) of a finite Decimal; no Decimal arithmetic."""
+    sign, digits, exponent = value.as_tuple()
+    coefficient = 0
+    for digit in digits:
+        coefficient = coefficient * 10 + digit
+    return (-coefficient if sign else coefficient, exponent)  # type: ignore[return-value]
+
+
+def _exact_dot(left: list[Decimal] | tuple[Decimal, ...], right: list[Decimal] | tuple[Decimal, ...]) -> Decimal:
+    """Exact sum of products: integer coefficient products aligned to a common exponent; context-free and unrounded."""
+    products: list[tuple[int, int]] = []
+    for x, y in zip(left, right):
+        coefficient_x, exponent_x = _exact_parts(x)
+        coefficient_y, exponent_y = _exact_parts(y)
+        if coefficient_x != 0 and coefficient_y != 0:
+            products.append((coefficient_x * coefficient_y, exponent_x + exponent_y))
+    if not products:
+        return Decimal(0)
+    lowest = highest = products[0][1]
+    for _, exponent in products:
+        if exponent < lowest:
+            lowest = exponent
+        if exponent > highest:
+            highest = exponent
+    if highest - lowest > _EXACT_GRAM_MAX_DECIMAL_PLACES:  # resource ceiling checked BEFORE any 10 ** shift
+        raise ValueError(_ERR_RANGE)
+    total = 0
+    for coefficient, exponent in products:
+        total += coefficient * 10 ** (exponent - lowest)
+    if total == 0:
+        return Decimal(0)
+    digits: list[int] = []
+    remaining = -total if total < 0 else total
+    while remaining:
+        remaining, digit = divmod(remaining, 10)
+        digits.append(digit)
+    try:
+        return Decimal((1 if total < 0 else 0, tuple(reversed(digits)), lowest))
+    except (ValueError, decimal.InvalidOperation):
+        raise ValueError(_ERR_RANGE) from None
+
+
+def _exact_gram(factor: _Matrix) -> _Matrix:
+    """F F' by exact arithmetic; each entry i <= j is computed once and mirrored."""
+    size = len(factor)
+    gram: _Matrix = [[Decimal(0)] * size for _ in range(size)]
     for i in range(size):
         for j in range(i, size):
-            total = Decimal(0)
-            for b in range(size):
-                total = ctx.add(total, ctx.multiply(adjusted[i][b], adjust[j][b]))  # (A U A')_ij
-            for k in range(count):
-                total = ctx.add(total, ctx.multiply(ctx.multiply(kalman_rows[i][k], noise[k]), kalman_rows[j][k]))  # (K Omega K')_ij
-            value = _clean(total)
-            result[i][j] = value
-            result[j][i] = value
-    return result
+            value = _exact_dot(factor[i], factor[j])
+            gram[i][j] = value
+            gram[j][i] = value
+    return gram
+
+
+def _posterior_factor(view_set: UserReturnViewSet) -> _Matrix:
+    """The canonical square-root Joseph factor F of the posterior covariance (U_post = F F')."""
+    ctx = _analytics_context()
+    try:
+        size = view_set.source.dimension
+        lower, diagonal = _factor_spd(_innovation_matrix(view_set, ctx), ctx)
+        gain = _gain(view_set, ctx)
+        z_columns = _solve_ldl_matrix(lower, diagonal, [gain[j] for j in range(size)], ctx)
+        return _joseph_factor(view_set, z_columns, ctx)
+    except decimal.Overflow:
+        raise ValueError(_ERR_RANGE) from None
 
 
 def _canonical_posterior(view_set: UserReturnViewSet) -> tuple[tuple[Decimal, ...], tuple[tuple[Decimal, ...], ...]]:
@@ -310,8 +365,7 @@ def _canonical_posterior(view_set: UserReturnViewSet) -> tuple[tuple[Decimal, ..
             raise ValueError(_ERR_SUPPORT)
         # S Z = P U: column j of P U is row j of W (U is symmetric); K = Z' so K[i][k] = Z[k][i] = z_columns[i][k]
         z_columns = _solve_ldl_matrix(lower, diagonal, [gain[j] for j in range(size)], ctx)
-        posterior_uncertainty = _joseph_covariance(view_set, z_columns, ctx)
-        _require_psd(posterior_uncertainty, ctx)
+        posterior_uncertainty = _exact_gram(_joseph_factor(view_set, z_columns, ctx))  # U_post = F F': PSD by construction
     except decimal.Overflow:
         raise ValueError(_ERR_RANGE) from None
     return (tuple(means), tuple(tuple(row) for row in posterior_uncertainty))
@@ -345,10 +399,6 @@ class BayesianExpectedReturnPosterior:
             raise ValueError(_ERR_SUPPORT)
         if any(matrix[i][j] != matrix[j][i] for i in range(size) for j in range(i + 1, size)):
             raise ValueError(_ERR_SYMMETRY)
-        try:
-            _require_psd([list(row) for row in matrix], _analytics_context())
-        except decimal.Overflow:
-            raise ValueError(_ERR_RANGE) from None
         if (self.expected_returns, self.uncertainty_covariance) != _canonical_posterior(self.source):
             raise ValueError(_ERR_MATCH)
 

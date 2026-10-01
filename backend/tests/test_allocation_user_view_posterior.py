@@ -18,6 +18,7 @@ import ast
 import dataclasses
 import decimal
 import itertools
+import random
 import re
 from decimal import Decimal
 from fractions import Fraction
@@ -53,7 +54,7 @@ KIND = UserReturnViewKind
 TOL = F(1, 10**40)
 ERR_SINGULAR = "user-view posterior system is singular or non-positive-definite"
 ERR_SUPPORT = "user-view posterior expected return violates simple-return support"
-ERR_PSD = "user-view posterior uncertainty is not positive semidefinite"
+ERR_MATCH = "canonical Bayesian update"
 ERR_RANGE = "user-view posterior analytics exceeds supported Decimal range"
 
 
@@ -254,7 +255,8 @@ def test_full_confidence_makes_the_view_exact_and_the_posterior_singular_psd() -
 def test_half_and_quarter_confidence_exact_values() -> None:
     half, quarter = _single("0.5"), _single("0.25")
     assert half.expected_returns[0] == D("0.07") and half.uncertainty_covariance[0][0] == 2      # midpoint of 0.04 and 0.10; half the variance
-    assert quarter.expected_returns[0] == D("0.055") and quarter.uncertainty_covariance[0][0] == 3  # 25% of the innovation; 75% of the variance
+    assert quarter.expected_returns[0] == D("0.055")                                              # 25% of the innovation
+    assert abs(F(quarter.uncertainty_covariance[0][0]) - 3) <= TOL                                # 75% of the variance (sqrt(12) is irrational)
 
 
 def test_relative_view_single_view_identity_and_innovation() -> None:
@@ -395,20 +397,27 @@ def test_two_independent_full_confidence_views_on_correlated_prior_are_supported
             F(view.loadings[i]) * F(posterior.uncertainty_covariance[i][j]) * F(view.loadings[j]) for i in range(3) for j in range(3)
         )
         assert abs(quadratic) <= TOL  # p U_post p' = 0 along every exact direction
-    assert module_under_test._require_psd([list(row) for row in posterior.uncertainty_covariance], _ctx()) is None  # strict validator, no tolerance
+    viewset = posterior.source
+    gram = module_under_test._exact_gram(module_under_test._posterior_factor(viewset))
+    assert tuple(tuple(row) for row in gram) == posterior.uncertainty_covariance  # PSD certificate: the covariance IS the factor Gram
     _assert_matches_reference(posterior)
     assert posterior.uncertainty_covariance[2][2] != 0  # the unviewed asset keeps its (reduced) uncertainty
     assert _posterior(CORR3, M3, EXACT_PAIR[:1]).uncertainty_covariance[0][1] == 0
 
 
-def test_known_remaining_limitation_an_exact_relative_view_can_still_leave_rounding_noise_and_fails_closed() -> None:
-    """Characterization, not endorsement: the Joseph form reduces but does not eliminate cancellation noise. In this valid case an
-    exact (c = 1) relative view next to a noisy relative view still leaves 50-digit noise below zero in an exact-zero direction;
-    the strict PSD check rejects it (no tolerance, clipping or repair). The same case passed under the old subtractive form."""
+def test_r1_regression_exact_relative_view_next_to_a_noisy_relative_view_is_supported() -> None:
+    """Permanent regression: this valid case was rejected by the finite-precision PSD test under the R1 Joseph form."""
     prior = [["1.06", "0.12", "0.03"], ["0.12", "2.71", "-0.18"], ["0.03", "-0.18", "1.14"]]
     views = [_view(KIND.RELATIVE, ("1", "0", "-1"), "0.01", "1"), _view(KIND.RELATIVE, ("1", "-1", "0"), "0.01", "0.7")]
-    with pytest.raises(ValueError, match=ERR_PSD):
-        _posterior(prior, M3, views)
+    posterior = _posterior(prior, M3, views)
+    _assert_matches_reference(posterior)
+    for view, value in zip(posterior.views, posterior.posterior_view_returns):
+        if view.confidence == 1:
+            assert abs(F(value) - F(view.target_return)) <= TOL  # the exact view is met
+            quadratic = sum(F(view.loadings[i]) * F(posterior.uncertainty_covariance[i][j]) * F(view.loadings[j]) for i in range(3) for j in range(3))
+            assert abs(quadratic) <= TOL and quadratic >= 0
+    gram = module_under_test._exact_gram(module_under_test._posterior_factor(posterior.source))
+    assert tuple(tuple(row) for row in gram) == posterior.uncertainty_covariance
 
 
 def test_all_asset_exact_views_collapse_the_uncertainty_to_the_zero_matrix_without_signed_zero() -> None:
@@ -433,12 +442,14 @@ def test_joseph_form_is_algebraically_equivalent_to_the_gaussian_posterior_covar
         assert len(K) == viewset.source.dimension and len(A) == viewset.source.dimension
 
 
-def test_covariance_is_built_in_joseph_form_without_the_subtractive_update() -> None:
+def test_covariance_is_a_square_root_joseph_factor_materialized_as_an_exact_gram_matrix() -> None:
     functions = {n.name for n in ast.walk(_TREE) if isinstance(n, ast.FunctionDef)}
-    assert "_joseph_covariance" in functions
+    assert {"_joseph_factor", "_exact_gram", "_exact_dot", "_posterior_factor"} <= functions
+    assert "_require_psd" not in functions and "_joseph_covariance" not in functions  # no approximate LDL acceptance gate
     canonical = next(n for n in ast.walk(_TREE) if isinstance(n, ast.FunctionDef) and n.name == "_canonical_posterior")
     called = {c.func.id for c in ast.walk(canonical) if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
-    assert "_joseph_covariance" in called and "_require_psd" in called
+    assert {"_joseph_factor", "_exact_gram"} <= called and "_require_psd" not in called
+    assert not {n.id for n in ast.walk(_TREE) if isinstance(n, ast.Name)} & {"Fraction", "fractions"}
 
 
 _TOLERANCE_FRAGMENTS = ("tolerance", "epsilon", "near_zero", "ulp", "jitter", "nearest", "clip", "clamp", "repair", "projection", "symmetrize")
@@ -567,15 +578,22 @@ def test_forged_values_are_rejected() -> None:
         _make(good.source, good.expected_returns, tuple(tuple(r) for r in asym))
 
 
-def test_forged_posterior_geometry_is_rejected_without_a_numeric_eigen_solver() -> None:
+def test_forged_posterior_geometry_is_rejected_by_the_canonical_rebuild_alone() -> None:
     good = _good()
     negative_diagonal = ((D("-1"), D(0), D(0)), (D(0), D(1), D(0)), (D(0), D(0), D(1)))
     indefinite = ((D(1), D(2), D(0)), (D(2), D(1), D(0)), (D(0), D(0), D(1)))
     for bad in (negative_diagonal, indefinite):
-        with pytest.raises(ValueError, match=ERR_PSD):
+        with pytest.raises(ValueError, match=ERR_MATCH):
             _make(good.source, good.expected_returns, bad)
+
+
+def test_a_valid_psd_gram_matrix_that_is_not_the_canonical_posterior_is_rejected() -> None:
+    good = _good()
+    half_identity = tuple(tuple(D("0.5") if i == j else D(0) for j in range(3)) for i in range(3))  # a perfectly valid PSD matrix
     singular_psd = ((D(1), D(1), D(0)), (D(1), D(1), D(0)), (D(0), D(0), D(1)))
-    assert module_under_test._require_psd([list(r) for r in singular_psd], _ctx()) is None  # PSD singular is geometrically valid
+    for forged in (half_identity, singular_psd, good.source.source.uncertainty_covariance):
+        with pytest.raises(ValueError, match=ERR_MATCH):
+            _make(good.source, good.expected_returns, forged)
 
 
 def test_otherwise_valid_alternative_posteriors_are_rejected_by_the_canonical_rebuild() -> None:
@@ -592,17 +610,145 @@ def test_otherwise_valid_alternative_posteriors_are_rejected_by_the_canonical_re
         _make(good.source, good.expected_returns, scaled)
 
 
-def test_psd_validator_zero_pivot_semantics() -> None:
-    ctx = _ctx()
-    def rows(matrix):
-        return [[D(v) for v in row] for row in matrix]
+# --- exact Gram materialization ----------------------------------------------------------------------------------
 
-    assert module_under_test._require_psd(rows([["0", "0"], ["0", "1"]]), ctx) is None
-    assert module_under_test._require_psd(rows([["1", "1"], ["1", "1"]]), ctx) is None
-    assert module_under_test._require_psd(rows([["4", "0"], ["0", "9"]]), ctx) is None
-    for bad in ([["0", "1"], ["1", "1"]], [["1", "2"], ["2", "1"]], [["-1", "0"], ["0", "1"]], [["1", "0", "0"], ["0", "0", "1"], ["0", "1", "1"]]):
-        with pytest.raises(ValueError, match=ERR_PSD):
-            module_under_test._require_psd(rows(bad), ctx)
+def test_exact_dot_cancellation_returns_unsigned_zero() -> None:
+    for left, right in (((D("0.1"), D("0.2")), (D("0.2"), D("-0.1"))), ((D("2E-30"), D("3")), (D("3"), D("-2E-30")))):
+        result = module_under_test._exact_dot(left, right)
+        assert result == 0 and not result.is_signed() and result.as_tuple() == D(0).as_tuple()
+
+
+def test_exact_dot_aligns_different_exponents_without_rounding() -> None:
+    assert module_under_test._exact_dot((D("1E+5"), D("3E-7")), (D("2E-3"), D("5E+2"))) == D("200.00015")
+    value = module_under_test._exact_dot((D("1.23456789012345678901234567890123456789012345678901234567890"), D("1E-80")), (D("3"), D("7")))
+    assert F(value) == F(D("1.23456789012345678901234567890123456789012345678901234567890")) * 3 + F(D("1E-80")) * 7  # beyond 50 digits, exact
+    assert module_under_test._exact_dot((D("2"), D("0")), (D("0"), D("5"))) == 0
+    assert module_under_test._exact_dot((D("-1.5"), D("2")), (D("2"), D("1"))) == D("-1")
+
+
+def test_exact_gram_entries_are_computed_once_and_mirrored() -> None:
+    factor = [[D("0.3"), D("-1.2"), D("0.07")], [D("0.5"), D("0.25"), D("1E-40")], [D("-0.1"), D("0"), D("2")]]
+    gram = module_under_test._exact_gram(factor)
+    for i in range(3):
+        for j in range(3):
+            assert gram[i][j].as_tuple() == gram[j][i].as_tuple()
+            assert F(gram[i][j]) == sum(F(factor[i][a]) * F(factor[j][a]) for a in range(3))
+    assert all(gram[i][i] >= 0 for i in range(3))  # a Gram matrix has a non-negative diagonal by construction
+
+
+def test_exact_gram_resource_ceiling_is_a_representation_limit_checked_before_any_big_integer() -> None:
+    assert module_under_test._EXACT_GRAM_MAX_DECIMAL_PLACES == 1000
+    at_ceiling = module_under_test._exact_dot((D("1E+500"), D("1E-500")), (D(1), D(1)))
+    assert F(at_ceiling) == F(10) ** 500 + F(1, 10 ** 500)
+    for left in ((D("1E+501"), D("1E-500")), (D("1E+999999999"), D("1E-999999999"))):  # the second would need a ~2e9-digit integer
+        with pytest.raises(ValueError, match=ERR_RANGE):
+            module_under_test._exact_dot(left, (D(1), D(1)))
+    with pytest.raises(ValueError, match=ERR_RANGE):
+        module_under_test._exact_dot((D("1E+999999999999999999"),), (D("1E+999999999999999999"),))  # exponent beyond the Decimal range
+
+
+def test_exact_gram_does_not_touch_the_ambient_context() -> None:
+    factor = [[D("0.3"), D("-1.2"), D("0.07")], [D("0.5"), D("0.25"), D("1E-40")]]
+    baseline = module_under_test._exact_gram(factor)
+    for hostile in _hostile_contexts():
+        with decimal.localcontext(hostile) as ambient:
+            ambient.clear_flags()
+            snapshot = (ambient.prec, ambient.rounding, ambient.Emin, ambient.Emax, dict(ambient.flags), dict(ambient.traps))
+            result = module_under_test._exact_gram(factor)
+            assert (ambient.prec, ambient.rounding, ambient.Emin, ambient.Emax, dict(ambient.flags), dict(ambient.traps)) == snapshot
+            assert not any(ambient.flags.values())
+        assert [[v.as_tuple() for v in row] for row in result] == [[v.as_tuple() for v in row] for row in baseline]
+
+
+def test_posterior_covariance_is_exactly_the_gram_of_its_canonical_factor() -> None:
+    for views in ([ABS_B], [ABS_B, REL_AB], [ABS_B, REL_AB, REL_GROUP], EXACT_PAIR):
+        posterior = _posterior(CORR3, M3, views)
+        gram = module_under_test._exact_gram(module_under_test._posterior_factor(posterior.source))
+        assert tuple(tuple(row) for row in gram) == posterior.uncertainty_covariance
+        assert [[v.as_tuple() for v in row] for row in gram] == [[v.as_tuple() for v in row] for row in posterior.uncertainty_covariance]
+        factor = module_under_test._posterior_factor(posterior.source)
+        assert len(factor) == 3 and all(len(row) == 3 + len(views) for row in factor)  # F = [F_prior | F_noise]
+
+
+def test_prior_square_root_factor_reproduces_the_prior_uncertainty() -> None:
+    ctx = _ctx()
+    root = module_under_test._prior_factor([list(row) for row in _rows(CORR3)], ctx)
+    for i in range(3):
+        for j in range(3):
+            assert abs(sum(F(root[i][a]) * F(root[j][a]) for a in range(3)) - F(D(CORR3[i][j]))) <= TOL  # U = C C'
+    assert all(root[i][j] == 0 for i in range(3) for j in range(i + 1, 3)) and all(root[i][i] > 0 for i in range(3))
+
+
+# --- deterministic structurally valid corpus ---------------------------------------------------------------------
+
+_CORPUS_ROWS = (
+    (KIND.ABSOLUTE, ("1", "0", "0")), (KIND.ABSOLUTE, ("0", "1", "0")), (KIND.ABSOLUTE, ("0", "0", "1")),
+    (KIND.RELATIVE, ("1", "-1", "0")), (KIND.RELATIVE, ("1", "0", "-1")), (KIND.RELATIVE, ("0", "1", "-1")),
+    (KIND.RELATIVE, ("0.5", "0.5", "-1")),
+)
+
+
+def _fraction_rank(rows) -> int:
+    work = [[F(D(v)) for v in row] for row in rows]
+    rank, columns = 0, len(work[0])
+    for col in range(columns):
+        pivot = next((r for r in range(rank, len(work)) if work[r][col] != 0), None)
+        if pivot is None:
+            continue
+        work[rank], work[pivot] = work[pivot], work[rank]
+        for r in range(len(work)):
+            if r != rank and work[r][col] != 0:
+                factor = work[r][col] / work[rank][col]
+                work[r] = [a - factor * b for a, b in zip(work[r], work[rank])]
+        rank += 1
+    return rank
+
+
+def _structurally_valid_cases(count: int = 600):
+    """Validity comes from construction (L L' with positive diagonal => strictly PD; Phase 20A-valid canonical views;
+    no linearly dependent all-noiseless system), never from asking Phase 20B whether it succeeds."""
+    rng = random.Random(20260429)
+    cases = []
+    while len(cases) < count:
+        lower = [[D(0)] * 3 for _ in range(3)]
+        for i in range(3):
+            lower[i][i] = D(rng.randint(5, 20)) / 10
+            for j in range(i):
+                lower[i][j] = D(rng.randint(-12, 12)) / 10
+        prior = [[str(sum((lower[i][k] * lower[j][k] for k in range(3)), D(0))) for j in range(3)] for i in range(3)]
+        chosen = rng.sample(range(len(_CORPUS_ROWS)), rng.choice([1, 2, 2, 2, 3]))
+        confidences = [rng.choice(["1", "0.7", "0.5", "0.25"]) for _ in chosen]
+        if all(c == "1" for c in confidences) and _fraction_rank([_CORPUS_ROWS[i][1] for i in chosen]) < len(chosen):
+            continue  # genuinely dependent all-noiseless system: invalid by Phase 20B's fail-closed policy
+        returns = tuple(str(D(rng.randint(0, 100)) / 1000) for _ in range(3))
+        views = [
+            _view(_CORPUS_ROWS[i][0], _CORPUS_ROWS[i][1], str(D(rng.randint(-20, 100)) / 1000 if _CORPUS_ROWS[i][0] is KIND.RELATIVE else D(rng.randint(0, 100)) / 1000), c)
+            for i, c in zip(chosen, confidences)
+        ]
+        cases.append((prior, returns, views))
+    return cases
+
+
+def test_corpus_of_600_structurally_valid_cases_has_zero_false_rejections() -> None:
+    cases = _structurally_valid_cases(600)
+    assert len(cases) == 600
+    failures = []
+    for index, (prior, returns, views) in enumerate(cases):
+        try:
+            posterior = _posterior(prior, returns, views)
+        except ValueError as error:  # any rejection of a structurally valid case is a false negative
+            failures.append((index, str(error)))
+            continue
+        covariance = posterior.uncertainty_covariance
+        assert all(covariance[i][j].as_tuple() == covariance[j][i].as_tuple() and not (covariance[i][j].is_zero() and covariance[i][j].is_signed())
+                   for i in range(3) for j in range(3))
+        assert all(covariance[i][i] >= 0 for i in range(3))
+    assert failures == []
+
+
+def test_corpus_prefix_matches_the_independent_fraction_reference() -> None:
+    for prior, returns, views in _structurally_valid_cases(600)[:25]:
+        _assert_matches_reference(_posterior(prior, returns, views))
 
 
 # --- Decimal isolation / determinism / range ---------------------------------------------------------------------
@@ -740,5 +886,5 @@ def test_no_tau_inverse_equilibrium_allocation_or_persistence_surface() -> None:
 def test_documents_the_methodology() -> None:
     doc = module_under_test.__doc__ or ""
     for needle in ("Black-Litterman-LIKE", "Joseph", "S = P U P' + Omega", "never forms", "strictly positive definite", "positive semidefinite",
-                   "singular", "simple-return support", "no tau", "independent of the targets", "does not tolerate rounding noise"):
+                   "singular", "simple-return support", "no tau", "independent of the targets", "square-root", "Gram", "context-free"):
         assert needle in doc, needle

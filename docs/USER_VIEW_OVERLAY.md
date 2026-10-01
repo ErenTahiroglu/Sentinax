@@ -148,9 +148,9 @@ U_post = U - U P' S^-1 P U              posterior expected-return uncertainty
 `U_post` is the posterior epistemic covariance of the expected-return **estimates**. It is not the historical return
 covariance, a future realized-return covariance or a portfolio covariance, and nothing is added to it.
 
-### Joseph-stabilized posterior covariance
+### Square-root Joseph posterior covariance (PSD by construction)
 
-The posterior covariance is built in the **Joseph form**:
+The mathematical model is the **Joseph form**:
 
 ```text
 K      = U P' S^-1                    (K = Z' with Z = S^-1 P U, because S and U are symmetric; from the same LDL solves)
@@ -158,12 +158,34 @@ A      = I - K P
 U_post = A U A' + K Omega K'
 ```
 
-This is algebraically equivalent to the Gaussian posterior covariance `U - U P' S^-1 P U` and is used to reduce
-cancellation-driven loss of positive semidefiniteness: the direct subtraction of two nearly equal matrices can leave tiny
-negative rounding residue in a direction that should be exactly zero under noiseless views. The subtractive form is no longer
-used in production. Omega still comes only from Phase 20A's `view_noise_variances`; the posterior mean path is unchanged.
-Each `U_post[i][j]` with `i <= j` is computed once and mirrored. PSD validation remains **exact**: no epsilon, tolerance,
-clipping, jitter, nearest-PSD or precision escalation is used.
+The direct subtraction `U - U P' S^-1 P U` is not used, and neither is a finite-precision test that asks an already rounded
+covariance matrix whether it "looks" positive semidefinite. The covariance is instead **materialized from an explicit factor**:
+
+```text
+U       = C C'                 C = L sqrt(D) from the strictly positive definite prior's LDL-transposed decomposition
+F_prior = A C                  F_prior F_prior' = A U A'
+F_noise = K sqrt(Omega)        F_noise F_noise' = K Omega K'      (sqrt(0) = 0 exactly for confidence 1)
+F       = [ F_prior | F_noise ]            N x (N + K)
+U_post  = F F'
+```
+
+The factor entries are produced by the 50-digit analytical Decimal arithmetic. The **Gram materialization `F F'` itself is
+context-free exact coefficient arithmetic**: every Decimal entry is split with `Decimal.as_tuple()` into an integer
+coefficient and a base-10 exponent, products are exact integer products, terms are aligned exactly to one common exponent and
+summed as integers, and the result is built directly from sign, digits and exponent. No ambient context, no second analytics
+context, no `Fraction` and no rounding take part. Each entry `i <= j` is computed once and mirrored; an exactly zero sum is
+plain `Decimal("0")`, never signed zero. Because the stored covariance is exactly the Gram matrix of a finite Decimal factor it is
+positive semidefinite **by construction**, so there is no separate approximate LDL acceptance test that could reject the
+canonical posterior; the result constructor recomputes the canonical posterior and rejects anything that differs from it.
+
+Exact alignment is bounded by `_EXACT_GRAM_MAX_DECIMAL_PLACES = 1000`, a **representation / memory resource ceiling** (checked
+before any `10 ** shift`; exceeding it raises the static range error). It is not an analytics precision, a PSD tolerance or an
+accuracy claim. Gram entries are exact sums of products of 50-digit factors, so they may carry up to roughly 200 significant digits.
+
+The posterior numbers are the deterministic finite-precision representation of the Gaussian model; they are **not** claimed to
+be exact real-arithmetic Gaussian outputs, and the construction does not claim immunity from every finite-precision effect
+(factor entries still carry 50-digit rounding, e.g. `sqrt` of a non-square variance). Epsilon, tolerance, eigenvalue clipping,
+jitter, nearest-PSD and repair are not used anywhere.
 
 ### Solve, not invert
 
@@ -187,10 +209,9 @@ posterior.
 - Posterior expected returns are expected simple returns, so each must be finite and `>= -1`
   (`user-view posterior expected return violates simple-return support`); there is no clipping, rescaling or confidence
   change. The bound can be crossed through prior correlation (a view on one asset moving a correlated asset).
-- `U_post` must be **positive semidefinite**, validated by a deterministic LDL-style test: a negative pivot is invalid; a zero
-  pivot requires the remaining cross terms to be exactly zero (`user-view posterior uncertainty is not positive
-  semidefinite`). Unlike the prior, `U_post` may be singular and may have zero diagonal entries: a full-confidence view
-  removes all uncertainty along its direction. Exact zeros are normalized to `Decimal("0")`.
+- `U_post` is the exact Gram matrix of the factor above, hence symmetric and positive semidefinite by construction. Unlike the
+  prior it may be singular and may have zero diagonal entries: a full-confidence view removes all uncertainty along its
+  direction. Exact zeros are normalized to `Decimal("0")`.
 
 ### Single-view semantics and invariants
 
@@ -209,19 +230,20 @@ unviewed assets. View order never matters (Phase 20A canonical order). Derived, 
 (`P m_post`; noisy views need not equal `q`) and `posterior_shift` (`m_post - m`, the overlay). The prior and the views are
 retained by identity and never mutated.
 
-### Decimal authority and known limitation
+### Decimal authority and regression evidence
 
 One fresh `Context(prec=50, ROUND_HALF_EVEN, Emin=MIN_EMIN, Emax=MAX_EMAX)` per canonical calculation; the ambient context is
-never used. A genuine overflow is `user-view posterior analytics exceeds supported Decimal range`. The result constructor
-recomputes the canonical posterior and rejects forged means or covariances.
+never used. A genuine analytical overflow **and** an exact-Gram representation-ceiling breach are both the static error
+`user-view posterior analytics exceeds supported Decimal range`. The result constructor recomputes the canonical posterior and
+rejects forged means or covariances (including a valid PSD matrix that is not the canonical posterior).
 
-**Remaining limitation (reported, not guaranteed away).** The Joseph form is not an absolute numerical guarantee. On a random
-stress of 600 small three-asset fixtures (random positive definite priors; absolute and relative views, confidence `1` and
-`< 1`), 21 (3.5%) are still rejected as not positive semidefinite versus 152 (25%) under the former subtractive form; 140
-cases that failed before now pass and 9 that passed before now fail. Observed failures involve exact (`c = 1`) relative views
-whose exact-zero direction is still polluted by 50-digit rounding noise. The outcome is always fail-closed (never a wrong
-posterior). The former two-exact-absolute-view case on a correlated prior is now supported. Closing the remainder would need a
-separate, explicit decision about a tolerance policy, which this phase deliberately does not add.
+Regression evidence (not a universal guarantee): the two former false rejections (two exact absolute views on a correlated
+prior; an exact relative view next to a noisy relative view) now build, and a deterministic corpus of 600 structurally valid
+three-asset fixtures (strictly positive definite priors constructed as `L L'`, Phase 20A-valid absolute / relative views,
+confidences in `{1, 0.7, 0.5, 0.25}`, no linearly dependent all-noiseless system) builds 600 / 600 with zero false rejections,
+where the previous Joseph-subtraction form rejected 43 of the same 600. Validity of each case comes from its construction, not
+from asking Phase 20B whether it succeeds. Genuinely singular innovation systems (e.g. `A`, `B` and `A - B` all exact) still fail
+closed at the factorization of `S`.
 
 ### Explicit non-goals of 20B
 
