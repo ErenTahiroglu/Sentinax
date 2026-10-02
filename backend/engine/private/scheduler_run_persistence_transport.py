@@ -23,8 +23,9 @@ database metadata clocks: UTC-canonical, ordered `created_at <= updated_at`, and
 History row: reconstructed against a caller-supplied closed admission (its run hash must equal the row's). A transition keeps `transition_at` separately
 from the closed lifecycle snapshot because a renewal's instant (`renewed_at`) is not representable in a lifecycle (claimed_at is unchanged by a renew).
 INITIALIZE has no transition_at and before_state_version None; every other kind needs before_state_version + 1 == after.state_version and a transition_at:
-CLAIM and TAKE_OVER equal after.claimed_at, SUCCEED and FAIL equal after.terminal_at, and a renew must not precede after.claimed_at. Without the prior
-snapshot the full before/after relation (for example that a renew only extends the lease) cannot be re-proved here; that limitation is explicit and the
+CLAIM and TAKE_OVER equal after.claimed_at, SUCCEED and FAIL equal after.terminal_at, and a renew satisfies after.claimed_at <= transition_at <
+after.lease_expires_at. Only CLAIM may be a version-2 step; renew, takeover, succeed and fail need before_state_version >= 2 (a CLAIMED predecessor).
+Without the prior snapshot the renewal cannot be proved to precede the prior lease expiry, nor the full before/after relation (for example that a renew only extends the lease); that limitation is explicit and the
 per-row shape and the migration's append-only history triggers bound it. `recorded_at` is database metadata and is never inferred or compared.
 """
 
@@ -130,12 +131,15 @@ class PrivateSchedulerPersistedTransition:
             raise ValueError(_ERR_TRANSITION_SHAPE)
         if self.transition_at is None:
             raise ValueError(_ERR_TRANSITION_AT)
-        if self.kind is _KIND.CLAIM and self.before_state_version != 1:
-            raise ValueError(_ERR_TRANSITION_SHAPE)
+        if self.kind is _KIND.CLAIM:
+            if self.before_state_version != 1:
+                raise ValueError(_ERR_TRANSITION_SHAPE)
+        elif self.before_state_version < 2:
+            raise ValueError(_ERR_TRANSITION_SHAPE)                                                 # every other kind needs a CLAIMED predecessor
         if self.kind in (_KIND.CLAIM, _KIND.TAKE_OVER_EXPIRED_CLAIM):
             valid = self.transition_at == after.claimed_at
         elif self.kind is _KIND.RENEW_CLAIM:
-            valid = after.claimed_at <= self.transition_at
+            valid = after.claimed_at <= self.transition_at < after.lease_expires_at
         else:
             valid = self.transition_at == after.terminal_at
         if not valid:

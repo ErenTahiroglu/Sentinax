@@ -639,3 +639,41 @@ def test_documents_the_transport_boundaries() -> None:
     doc = transport.__doc__ or ""
     for needle in ("TIMESTAMPTZ", "payload", "denormalized", "UTC", "transition_at", "renew", "no database", "no payload hash", "24D2B2", "audit"):
         assert needle in doc, needle
+
+
+# --- Phase 24D2B1.R1: causal-shape hardening ---------------------------------------------------------------------
+
+def test_renew_and_takeover_cannot_be_version_two_transitions() -> None:
+    admission = scheduled_admission()
+    steps = chain(admission)
+    for key in ("renew", "takeover"):
+        transition, at = steps[key]
+        row = history_row(transition, at)
+        with pytest.raises(ValueError):
+            hydrate_history({**row, "before_state_version": 1, "after_state_version": 2}, admission)
+
+
+def test_positive_version_boundaries_for_claim_renew_takeover() -> None:
+    admission = scheduled_admission()
+    steps = chain(admission)
+    claim, claim_at = steps["claim"]
+    assert hydrate_history(history_row(claim, claim_at), admission).after.state_version == 2
+    for key in ("renew", "takeover"):
+        transition, at = steps[key]
+        row = history_row(transition, at)
+        assert hydrate_history(row, admission).before_state_version == row["after_state_version"] - 1 and row["before_state_version"] == (2 if key == "renew" else 3)
+        assert hydrate_history({**row, "before_state_version": 2, "after_state_version": 3}, admission).after.state_version == 3
+        for before in (3, 4, 9):
+            assert hydrate_history({**row, "before_state_version": before, "after_state_version": before + 1}, admission).before_state_version == before
+
+
+def test_renew_transition_at_must_precede_the_new_lease_expiry() -> None:
+    admission = scheduled_admission()
+    renew, at = chain(admission)["renew"]
+    expiry = renew.after.lease_expires_at
+    for bad in (expiry, expiry + timedelta(microseconds=1), expiry + timedelta(minutes=5)):
+        with pytest.raises(ValueError):
+            hydrate_history(history_row(renew, bad), admission)
+    edge = expiry - timedelta(microseconds=1)
+    assert hydrate_history(history_row(renew, edge), admission).transition_at == edge
+    assert hydrate_history(history_row(renew, renew.after.claimed_at), admission).transition_at == renew.after.claimed_at

@@ -35,12 +35,13 @@ Result: `PrivateSchedulerPersistedRun(lifecycle, created_at, updated_at)`.
 
 - INITIALIZE: `before_state_version` None, `transition_at` None, `after.state_version == 1`.
 - Other kinds: `after.state_version == before_state_version + 1` and a non-null `transition_at`; CLAIM and TAKE_OVER equal `after.claimed_at`; SUCCEED
-  and FAIL equal `after.terminal_at`; a renew must satisfy `after.claimed_at <= transition_at`.
+  and FAIL equal `after.terminal_at`; a renew must satisfy `after.claimed_at <= transition_at < after.lease_expires_at`. Only CLAIM is a version-2 step (before 1, after 2); renew,
+  takeover, succeed and fail need `before_state_version >= 2` because a CLAIMED predecessor is required.
 - `recorded_at` is metadata, parsed to UTC, never inferred or compared.
 
 ## Limitations
 
-- renew_claim: without the prior snapshot the full before/after relation (the renewal only extends the lease) cannot be re-proved from one row; the per-row
-  shape and the migration's append-only triggers bound it.
+- renew_claim: a persisted row proves `claimed_at <= transition_at < new lease expiry`, but not `transition_at < prior lease expiry` (and not that the
+  lease only extends); both need the prior snapshot and are deferred to D2B2 predicted-domain/RPC reconciliation. The migration's append-only triggers bound it.
 - There is no payload hash: audit-only payload fields that influence neither derivation nor run identity are not authenticated (codec limit unchanged).
 - tzdb-version provenance, repository access, worker and real-database tests remain deferred (24D2B2, 24D3).
