@@ -137,9 +137,9 @@ HISTORY_COLUMNS = ["run_idempotency_sha256", "after_state_version", "transition_
 
 def test_migration_024_is_the_next_number_and_older_migrations_are_untouched(raw_sql: str) -> None:
     names = sorted(p.name for p in MIGRATIONS.glob("*.sql"))
-    assert names[-1] == "024_private_scheduler_run_persistence.sql"
-    assert names[-2] == "023_macro_state_input_history_rpc.sql"
     assert len([n for n in names if n.startswith("024")]) == 1
+    index_024 = names.index("024_private_scheduler_run_persistence.sql")
+    assert index_024 > 0 and names[index_024 - 1] == "023_macro_state_input_history_rpc.sql"
     assert raw_sql.strip()
 
 
