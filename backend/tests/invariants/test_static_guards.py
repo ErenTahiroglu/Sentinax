@@ -84,6 +84,7 @@ EXPECTED_MANIFEST = (
     "backend/engine/private/scheduler_run_persistence_codec.py",
     "backend/engine/private/scheduler_run_persistence_transport.py",
     "backend/engine/private/backtest_replay_point.py",
+    "backend/engine/private/backtest_replay_plan.py",
 )
 
 
