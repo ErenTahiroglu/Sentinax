@@ -76,6 +76,7 @@ EXPECTED_MANIFEST = (
     "backend/engine/private/scheduler_trigger.py",
     "backend/engine/private/scheduler_scheduled_occurrence.py",
     "backend/engine/private/scheduler_recurrence.py",
+    "backend/engine/private/scheduler_calendar_evidence.py",
 )
 
 
