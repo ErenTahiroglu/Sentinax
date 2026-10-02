@@ -183,3 +183,23 @@ jobs:
           backend/tests/test_game_changer_gate.py \
           backend/tests/test_game_changer_extraction.py \
           -q --disable-socket
+
+    - name: Phase 24 private scheduler correctness
+      run: |
+        python -m pytest \
+          backend/tests/test_scheduler_trigger.py \
+          backend/tests/test_scheduler_scheduled_occurrence.py \
+          backend/tests/test_scheduler_recurrence.py \
+          backend/tests/test_scheduler_calendar_evidence.py \
+          backend/tests/test_scheduler_calendar_applicability.py \
+          backend/tests/test_scheduler_event_occurrence.py \
+          backend/tests/test_scheduler_run_admission.py \
+          backend/tests/test_scheduler_run_lifecycle.py \
+          backend/tests/test_scheduler_run_persistence_schema.py \
+          backend/tests/test_scheduler_run_persistence_codec.py \
+          backend/tests/test_scheduler_run_persistence_transport.py \
+          backend/tests/test_scheduler_run_repository.py \
+          backend/tests/test_scheduler_runtime.py \
+          backend/tests/test_scheduler_work_dispatcher.py \
+          backend/tests/test_scheduler_phase24_boundary.py \
+          -q --disable-socket
