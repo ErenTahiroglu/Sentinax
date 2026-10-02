@@ -1,0 +1,75 @@
+# Gitleaks baseline: exact, human-adjudicated historical fingerprints only (commit:path:rule:line).
+# No wildcard, no path-only entry. Every new finding needs independent Red Team adjudication before inclusion; never grow this file automatically.
+
+# Phase 24 deterministic scheduler test fixtures (domain keys and idempotency identifiers, not credentials)
+1155ef622d73dcbe9f471433cbf5982d7daef538:backend/tests/test_scheduler_event_occurrence.py:generic-api-key:166
+1155ef622d73dcbe9f471433cbf5982d7daef538:backend/tests/test_scheduler_event_occurrence.py:generic-api-key:189
+1155ef622d73dcbe9f471433cbf5982d7daef538:backend/tests/test_scheduler_event_occurrence.py:generic-api-key:209
+1155ef622d73dcbe9f471433cbf5982d7daef538:backend/tests/test_scheduler_event_occurrence.py:generic-api-key:268
+1155ef622d73dcbe9f471433cbf5982d7daef538:backend/tests/test_scheduler_event_occurrence.py:generic-api-key:272
+1155ef622d73dcbe9f471433cbf5982d7daef538:backend/tests/test_scheduler_event_occurrence.py:generic-api-key:47
+1155ef622d73dcbe9f471433cbf5982d7daef538:backend/tests/test_scheduler_event_occurrence.py:generic-api-key:68
+49a9bfd808eff644c4be869cd5028ddb445f2713:backend/tests/test_scheduler_run_persistence_codec.py:generic-api-key:329
+69807068a4d04076663b98a33d79fefbd50b0937:backend/tests/test_scheduler_run_lifecycle.py:generic-api-key:110
+69807068a4d04076663b98a33d79fefbd50b0937:backend/tests/test_scheduler_run_lifecycle.py:generic-api-key:82
+69807068a4d04076663b98a33d79fefbd50b0937:backend/tests/test_scheduler_run_lifecycle.py:generic-api-key:84
+69807068a4d04076663b98a33d79fefbd50b0937:backend/tests/test_scheduler_run_lifecycle.py:generic-api-key:90
+69807068a4d04076663b98a33d79fefbd50b0937:backend/tests/test_scheduler_run_lifecycle.py:generic-api-key:92
+69807068a4d04076663b98a33d79fefbd50b0937:backend/tests/test_scheduler_run_lifecycle.py:generic-api-key:95
+8516fcd567fda6268fab3066c78ff9e759775424:backend/tests/test_scheduler_run_persistence_codec.py:generic-api-key:100
+8516fcd567fda6268fab3066c78ff9e759775424:backend/tests/test_scheduler_run_persistence_codec.py:generic-api-key:104
+8516fcd567fda6268fab3066c78ff9e759775424:backend/tests/test_scheduler_run_persistence_codec.py:generic-api-key:107
+8516fcd567fda6268fab3066c78ff9e759775424:backend/tests/test_scheduler_run_persistence_codec.py:generic-api-key:113
+8516fcd567fda6268fab3066c78ff9e759775424:backend/tests/test_scheduler_run_persistence_codec.py:generic-api-key:121
+8516fcd567fda6268fab3066c78ff9e759775424:backend/tests/test_scheduler_run_persistence_codec.py:generic-api-key:86
+8516fcd567fda6268fab3066c78ff9e759775424:backend/tests/test_scheduler_run_persistence_codec.py:generic-api-key:91
+8516fcd567fda6268fab3066c78ff9e759775424:backend/tests/test_scheduler_run_persistence_codec.py:generic-api-key:93
+93450285dd0b493b4bc350a1d1b6326bb9b4e003:backend/tests/test_scheduler_calendar_applicability.py:generic-api-key:63
+93450285dd0b493b4bc350a1d1b6326bb9b4e003:backend/tests/test_scheduler_calendar_applicability.py:generic-api-key:66
+9e38a3c15e51be552596e9ac2aba71eb32f9c47d:backend/tests/test_scheduler_run_admission.py:generic-api-key:105
+9e38a3c15e51be552596e9ac2aba71eb32f9c47d:backend/tests/test_scheduler_run_admission.py:generic-api-key:113
+9e38a3c15e51be552596e9ac2aba71eb32f9c47d:backend/tests/test_scheduler_run_admission.py:generic-api-key:119
+9e38a3c15e51be552596e9ac2aba71eb32f9c47d:backend/tests/test_scheduler_run_admission.py:generic-api-key:78
+9e38a3c15e51be552596e9ac2aba71eb32f9c47d:backend/tests/test_scheduler_run_admission.py:generic-api-key:80
+9e38a3c15e51be552596e9ac2aba71eb32f9c47d:backend/tests/test_scheduler_run_admission.py:generic-api-key:88
+9e38a3c15e51be552596e9ac2aba71eb32f9c47d:backend/tests/test_scheduler_run_admission.py:generic-api-key:90
+9e38a3c15e51be552596e9ac2aba71eb32f9c47d:backend/tests/test_scheduler_run_admission.py:generic-api-key:94
+b081bc2b873a8b9a357138deb505cd722feaf409:backend/tests/test_scheduler_run_persistence_transport.py:generic-api-key:105
+b081bc2b873a8b9a357138deb505cd722feaf409:backend/tests/test_scheduler_run_persistence_transport.py:generic-api-key:111
+b081bc2b873a8b9a357138deb505cd722feaf409:backend/tests/test_scheduler_run_persistence_transport.py:generic-api-key:117
+b081bc2b873a8b9a357138deb505cd722feaf409:backend/tests/test_scheduler_run_persistence_transport.py:generic-api-key:119
+b081bc2b873a8b9a357138deb505cd722feaf409:backend/tests/test_scheduler_run_persistence_transport.py:generic-api-key:122
+b081bc2b873a8b9a357138deb505cd722feaf409:backend/tests/test_scheduler_run_persistence_transport.py:generic-api-key:96
+b081bc2b873a8b9a357138deb505cd722feaf409:backend/tests/test_scheduler_run_persistence_transport.py:generic-api-key:98
+b246730082a09cf7e63b052f2053540e2374fee7:backend/tests/test_scheduler_trigger.py:generic-api-key:46
+bbf1bd2ab4c6d240633a24911651aefadcc15fc6:backend/tests/test_scheduler_recurrence.py:generic-api-key:192
+bbf1bd2ab4c6d240633a24911651aefadcc15fc6:backend/tests/test_scheduler_recurrence.py:generic-api-key:202
+bbf1bd2ab4c6d240633a24911651aefadcc15fc6:backend/tests/test_scheduler_recurrence.py:generic-api-key:302
+bbf1bd2ab4c6d240633a24911651aefadcc15fc6:backend/tests/test_scheduler_recurrence.py:generic-api-key:304
+bbf1bd2ab4c6d240633a24911651aefadcc15fc6:backend/tests/test_scheduler_recurrence.py:generic-api-key:309
+bbf1bd2ab4c6d240633a24911651aefadcc15fc6:backend/tests/test_scheduler_recurrence.py:generic-api-key:311
+bbf1bd2ab4c6d240633a24911651aefadcc15fc6:backend/tests/test_scheduler_recurrence.py:generic-api-key:358
+bbf1bd2ab4c6d240633a24911651aefadcc15fc6:backend/tests/test_scheduler_recurrence.py:generic-api-key:50
+eb5bdb1e9445780548002c78e4c0609cd59aa89d:backend/tests/test_scheduler_scheduled_occurrence.py:generic-api-key:132
+eb5bdb1e9445780548002c78e4c0609cd59aa89d:backend/tests/test_scheduler_scheduled_occurrence.py:generic-api-key:137
+eb5bdb1e9445780548002c78e4c0609cd59aa89d:backend/tests/test_scheduler_scheduled_occurrence.py:generic-api-key:164
+eb5bdb1e9445780548002c78e4c0609cd59aa89d:backend/tests/test_scheduler_scheduled_occurrence.py:generic-api-key:212
+eb5bdb1e9445780548002c78e4c0609cd59aa89d:backend/tests/test_scheduler_scheduled_occurrence.py:generic-api-key:257
+eb5bdb1e9445780548002c78e4c0609cd59aa89d:backend/tests/test_scheduler_scheduled_occurrence.py:generic-api-key:284
+eb5bdb1e9445780548002c78e4c0609cd59aa89d:backend/tests/test_scheduler_scheduled_occurrence.py:generic-api-key:322
+eb5bdb1e9445780548002c78e4c0609cd59aa89d:backend/tests/test_scheduler_scheduled_occurrence.py:generic-api-key:46
+ef5a207415ec557334f1fa5dde02078e02e303f2:backend/tests/test_scheduler_calendar_evidence.py:generic-api-key:205
+ef5a207415ec557334f1fa5dde02078e02e303f2:backend/tests/test_scheduler_calendar_evidence.py:generic-api-key:239
+
+# SEC derivation-key assertion fixture (test identifier, not a credential)
+f4cdc1e8b8f2a1b7abb82ce3104aa5d586fbf43b:backend/tests/test_sec_quarter_derivation.py:generic-api-key:734
+
+# Supabase publishable browser keys (sb_publishable_..., public by design; not sb_secret_ or service_role)
+3498c7d5ee20c0856df8cb302c9fb0c113bd5366:frontend/js/core/config.js:generic-api-key:13
+38b6e700bc5e1f5521caadf03847f1ddd88a42ed:frontend/js/supabaseClient.js:generic-api-key:5
+60316712edc247827cb7f60b42b432d194117741:frontend/js/supabaseClient.js:generic-api-key:5
+8756816d335142043c6e118065b99fc0ae2ec396:src/frontend/js/supabaseClient.js:generic-api-key:5
+fde329f71ab2f136789d28d2064d27cd74f4385e:frontend-vanilla-backup/js/core/config.js:generic-api-key:13
+
+# Cloudflare Web Analytics client-side beacon token in a downloaded public HTML page (not a Cloudflare API token)
+74974eb113328c01f1e7348b729d32f4e93497f7:fintables.html:generic-api-key:2
