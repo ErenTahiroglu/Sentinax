@@ -83,6 +83,7 @@ PURE_MANIFEST: tuple[str, ...] = (
     "backend/engine/private/scheduler_event_occurrence.py",
     "backend/engine/private/scheduler_run_admission.py",
     "backend/engine/private/scheduler_run_lifecycle.py",
+    "backend/engine/private/scheduler_run_persistence_codec.py",
 )
 _MANIFEST_MODULES = frozenset(p[: -len(".py")].replace("/", ".") for p in PURE_MANIFEST)
 
