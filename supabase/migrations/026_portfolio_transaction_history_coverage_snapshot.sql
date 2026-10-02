@@ -86,7 +86,7 @@ BEGIN
     SELECT
         count(*)::bigint,
         COALESCE(array_agg(t.id ORDER BY t.recorded_at ASC, t.id ASC), ARRAY[]::uuid[]),
-        COALESCE(array_agg((pg_catalog.extract(epoch FROM t.recorded_at) * 1000000)::bigint ORDER BY t.recorded_at ASC, t.id ASC), ARRAY[]::bigint[]),
+        COALESCE(array_agg((EXTRACT(EPOCH FROM t.recorded_at) * 1000000)::bigint ORDER BY t.recorded_at ASC, t.id ASC), ARRAY[]::bigint[]),
         COALESCE(array_agg(t.economic_fingerprint::text ORDER BY t.recorded_at ASC, t.id ASC), ARRAY[]::text[])
     INTO v_count, v_ids, v_micros, v_fingerprints
     FROM public.portfolio_transactions t

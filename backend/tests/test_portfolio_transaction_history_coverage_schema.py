@@ -129,7 +129,8 @@ def test_manifest_is_one_aggregate_with_identical_order_and_typed_empty_arrays(c
     for typed in ("ARRAY[]::uuid[]", "ARRAY[]::bigint[]", "ARRAY[]::text[]"):
         assert code.count(typed) == 1, typed
     assert code.count("COALESCE") == 3
-    assert "(pg_catalog.extract(epoch FROM t.recorded_at) * 1000000)::bigint" in code
+    assert "(EXTRACT(EPOCH FROM t.recorded_at) * 1000000)::bigint" in code                              # EXTRACT is SQL syntax: it cannot be schema-qualified
+    assert "pg_catalog.extract" not in code and "date_part" not in code                                  # date_part would return a float
     assert "t.economic_fingerprint::text" in code and "t.id" in code
     manifest = code[code.index("count(*)::bigint"):]
     assert manifest.count("FROM public.portfolio_transactions t") == 1                                  # count and all three arrays come from one relation
