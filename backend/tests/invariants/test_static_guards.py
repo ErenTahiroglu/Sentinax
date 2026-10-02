@@ -74,6 +74,7 @@ EXPECTED_MANIFEST = (
     "backend/engine/private/game_changer_gate.py",
     "backend/engine/private/game_changer_extraction.py",
     "backend/engine/private/scheduler_trigger.py",
+    "backend/engine/private/scheduler_scheduled_occurrence.py",
 )
 
 
