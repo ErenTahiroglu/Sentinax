@@ -173,3 +173,13 @@ jobs:
           backend/tests/test_allocation_universe_composition.py \
           backend/tests/test_allocation_candidate_universe.py \
           -q --disable-socket
+
+    - name: Phase 23 Game Changer correctness
+      run: |
+        python -m pytest \
+          backend/tests/test_game_changer_event.py \
+          backend/tests/test_game_changer_assessment.py \
+          backend/tests/test_game_changer_revision_family.py \
+          backend/tests/test_game_changer_gate.py \
+          backend/tests/test_game_changer_extraction.py \
+          -q --disable-socket
