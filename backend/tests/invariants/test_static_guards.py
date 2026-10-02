@@ -71,6 +71,7 @@ EXPECTED_MANIFEST = (
     "backend/engine/private/game_changer_event.py",
     "backend/engine/private/game_changer_assessment.py",
     "backend/engine/private/game_changer_revision_family.py",
+    "backend/engine/private/game_changer_gate.py",
 )
 
 
