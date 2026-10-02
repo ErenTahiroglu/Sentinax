@@ -62,6 +62,8 @@ _RPC_KEYS = frozenset({"status", "run_idempotency_sha256", "state", "state_versi
 _STATE = PrivateSchedulerRunState
 _KIND = PrivateSchedulerRunTransitionKind
 
+_STATE_VERSION_FLOOR = {_STATE.READY: 1, _STATE.CLAIMED: 2, _STATE.SUCCEEDED: 3, _STATE.FAILED: 3}
+
 _ERR_CLIENT = "client must not be None"
 _ERR_ADMISSION = "admission must be an exact PrivateSchedulerRunAdmission instance"
 _ERR_LIFECYCLE = "lifecycle must be an exact PrivateSchedulerRunLifecycle instance"
@@ -105,6 +107,9 @@ class PrivateSchedulerRunInitializationResult:
         transition = self.initialize_transition
         if type(self.status) is not _INIT_STATUS or type(self.state) is not _STATE or type(self.state_version) is not int:
             raise TypeError(_ERR_RESULT)
+        _check_hash(self.run_idempotency_sha256)
+        if not _pair_valid(self.state, self.state_version):
+            raise ValueError(_ERR_RESULT)
         if self.status is _INIT_STATUS.CONFLICT:
             if transition is not None:
                 raise ValueError(_ERR_RESULT)
@@ -126,6 +131,12 @@ class PrivateSchedulerRunApplyResult:
     def __post_init__(self) -> None:
         if type(self.status) is not _APPLY_STATUS:
             raise TypeError(_ERR_RESULT)
+        _check_hash(self.run_idempotency_sha256)
+        if self.state is not None or self.state_version is not None:
+            if type(self.state) is not _STATE or type(self.state_version) is not int:
+                raise TypeError(_ERR_RESULT)
+            if not _pair_valid(self.state, self.state_version):
+                raise ValueError(_ERR_RESULT)
         predicted, persisted = self.predicted_transition, self.persisted_transition
         if self.status is _APPLY_STATUS.APPLIED:
             if (self.state is None or self.state_version is None or type(predicted) is not PrivateSchedulerRunTransition
@@ -139,6 +150,19 @@ class PrivateSchedulerRunApplyResult:
             raise ValueError(_ERR_RESULT)
         if (self.state is None) != (self.status is _APPLY_STATUS.NOT_FOUND) or (self.state_version is None) != (self.status is _APPLY_STATUS.NOT_FOUND):
             raise ValueError(_ERR_RESULT)
+
+
+def _pair_valid(state: object, version: object) -> bool:
+    """Closed lifecycle scalar relation: READY is v1, CLAIMED >= v2, SUCCEEDED and FAILED >= v3."""
+    if type(state) is not _STATE or type(version) is not int:
+        return False
+    floor = _STATE_VERSION_FLOOR[state]
+    return version == 1 if state is _STATE.READY else version >= floor
+
+
+def _validate_state_version_pair(state: PrivateSchedulerRunState, state_version: int) -> None:
+    if not _pair_valid(state, state_version):
+        raise RuntimeError(_ERR_RPC)
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -174,6 +198,8 @@ def _rpc_fields(item: dict, expected_hash: str) -> tuple[str, PrivateSchedulerRu
             raise RuntimeError(_ERR_RPC) from error
     if version is not None and (type(version) is not int or version < 1):
         raise RuntimeError(_ERR_RPC)
+    if state is not None and version is not None:
+        _validate_state_version_pair(state, version)
     return status, state, version
 
 

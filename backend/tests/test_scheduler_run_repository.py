@@ -600,3 +600,85 @@ def test_documents_the_trust_boundary() -> None:
     doc = repo_module.__doc__ or ""
     for needle in ("service-role", "trusted backend", "RPC", "no automatic retry", "immutable", "never exposed"):
         assert needle in doc, needle
+
+
+# --- Phase 24D2B2.R1: RPC state/version scalar-shape hardening ---------------------------------------------------
+
+IMPOSSIBLE = [("ready", 2), ("ready", 3), ("claimed", 1), ("succeeded", 1), ("succeeded", 2), ("failed", 1), ("failed", 2)]
+VALID = [("ready", 1), ("claimed", 2), ("claimed", 3), ("claimed", 10), ("succeeded", 3), ("succeeded", 7), ("failed", 3), ("failed", 12)]
+
+
+@pytest.mark.parametrize("status", ["idempotent_duplicate", "conflict"])
+@pytest.mark.parametrize("state,version", IMPOSSIBLE)
+def test_initialization_rejects_impossible_state_version_pairs(status: str, state: str, version: int) -> None:
+    admission = scheduled_admission()
+    client = initialized_client(admission, status=status, state=state, version=version)
+    with pytest.raises(RuntimeError):
+        PrivateSchedulerRunRepository(client).initialize_run(admission=admission)
+    assert client.table_calls == [] and len(client.rpc_calls) == 1
+
+
+@pytest.mark.parametrize("state,version", VALID)
+def test_valid_duplicate_and_conflict_pairs_remain_accepted(state: str, version: int) -> None:
+    admission = scheduled_admission()
+    client = initialized_client(admission, status="idempotent_duplicate", state=state, version=version)
+    result = PrivateSchedulerRunRepository(client).initialize_run(admission=admission)
+    assert (result.state.value, result.state_version) == (state, version) and result.initialize_transition.after.state_version == 1
+    assert client.table_calls[0]["filters"][1] == ("after_state_version", 1)
+    client = initialized_client(admission, status="conflict", state=state, version=version)
+    result = PrivateSchedulerRunRepository(client).initialize_run(admission=admission)
+    assert result.initialize_transition is None and client.table_calls == []
+
+
+@pytest.mark.parametrize("status,state,version,key", [
+    ("version_conflict", "ready", 4, "claim"), ("version_conflict", "claimed", 1, "claim"), ("version_conflict", "succeeded", 2, "claim"),
+    ("version_conflict", "failed", 1, "claim"), ("transition_conflict", "claimed", 1, "claim"), ("transition_conflict", "succeeded", 1, "claim"),
+    ("transition_conflict", "failed", 1, "claim"), ("transition_conflict", "ready", 2, "renew"), ("transition_conflict", "succeeded", 2, "renew"),
+    ("transition_conflict", "failed", 2, "renew")])
+def test_apply_conflicts_reject_impossible_state_version_pairs(status: str, state: str, version: int, key: str) -> None:
+    admission = scheduled_admission()
+    client = FakeClient()
+    client.rpc_data[APPLY] = rpc_row(status, admission.run_idempotency_sha256, state, version)
+    with pytest.raises(RuntimeError):
+        run_command(client, key, admission)
+    assert len(client.rpc_calls) == 1 and client.table_calls == []
+
+
+def test_valid_apply_conflict_pairs_remain_accepted() -> None:
+    admission = scheduled_admission()
+    h = admission.run_idempotency_sha256
+    for status, state, version, key in (("version_conflict", "claimed", 2, "claim"), ("version_conflict", "succeeded", 3, "claim"),
+                                         ("transition_conflict", "ready", 1, "claim"), ("transition_conflict", "claimed", 2, "renew")):
+        client = FakeClient()
+        client.rpc_data[APPLY] = rpc_row(status, h, state, version)
+        assert run_command(client, "claim" if key == "claim" else key, admission).status.value == status
+
+
+def test_result_dataclasses_validate_hash_types_and_scalar_pairs_on_direct_construction() -> None:
+    admission = scheduled_admission()
+    init = PrivateSchedulerRunInitializationResult
+    St = PrivateSchedulerRunInitializationStatus
+    h = admission.run_idempotency_sha256
+    ok = init(St.CONFLICT, h, STATE.CLAIMED, 2, None)
+    assert ok.state_version == 2
+    for args in ((St.CONFLICT, h.upper(), STATE.READY, 1), (St.CONFLICT, h[:63], STATE.READY, 1), (St.CONFLICT, h + "a", STATE.READY, 1), (St.CONFLICT, None, STATE.READY, 1),
+                 (St.CONFLICT, h, STATE.READY, 3), (St.CONFLICT, h, STATE.CLAIMED, 1), (St.CONFLICT, h, STATE.SUCCEEDED, 2), (St.CONFLICT, h, STATE.FAILED, 2),
+                 (St.CONFLICT, h, STATE.READY, True), (St.CONFLICT, h, STATE.READY, 1.0), (St.CONFLICT, h, STATE.READY, "1"), (St.CONFLICT, h, "ready", 1),
+                 ("conflict", h, STATE.READY, 1)):
+        with pytest.raises((TypeError, ValueError)):
+            init(*args, None)
+
+    class HashStr(str):
+        pass
+
+    with pytest.raises((TypeError, ValueError)):
+        init(St.CONFLICT, HashStr(h), STATE.READY, 1, None)
+    apply = PrivateSchedulerRunApplyResult
+    As = PrivateSchedulerRunApplyStatus
+    assert apply(As.NOT_FOUND, h, None, None, None, None).state is None
+    assert apply(As.VERSION_CONFLICT, h, STATE.CLAIMED, 5, None, None).state_version == 5
+    for args in ((As.VERSION_CONFLICT, h.upper(), STATE.CLAIMED, 5), (As.VERSION_CONFLICT, h, STATE.READY, 4), (As.VERSION_CONFLICT, h, STATE.CLAIMED, 1),
+                 (As.TRANSITION_CONFLICT, h, STATE.FAILED, 2), (As.VERSION_CONFLICT, h, STATE.CLAIMED, True), (As.VERSION_CONFLICT, h, STATE.CLAIMED, 2.0),
+                 (As.VERSION_CONFLICT, h, "claimed", 2), (As.NOT_FOUND, h[:63], None, None), (As.NOT_FOUND, h, STATE.READY, None), (As.NOT_FOUND, h, None, 1)):
+        with pytest.raises((TypeError, ValueError)):
+            apply(*args, None, None)

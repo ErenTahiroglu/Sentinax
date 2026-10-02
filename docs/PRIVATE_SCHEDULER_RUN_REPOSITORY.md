@@ -47,6 +47,14 @@ valid actor may have advanced it already; the exact-version history row is race-
 Renewal: prior lifecycle (C2B proves `renewed_at < old lease expiry`, new expiry greater) plus the explicit `renewed_at` plus the persisted history gives a
 full end-to-end reconciliation, which the standalone D2B1 transport could not provide.
 
+## RPC scalar shape
+
+RPC current-state scalars are reconciled against the closed lifecycle version floors: READY = v1, CLAIMED >= v2, SUCCEEDED >= v3, FAILED >= v3. An
+impossible state/version pair (for example READY/3, CLAIMED/1, SUCCEEDED/2, FAILED/1) is a malformed database response and raises RuntimeError for every
+status that carries a state (initialization duplicate and conflict, apply version_conflict and transition_conflict, applied); not_found carries neither. The
+conflict version relations (differs from / equals expected_version) and the stricter INITIALIZED = READY/v1 and APPLIED = prediction checks still apply.
+The public result dataclasses also reject forged non-canonical hashes, wrong types and impossible pairs.
+
 ## Reads
 
 `get_run(run_idempotency_sha256=...)` (canonical 64 lowercase hex; zero rows None, more than one RuntimeError) and `get_transition(admission=..., after_state_version=...)`.
