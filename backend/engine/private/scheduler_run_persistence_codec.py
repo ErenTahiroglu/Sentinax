@@ -21,8 +21,9 @@ source-specific object):
                                    independently, it is re-derived
 
 JSON-native values only (dict, list, str, int, bool, None): enums by exact `.value`, UUIDs as canonical lowercase strings, dates as YYYY-MM-DD, local times
-as HH:MM:SS.ffffff, and every datetime as an ISO-8601 string with microsecond precision that keeps its explicit UTC offset (audit instants are not
-normalized to UTC; canonical-UTC fields stay +00:00). Tuples become lists in the supplied order (exchange sessions and source releases are never sorted
+as HH:MM:SS.ffffff, and every datetime as an ISO-8601 string with microsecond precision that keeps its explicit UTC offset, including second-level and sub-second offsets such as
++00:00:30 or +00:00:30.500000 (audit instants are never normalized to UTC; canonical-UTC fields stay +00:00; the lexical authority is Python's own
+canonical isoformat round trip). Tuples become lists in the supplied order (exchange sessions and source releases are never sorted
 or deduplicated) and explicit empty lists and nulls are always written, so COMPLETE_FOR_DATE with no entries and UNAVAILABLE with no entries remain
 distinct and a DATE_ONLY release keeps a null planned time.
 
@@ -46,7 +47,7 @@ Architectural Invariants:
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 from uuid import UUID
 
 from backend.engine.private.scheduler_calendar_applicability import (
@@ -91,7 +92,6 @@ from backend.engine.private.scheduler_trigger import (
 )
 
 _PROTOCOL = "sentinax.private.scheduler.run-admission-persistence.v1"
-_DATETIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}[+-][0-9]{2}:[0-9]{2}")
 _DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _TIME = re.compile(r"[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}")
 
@@ -122,7 +122,7 @@ _ERR_ENUM = "payload value is not an exact known enum value"
 _ERR_UUID = "payload value must be null or a canonical lowercase UUID string"
 _ERR_DATE = "payload date must be an exact canonical YYYY-MM-DD string"
 _ERR_TIME = "payload local time must be an exact canonical HH:MM:SS.ffffff string"
-_ERR_INSTANT = "payload instant must be an exact canonical ISO-8601 string with microseconds and an explicit UTC offset"
+_ERR_INSTANT = "payload instant must be an aware datetime in the exact canonical ISO-8601 microsecond form"
 _ERR_PROTOCOL = "unknown admission persistence protocol"
 _ERR_ASSERTION = "a persisted derived assertion no longer matches the closed derivation"
 _ERR_RUN_HASH = "the stored run hash does not match the reconstructed admission"
@@ -203,11 +203,20 @@ def _time(value: object) -> time:
 
 
 def _instant(value: object) -> datetime:
+    """Strict persisted-datetime parser: any aware datetime the closed contracts accept (including second-level and sub-second UTC offsets), with
+    Python's canonical ISO round trip as the single lexical authority (so `Z`, a missing fraction, spaces and compact forms are all rejected)."""
     text = _text(value)
-    if _DATETIME.fullmatch(text) is None:
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        raise ValueError(_ERR_INSTANT) from None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError(_ERR_INSTANT)
-    parsed = datetime.fromisoformat(text)
-    if parsed.tzinfo is None or parsed.isoformat(timespec="microseconds") != text:
+    try:
+        parsed.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        raise ValueError(_ERR_INSTANT) from None
+    if parsed.isoformat(timespec="microseconds") != text:
         raise ValueError(_ERR_INSTANT)
     return parsed
 

@@ -39,7 +39,7 @@ provenance               the exact source-specific object
 ## JSON-native values, canonical scalars
 
 Only `dict`, `list`, `str`, `int`, `bool` and `None`. Enums by exact `.value` (no names, no case normalization); UUIDs as canonical lowercase strings; dates `YYYY-MM-DD`; local times `HH:MM:SS.ffffff`; every datetime an ISO-8601 string with microseconds and an
-explicit offset. **Offset-preserving audit timestamps**: a non-UTC aware instant keeps its supplied offset (`2026-10-02T10:00:00.250000+03:00`); canonical-UTC fields stay `+00:00`. Tuples become lists in the supplied order (exchange sessions and source releases are
+explicit offset. **Offset-preserving audit timestamps**: a non-UTC aware instant keeps its supplied offset (`2026-10-02T10:00:00.250000+03:00`), including second-level and sub-second offsets that the closed contracts accept (`+00:00:30`, `+00:00:30.500000`); canonical-UTC fields stay `+00:00`. The parser accepts any aware datetime whose canonical `isoformat(timespec="microseconds")` equals the stored string (so `Z`, missing microseconds, spaces and compact forms stay rejected); there is no `±HH:MM`-only grammar (Phase 24D2A.R1). Tuples become lists in the supplied order (exchange sessions and source releases are
 never sorted or deduplicated); empty lists and nulls are always written. `COMPLETE_FOR_DATE` with no entries and `UNAVAILABLE` with no entries therefore stay distinct, and a `DATE_ONLY` release keeps `planned_for = null`.
 
 ## Closed-builder hydration, derived-result assertions, run-hash revalidation
@@ -55,6 +55,8 @@ top-level input must be an exact `dict` (no JSON string). UUIDs must satisfy `st
 domain ranges are left to the closed builders.
 
 ## Limits (stated plainly)
+
+Binding contract: a persisted change that affects the reconstructed canonical run or adjudication fails hydration through the derived assertions and / or the run-hash check. A non-identity audit-provenance change may reconstruct a different valid provenance with the same run hash; the codec alone does not authenticate it, and its durable integrity belongs to the immutable migration-024 `admission_payload` plus the future canonical 24D2B write path (no payload hash, signature or second identity is added).
 
 With no payload hash the codec cannot authenticate audit fields that influence neither the derivation nor the run identity: e.g. the calendar `source_content_sha256`, an earlier-but-valid knowledge cutoff, or the same instant written with another offset hydrate to a different but valid
 admission with the same run hash. Their integrity rests on the immutable database column. **tzdb-version provenance remains unresolved / deferred**: the payload carries no tz database version, so replay under changed IANA rules is not addressed here.

@@ -319,6 +319,83 @@ def test_event_round_trip_preserves_offset_case_and_uuids() -> None:
     assert hydrated.trigger.cause_key == "KAP-Disclosure-AbC-1"
 
 
+SECOND_OFFSET = timezone(timedelta(seconds=30))
+SUBSECOND_OFFSET = timezone(timedelta(seconds=30, microseconds=500000))
+
+
+def event_with_offset(tz) -> PrivateSchedulerRunAdmission:
+    return admit_private_scheduler_event_occurrence(occurrence=build_private_scheduler_event_occurrence(
+        work_kind=WK.GAME_CHANGER_REVIEW, scope=SC.PORTFOLIO, owner_id=OWNER, portfolio_id=PORTFOLIO, event_cause_kind=EC.DISCLOSURE_INGESTED,
+        cause_key="KAP-Offset-1", cause_available_at=datetime(2026, 10, 2, 10, 0, 0, 250000, tzinfo=tz), policy_key="private.scheduler.v3", policy_revision=2))
+
+
+def test_closed_contract_accepts_non_minute_aligned_aware_offsets() -> None:
+    stamp = datetime(2026, 10, 2, 10, 0, 0, 250000, tzinfo=SECOND_OFFSET)
+    assert stamp.utcoffset() == timedelta(seconds=30)
+    assert event_with_offset(SECOND_OFFSET).trigger.cause_available_at is not None          # the closed 24A / 24C1 authority has no minute-alignment rule
+
+
+def test_event_with_a_second_level_offset_round_trips_losslessly() -> None:
+    original = event_with_offset(SECOND_OFFSET)
+    payload = serialize_private_scheduler_run_admission(admission=original)
+    assert payload["provenance"]["event_occurrence"]["cause_available_at"] == "2026-10-02T10:00:00.250000+00:00:30"
+    for candidate in (payload, wire(payload)):
+        hydrated = hydrate(candidate)
+        assert hydrated == original and hydrated.run_idempotency_sha256 == original.run_idempotency_sha256
+        assert hydrated.trigger.cause_available_at.utcoffset() == timedelta(seconds=30)
+        assert hydrated.trigger.idempotency_sha256 == original.trigger.idempotency_sha256
+
+
+def test_event_with_a_fractional_second_offset_round_trips_losslessly() -> None:
+    original = event_with_offset(SUBSECOND_OFFSET)
+    payload = serialize_private_scheduler_run_admission(admission=original)
+    text = payload["provenance"]["event_occurrence"]["cause_available_at"]
+    assert text == "2026-10-02T10:00:00.250000+00:00:30.500000" == original.trigger.cause_available_at.isoformat(timespec="microseconds")
+    hydrated = hydrate(wire(payload))
+    assert hydrated == original and hydrated.trigger.cause_available_at.utcoffset() == timedelta(seconds=30, microseconds=500000)
+    assert serialize_private_scheduler_run_admission(admission=hydrated) == payload                # the audit representation is never normalized
+
+
+def test_calendar_provenance_with_non_minute_aligned_offsets_round_trips() -> None:
+    evidence = exchange_evidence(
+        (PrivateSchedulerExchangeSessionWindow(opens_at=U(7), closes_at=U(15)),),
+        published_at=datetime(2026, 10, 2, 2, 0, 0, 100, tzinfo=SECOND_OFFSET),                      # 01:59:30.0001Z
+        observed_at=datetime(2026, 10, 2, 2, 30, 0, tzinfo=SUBSECOND_OFFSET))                       # 02:29:29.5Z
+    original = calendar_admission(evidence, exchange_constraint(), cutoff=datetime(2026, 10, 2, 4, 59, 30, tzinfo=SECOND_OFFSET))
+    payload = serialize_private_scheduler_run_admission(admission=original)
+    binding = payload["provenance"]["calendar_binding"]
+    assert binding["knowledge_cutoff"].endswith("+00:00:30") and binding["evidence"]["published_at"].endswith("+00:00:30")
+    assert binding["evidence"]["observed_at"].endswith("+00:00:30.500000")
+    hydrated = hydrate(wire(payload))
+    assert hydrated == original and hydrated.run_idempotency_sha256 == original.run_idempotency_sha256
+    rebuilt = hydrated.calendar_applicability.calendar_binding
+    assert rebuilt.knowledge_cutoff.utcoffset() == timedelta(seconds=30)
+    assert rebuilt.evidence.published_at.utcoffset() == timedelta(seconds=30)
+    assert rebuilt.evidence.observed_at.utcoffset() == timedelta(seconds=30, microseconds=500000)
+    assert serialize_private_scheduler_run_admission(admission=hydrated) == payload
+
+
+def test_canonical_utc_fields_stay_utc_even_when_audit_offsets_are_unusual() -> None:
+    payload = serialize_private_scheduler_run_admission(admission=calendar_admission(
+        exchange_evidence((PrivateSchedulerExchangeSessionWindow(opens_at=U(7), closes_at=U(15)),),
+                          published_at=datetime(2026, 10, 2, 2, 30, tzinfo=SECOND_OFFSET)), exchange_constraint()))
+    for item in payload["provenance"]["calendar_binding"]["evidence"]["exchange_sessions"]:
+        assert item["opens_at"].endswith("+00:00") and item["closes_at"].endswith("+00:00")
+    sessions = wire(payload)
+    sessions["provenance"]["calendar_binding"]["evidence"]["exchange_sessions"][0]["opens_at"] = "2026-10-02T07:00:00.000000+00:00:30"
+    assert_fails(sessions)                                                                          # the closed contract still demands canonical UTC
+
+
+def test_canonical_roundtrip_is_the_lexical_authority_for_offsets() -> None:
+    event_path = ("provenance", "event_occurrence", "cause_available_at")
+    for bad in ("2026-10-02T10:00:00.250000+00:00:30 ", "2026-10-02T10:00:00.250000+0:00:30", "2026-10-02T10:00:00.250000+00:00:30.5",
+                "2026-10-02T10:00:00.250000+00:00:60", "2026-10-02T10:00:00.250000-00:00", "2026-10-02T10:00:00.250000Z",
+                "2026-10-02T10:00:00.250000+24:00", "2026-10-02T10:00:00.250000+0030", "2026-10-02T10:00:00.250000+03"):
+        payload = payload_of("event")
+        set_path(payload, event_path, bad)
+        assert_fails(payload)
+
+
 def test_calendar_payload_schema_and_nested_reconstruction() -> None:
     provenance = payload_of("calendar_exchange")["provenance"]
     assert set(provenance) == {"civil_decision", "calendar_binding", "calendar_constraint", "expected_applicability_status", "expected_applicability_reason",
