@@ -79,6 +79,7 @@ EXPECTED_MANIFEST = (
     "backend/engine/private/scheduler_calendar_evidence.py",
     "backend/engine/private/scheduler_calendar_applicability.py",
     "backend/engine/private/scheduler_event_occurrence.py",
+    "backend/engine/private/scheduler_run_admission.py",
 )
 
 
