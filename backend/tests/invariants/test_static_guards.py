@@ -86,6 +86,7 @@ EXPECTED_MANIFEST = (
     "backend/engine/private/backtest_replay_point.py",
     "backend/engine/private/backtest_replay_plan.py",
     "backend/engine/private/backtest_analysis_context.py",
+    "backend/engine/private/backtest_user_view_history.py",
 )
 
 
