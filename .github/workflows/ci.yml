@@ -203,3 +203,36 @@ jobs:
           backend/tests/test_scheduler_work_dispatcher.py \
           backend/tests/test_scheduler_phase24_boundary.py \
           -q --disable-socket
+
+    - name: Phase 26 backtest architecture correctness
+      run: |
+        python -m pytest \
+          backend/tests/test_backtest_replay_point.py \
+          backend/tests/test_backtest_market_data_bridge.py \
+          backend/tests/test_backtest_replay_plan.py \
+          backend/tests/test_backtest_analysis_context.py \
+          backend/tests/test_backtest_input_bindings.py \
+          backend/tests/test_backtest_portfolio_projection.py \
+          backend/tests/test_backtest_portfolio_history_coverage.py \
+          backend/tests/test_backtest_market_data_resolution_snapshot.py \
+          backend/tests/test_backtest_user_view_history.py \
+          backend/tests/test_backtest_user_view_resolution.py \
+          backend/tests/test_portfolio_transaction_write_surface_hardening_schema.py \
+          backend/tests/test_portfolio_transaction_history_coverage_schema.py \
+          -q --disable-socket
+
+    - name: Phase 26 market-data dependency regression
+      run: |
+        python -m pytest \
+          backend/tests/test_market_data_resolver.py \
+          backend/tests/test_global_eod_resolver.py \
+          backend/tests/test_tefas_price_resolver.py \
+          backend/tests/test_tefas_metrics_resolver.py \
+          -q --disable-socket
+
+    # test_precious_metals.py is not socket-disabled-compatible (its TCMB EVDS provider tests need the socket plugin untouched); same invocation as the Phase 17 provider step.
+    - name: Phase 26 precious-metal resolver dependency regression
+      run: |
+        python -m pytest \
+          backend/tests/test_precious_metals.py \
+          -q
