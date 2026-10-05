@@ -148,6 +148,18 @@ def test_stored_shape_is_exactly_four_fields() -> None:
     assert PrivateBacktestMarketDataResolutionSnapshot.__dataclass_params__.frozen is True
 
 
+def test_query_key_annotation_is_exactly_the_five_query_key_classes() -> None:
+    import typing
+
+    hint = typing.get_type_hints(PrivateBacktestMarketDataResolutionSnapshot)["query_key"]
+    assert typing.get_origin(hint) in (typing.Union, getattr(__import__("types"), "UnionType", typing.Union))
+    assert set(typing.get_args(hint)) == {
+        BISTInstrumentQueryKey, GlobalEODQueryKey, TefasFundPriceQueryKey, TefasFundCurrentMetricsQueryKey, PreciousMetalSemanticKey,
+    }
+    assert len(typing.get_args(hint)) == 5
+    assert [f.name for f in fields(PrivateBacktestMarketDataResolutionSnapshot)] == ["market_context", "kind", "query_key", "resolution_payload_json"]
+
+
 def test_kind_enum_is_exactly_five_members() -> None:
     assert {m.name: m.value for m in K} == {
         "BIST_EOD": "bist_eod", "GLOBAL_EOD": "global_eod", "TEFAS_FUND_PRICE": "tefas_fund_price",

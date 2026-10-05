@@ -22,7 +22,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 from backend.engine.private.backtest_market_data_bridge import PrivateBacktestMarketDataContext
 from backend.engine.private.bist.models import BISTBulletinSnapshot
@@ -62,6 +62,11 @@ _PAYLOAD_KEYS = frozenset((
     "snapshot_hash", "snapshot_retrieved_at", "provider", "originating_source", "canonical_instrument_id", "semantic_key", "confidence",
     "is_stale_discovery", "diagnostics", "evaluation_snapshot_ids", "resolution_key",
 ))
+
+
+PrivateBacktestMarketDataQueryKey = Union[
+    BISTInstrumentQueryKey, GlobalEODQueryKey, TefasFundPriceQueryKey, TefasFundCurrentMetricsQueryKey, PreciousMetalSemanticKey,
+]
 
 
 class PrivateBacktestMarketDataKind(Enum):
@@ -126,7 +131,7 @@ class PrivateBacktestMarketDataResolutionSnapshot:
     """Canonical JSON audit capture of one closed-resolver result under the replay context's historical perspective."""
     market_context: PrivateBacktestMarketDataContext
     kind: PrivateBacktestMarketDataKind
-    query_key: Any
+    query_key: PrivateBacktestMarketDataQueryKey
     resolution_payload_json: str
 
     def __post_init__(self) -> None:
@@ -179,8 +184,8 @@ class PrivateBacktestMarketDataResolutionSnapshot:
 def _bind(
     kind: PrivateBacktestMarketDataKind,
     market_context: PrivateBacktestMarketDataContext,
-    query_key: Any,
-    snapshots: Any,
+    query_key: PrivateBacktestMarketDataQueryKey,
+    snapshots: Tuple[Any, ...],
     resolver_method_name: str,
     effective_date: Callable[[Any], Optional[str]],
     has_instrument: bool,
