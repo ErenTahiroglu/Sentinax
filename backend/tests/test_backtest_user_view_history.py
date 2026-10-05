@@ -250,6 +250,23 @@ def test_withdraw_carries_no_economic_payload() -> None:
     assert type(rev.instrument_ids) is tuple
 
 
+def test_withdraw_requires_exact_empty_tuple_not_a_subclass_or_equality_spoof() -> None:
+    class T(tuple):
+        pass
+
+    class Spoof:
+        def __eq__(self, other):
+            return True
+
+        __hash__ = None  # type: ignore[assignment]
+
+    for bad in (T(), Spoof()):
+        with pytest.raises((TypeError, ValueError)):
+            withdraw(instrument_ids=bad)
+    exact = ()
+    assert withdraw(instrument_ids=exact).instrument_ids is exact
+
+
 def test_withdraw_rejects_view_or_instrument_ids() -> None:
     with pytest.raises(ValueError):
         withdraw(view=absolute_view())

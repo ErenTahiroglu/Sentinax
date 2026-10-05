@@ -71,7 +71,7 @@ class PrivateBacktestUserViewRevision:
             raise TypeError(_ERR_AVAILABLE_AT) from exc
 
         if self.action is PrivateBacktestUserViewRevisionAction.WITHDRAW:
-            if self.view is not None or self.instrument_ids != ():
+            if self.view is not None or type(self.instrument_ids) is not tuple or self.instrument_ids != ():
                 raise ValueError(_ERR_WITHDRAW)
             return
 
