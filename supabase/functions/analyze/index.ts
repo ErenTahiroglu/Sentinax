@@ -14,22 +14,37 @@ serve(async (req) => {
   }
 
   try {
+    const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
+
+    // User-scoped client: carries ONLY the caller's JWT. It is the sole authority for who the caller is (auth.getUser) and for any operation whose
+    // authority depends on auth.uid() / RLS (e.g. the allowed_assets read below).
     const supabaseClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
+      supabaseUrl,
       Deno.env.get('SUPABASE_ANON_KEY') ?? '',
       { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
     )
 
+    // Trusted server-side client (platform-injected secret credential, never hard-coded, logged, returned or taken from the request). It is used ONLY for the two
+    // service-only database primitives below (rate-limit consumption and Vault key retrieval); it never replaces user authentication.
+    const adminClient = createClient(
+      supabaseUrl,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+      { auth: { persistSession: false, autoRefreshToken: false } }
+    )
+
     // --- 2. BYOK Auth Logic ---
     let geminiApiKey = req.headers.get('x-gemini-key')
-    let userIdentifier = req.headers.get('x-forwarded-for') || 'anonymous'
+    // Server-derived rate-limit identity: never a caller-supplied bucket name. Namespaced so an IP string can never collide with a user id.
+    const forwardedFor = (req.headers.get('x-forwarded-for') || '').split(',')[0].trim().slice(0, 128)
+    let userIdentifier = `ip:${forwardedFor || 'anonymous'}`
 
     if (!geminiApiKey) {
-      // Check if user is authenticated via JWT
+      // Check if user is authenticated via JWT (verified by the auth server, not trusted from the request body)
       const { data: { user } } = await supabaseClient.auth.getUser()
       if (user) {
-        userIdentifier = user.id
-        const { data: decryptedKey, error: vaultError } = await supabaseClient.rpc('get_user_api_key')
+        userIdentifier = `user:${user.id}`
+        // Decrypted Vault material is retrieved only server-side, for the id verified above.
+        const { data: decryptedKey, error: vaultError } = await adminClient.rpc('get_user_api_key_for_service', { p_user_id: user.id })
         if (vaultError || !decryptedKey) {
           throw new Error('API Key not found in Vault. Please configure your key.')
         }
@@ -45,7 +60,8 @@ serve(async (req) => {
     }
 
     // --- 3. Distributed Rate Limiting (15 RPM) ---
-    const { data: rateLimitPassed, error: rateError } = await supabaseClient.rpc('consume_rate_limit', {
+    // Capacity and refill rate are fixed inside the service-only database function; only the server-derived identifier is passed.
+    const { data: rateLimitPassed, error: rateError } = await adminClient.rpc('consume_rate_limit', {
       p_identifier: userIdentifier
     })
     

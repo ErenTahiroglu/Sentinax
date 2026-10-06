@@ -198,6 +198,13 @@ jobs:
           backend/tests/test_portfolio_fee_tax_service.py \
           -q --disable-socket
 
+    # Phase 27 FIX D: SQL-text and Edge Function source-contract tests (the real PostgreSQL privilege/RLS/atomicity regression is the separate PostgreSQL step below).
+    - name: Phase 27 Supabase security schema and Edge Function contract
+      run: |
+        python -m pytest \
+          backend/tests/test_supabase_security_advisor_schema.py \
+          -q --disable-socket
+
     - name: Phase 15A temporal and risk context correctness
       run: |
         python -m pytest \
@@ -396,4 +403,13 @@ jobs:
       run: |
         python -m pytest \
           backend/tests/test_portfolio_trigger_privilege_postgres.py \
+          -v -s
+
+    # Real PostgreSQL: executes the REAL migrations 001 through 028 (rate_limits RLS, consume_rate_limit ACL/atomicity, Vault retrieval, SECURITY DEFINER and search_path inventories).
+    - name: Phase 27 PostgreSQL Supabase security advisor regression
+      env:
+        SENTINAX_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/sentinax_concurrency
+      run: |
+        python -m pytest \
+          backend/tests/test_supabase_security_advisor_postgres.py \
           -v -s
