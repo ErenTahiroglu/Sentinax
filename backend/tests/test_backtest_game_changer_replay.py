@@ -401,11 +401,11 @@ def test_no_clock_random_hash_io_or_generated_identity() -> None:
     assert not [n for n in ast.walk(_TREE) if isinstance(n, (ast.Global, ast.Nonlocal, ast.AsyncFunctionDef, ast.Await, ast.Try))]
 
 
-def test_c2c2_is_not_a_dependency_and_module_is_outside_the_pure_manifest() -> None:
+def test_d1_has_no_c2c2_dependency_and_module_is_outside_the_pure_manifest() -> None:
     assert _REL not in sg.PURE_MANIFEST
-    root = Path(__file__).resolve().parents[2]
-    assert not (root / "backend" / "engine" / "private" / "backtest_market_data_selected_observation.py").exists()
-    assert "c2c2" not in _PATH.read_text(encoding="utf-8").lower().replace("c2c2 remains deferred", "")
+    source = _PATH.read_text(encoding="utf-8")
+    assert "backtest_market_data_selected_observation" not in source and "selected_observation" not in _names()
+    assert "c2c2" not in source.lower().replace("c2c2 remains deferred", "")
 
 
 def test_documentation_and_ci_wiring() -> None:

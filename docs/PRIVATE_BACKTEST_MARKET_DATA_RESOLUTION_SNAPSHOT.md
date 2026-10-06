@@ -56,5 +56,5 @@ C2C1 is provenance capture, not a completeness judgment. There is no notion of r
 ## Deferred
 
 - C2B2B3 real PostgreSQL concurrent-writer verification is closed (verified by a real PostgreSQL integration test in CI).
-- C2C2 typed selected-observation reconstruction is deferred unless later decision replay actually needs it.
+- C2C2 is implemented because the upcoming D3 marked-portfolio-state replay creates the first real typed selected-observation consumer (see `docs/PRIVATE_BACKTEST_MARKET_DATA_SELECTED_OBSERVATION.md`).
 - C2D user-view historical provenance, C2E completeness, Phase 26D onward are not part of this checkpoint.
