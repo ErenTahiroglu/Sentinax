@@ -166,6 +166,60 @@ def test_investable_cash_is_an_explicit_input_not_inferred() -> None:
     assert plan.total_wealth == 100  # only the supplied investable cash is part of the rebalance wealth
 
 
+# --- Phase 26D4A: an EMPTY current universe represents cash-only; the target stays non-empty ------------------------
+
+@pytest.mark.parametrize("cash", ["0", "100", "0.000000000000000000000000001"])
+def test_empty_current_state_with_zero_or_positive_cash_is_accepted(cash) -> None:
+    state = RebalanceCurrentState(instrument_ids=(), current_values=(), investable_cash=D(cash), currency=Currency.TRY)
+    assert state.instrument_ids == () and state.current_values == () and state.investable_cash == D(cash) and state.currency is Currency.TRY
+    assert _state([], [], cash, Currency.USD).currency is Currency.USD
+
+
+def test_empty_ids_with_values_and_nonempty_ids_with_mismatched_values_are_rejected_as_before() -> None:
+    with pytest.raises(ValueError):
+        RebalanceCurrentState(instrument_ids=(), current_values=(D(1),), investable_cash=D(0), currency=Currency.TRY)
+    with pytest.raises(ValueError):
+        RebalanceCurrentState(instrument_ids=(A, B), current_values=(), investable_cash=D(0), currency=Currency.TRY)
+    with pytest.raises(ValueError):
+        RebalanceCurrentState(instrument_ids=(A,), current_values=(D(1), D(1)), investable_cash=D(0), currency=Currency.TRY)
+    for bad in (None, [], [A], "ab", (A, str(B)), (A, 2), (True,)):
+        with pytest.raises(TypeError):
+            RebalanceCurrentState(instrument_ids=bad, current_values=(), investable_cash=D(0), currency=Currency.TRY)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        RebalanceCurrentState(instrument_ids=(), current_values=[], investable_cash=D(0), currency=Currency.TRY)  # type: ignore[arg-type]
+    for bad_cash in (D("-1"), D("NaN"), D("-0")):
+        with pytest.raises(ValueError):
+            RebalanceCurrentState(instrument_ids=(), current_values=(), investable_cash=bad_cash, currency=Currency.TRY)
+    with pytest.raises(TypeError):
+        RebalanceCurrentState(instrument_ids=(), current_values=(), investable_cash=5, currency=Currency.TRY)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        RebalanceCurrentState(instrument_ids=(), current_values=(), investable_cash=D(5), currency="TRY")  # type: ignore[arg-type]
+
+
+def test_nonempty_current_state_ordering_and_uniqueness_invariants_are_unchanged() -> None:
+    with pytest.raises(ValueError):
+        _state([B, A], ["1", "1"])
+    with pytest.raises(ValueError):
+        _state([A, A], ["1", "1"])
+    assert _state([A, B], ["1", "2"], "3").instrument_ids == (A, B)
+
+
+def test_the_target_allocation_universe_must_remain_non_empty() -> None:
+    for weights in ((), (D(1),)):
+        with pytest.raises((TypeError, ValueError)):
+            RebalanceTargetAllocation(instrument_ids=(), weights=weights)
+    assert "non-empty" in module_under_test._ERR_IDS_TYPE                                                    # the shared validator keeps its non-empty contract
+
+
+def test_cash_first_builder_never_repairs_an_empty_current_universe_against_a_target() -> None:
+    target = _target([A, B], ["0.5", "0.5"])
+    for cash in ("0", "100"):
+        with pytest.raises(ValueError, match=ERR_UNIVERSE):
+            build_cash_first_rebalance_plan(target=target, state=_state([], [], cash))
+    with pytest.raises(ValueError, match=ERR_UNIVERSE):
+        build_cash_first_rebalance_plan(target=_target([A], ["1"]), state=_state([], [], "50"))
+
+
 # --- builder / same-universe / wealth ----------------------------------------------------------------------------
 
 def test_builder_is_keyword_only_with_exact_types_and_no_policy_parameters() -> None:

@@ -58,6 +58,7 @@ from backend.engine.private.domain import Currency
 
 _ERR_IDS_TYPE = "instrument_ids must be a non-empty tuple of exact UUID instances"
 _ERR_IDS_VALUE = "instrument_ids must be unique and in canonical ascending UUID string order"
+_ERR_CURRENT_IDS_TYPE = "current-state instrument_ids must be a tuple (possibly empty) of exact UUID instances"
 _ERR_WEIGHTS_TYPE = "weights must be a tuple of exact Decimal instances"
 _ERR_WEIGHTS_SHAPE = "weights must match instrument_ids exactly"
 _ERR_WEIGHTS_RANGE = "weights must be finite unsigned Decimals with 0 <= weight <= 1"
@@ -154,6 +155,15 @@ def _validate_ids(ids: object) -> None:
         raise ValueError(_ERR_IDS_VALUE)
 
 
+def _validate_current_ids(ids: object) -> None:
+    """Current-state ids only: identical to `_validate_ids` except that the EMPTY tuple is allowed (a cash-only portfolio with no represented holding)."""
+    if type(ids) is not tuple or any(type(i) is not UUID for i in ids):
+        raise TypeError(_ERR_CURRENT_IDS_TYPE)
+    keys = [str(i) for i in ids]
+    if len(set(keys)) != len(keys) or keys != sorted(keys):
+        raise ValueError(_ERR_IDS_VALUE)
+
+
 class RebalanceTradeStage(Enum):
     CASH_FUNDED_BUY = "cash_funded_buy"
     SELL = "sell"
@@ -184,14 +194,14 @@ class RebalanceTargetAllocation:
 
 @dataclass(frozen=True)
 class RebalanceCurrentState:
-    """Explicit marked current values and already-classified investable cash, all in one currency."""
+    """Explicit marked current values and already-classified investable cash, all in one currency. The universe may be empty (cash only); a target never may."""
     instrument_ids: tuple[UUID, ...]
     current_values: tuple[Decimal, ...]
     investable_cash: Decimal
     currency: Currency
 
     def __post_init__(self) -> None:
-        _validate_ids(self.instrument_ids)
+        _validate_current_ids(self.instrument_ids)
         if type(self.current_values) is not tuple or any(type(v) is not Decimal for v in self.current_values):
             raise TypeError(_ERR_VALUES_TYPE)
         if len(self.current_values) != len(self.instrument_ids):

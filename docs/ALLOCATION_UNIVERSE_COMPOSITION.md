@@ -85,6 +85,13 @@ rejects any forged weight, value, universe, cash, currency or alternative repres
 `build_cash_first_rebalance_plan` and, with caller-supplied same-universe `RebalanceBandPolicy` / `RebalanceFrictionProfile`, by
 `build_band_aware_rebalance_plan`. Phase 22A constructs neither of those and chooses no band or friction rate.
 
+### Cash-only current state (Phase 26D4A)
+
+A cash-only `RebalanceCurrentState` (`current_ids = ()`) is now representable. Then `target_only` is all target candidates, so `confirmed_zero_current_value_instrument_ids` must contain exactly all
+target candidate ids (missing, empty, extra, stale or unordered confirmations fail) and `authorized_exit_instrument_ids` must be empty. Phase 22 then constructs the non-empty reconciled target/state
+universe with exact zero current values and the source investable cash and currency preserved. There is no implicit confirmation: being cash-only never by itself says the candidates have a verified
+zero current value. Production composition logic is unchanged.
+
 ### Exact arithmetic
 
 All sums and products are context-free exact coefficient arithmetic (Phase 21A helpers); no ambient Decimal context, no division, no

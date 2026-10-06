@@ -283,6 +283,60 @@ def test_phase_21b_accepts_the_outputs_with_caller_supplied_same_universe_object
     assert band.is_triggered and band.post_trade_cash == 0 and band.target is plan.rebalance_target and band.state is plan.rebalance_state
 
 
+# --- Phase 26D4A: cash-only current state (empty universe) composes only with FULL explicit zero-current confirmation ---
+
+def _cash_only(cash="40"):
+    sleeves = (_sleeve(EQ, "0.60", [UA, UB], ["0.70", "0.30"]), _sleeve(FI, "0.40", [UC, UD], ["0.25", "0.75"]))
+    return _state([], [], cash), sleeves
+
+
+def test_cash_only_state_with_the_full_zero_confirmation_composes_a_nonempty_zero_valued_pair() -> None:
+    state, sleeves = _cash_only("40")
+    plan = build_cross_asset_composition_plan(current_state=state, sleeves=sleeves, authority=_authority(zero=[UA, UB, UC, UD]))
+    assert plan.current_state is state
+    assert plan.rebalance_target.instrument_ids == plan.rebalance_state.instrument_ids == (UA, UB, UC, UD) == plan.target_candidate_instrument_ids
+    assert plan.rebalance_target.weights == (D("0.42"), D("0.18"), D("0.10"), D("0.30"))
+    assert plan.rebalance_state.current_values == (D(0), D(0), D(0), D(0)) and all(type(v) is D and not v.is_signed() for v in plan.rebalance_state.current_values)
+    assert plan.rebalance_state.investable_cash.as_tuple() == D("40").as_tuple() and plan.rebalance_state.currency is Currency.TRY
+    assert plan.target_only_zero_confirmed_instrument_ids == (UA, UB, UC, UD) and plan.current_only_exit_instrument_ids == ()
+    forged = CrossAssetCompositionPlan(current_state=state, sleeves=sleeves, authority=plan.authority, rebalance_target=plan.rebalance_target,
+                                       rebalance_state=plan.rebalance_state)
+    assert forged == plan
+
+
+def test_cash_only_composition_needs_every_target_candidate_confirmed_and_no_exit_authority() -> None:
+    state, sleeves = _cash_only()
+    for zero in ([], [UA, UB, UC], [UB, UC, UD], [UA, UB, UC, UD, UE], [UA, UB, UC, UD, UUID(int=99)]):
+        with pytest.raises(ValueError):
+            build_cross_asset_composition_plan(current_state=state, sleeves=sleeves, authority=_authority(zero=zero))     # missing, empty, extra or stale: never inferred
+    with pytest.raises(ValueError):                                                                                    # unordered confirmation never repaired
+        build_cross_asset_composition_plan(current_state=state, sleeves=sleeves, authority=_authority(zero=[UB, UA, UC, UD]))
+    for exits in ([UE], [UA], [UA, UE]):
+        with pytest.raises(ValueError):                                                                                # nothing is held, so nothing can be exited
+            build_cross_asset_composition_plan(current_state=state, sleeves=sleeves, authority=_authority(zero=[UA, UB, UC, UD], exits=exits))
+
+
+def test_cash_only_status_alone_never_implies_zero_current_confirmation() -> None:
+    state, sleeves = _cash_only()
+    with pytest.raises(ValueError):
+        build_cross_asset_composition_plan(current_state=state, sleeves=sleeves, authority=_authority())
+
+
+def test_cash_only_pair_is_consumed_normally_by_phase_21a_and_zero_wealth_still_fails_there() -> None:
+    state, sleeves = _cash_only("40")
+    plan = build_cross_asset_composition_plan(current_state=state, sleeves=sleeves, authority=_authority(zero=[UA, UB, UC, UD]))
+    result = build_cash_first_rebalance_plan(target=plan.rebalance_target, state=plan.rebalance_state)
+    S = RebalanceTradeStage
+    assert [(t.instrument_id, t.stage, t.notional) for t in result.trades] == [
+        (UA, S.CASH_FUNDED_BUY, D("16.80")), (UB, S.CASH_FUNDED_BUY, D("7.20")), (UC, S.CASH_FUNDED_BUY, D("4.00")), (UD, S.CASH_FUNDED_BUY, D("12.00"))]
+    assert result.post_trade_cash == 0 and sum((t.notional for t in result.trades), D(0)) == D("40")
+    zero_state, _ = _cash_only("0")
+    zero_plan = build_cross_asset_composition_plan(current_state=zero_state, sleeves=sleeves, authority=_authority(zero=[UA, UB, UC, UD]))       # composition itself works
+    assert zero_plan.rebalance_state.investable_cash == 0
+    with pytest.raises(ValueError, match="rebalance total wealth must be strictly positive"):                                                     # no funding is invented
+        build_cash_first_rebalance_plan(target=zero_plan.rebalance_target, state=zero_plan.rebalance_state)
+
+
 # --- forge resistance --------------------------------------------------------------------------------------------
 
 def _forge(good, **changes) -> CrossAssetCompositionPlan:

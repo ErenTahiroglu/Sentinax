@@ -26,15 +26,17 @@ The closed Phase 21 type validates its own fields; they are not duplicated here.
 
 ## Exact held-instrument universe only
 
-The universe is strictly the currently marked open holdings. no target (no `RebalanceTargetAllocation`), no candidate additions, no exit inference (a held instrument is neither keep, sell nor target
+The universe is strictly the currently marked open holdings (possibly empty). no target (no `RebalanceTargetAllocation`), no candidate additions, no exit inference (a held instrument is neither keep, sell nor target
 zero; an exit needs explicit authority at the later Phase 22 composition boundary) and no zero-current target-only candidates (those need D2 target-candidate authority and a `CrossUniverseAuthority`,
 which D3C has neither of). One holding is valid; no diversification is required; zero investable cash with holdings is valid (known classified cash, not missing).
 
 ## Cash-only portfolios
 
-A portfolio with no marked holding **fails closed** here, whether its investable cash is zero or positive. That is representational, not an investment-policy verdict: the Phase 21 current-state
-universe must be non-empty, and D3C refuses to invent an instrument id, a dummy cash instrument or a candidate. A cash-only portfolio is not invalid; the later cross-universe replay must solve it with
-explicit target-candidate authority.
+D3C can now represent a cash-only portfolio (no marked holding) with empty instrument_ids, i.e. an empty instrument universe: `instrument_ids == ()` and `current_values == ()`, the exact D3B investable cash and the D3A valuation
+currency, in the same closed Phase 21 type (the current-state id validator allows the empty tuple; targets stay non-empty). This is representation only. The empty `instrument_ids` mean no currently marked
+open holdings; they do not mean no investable candidate exists, that no target should exist, that cash should stay cash, or that any candidate is confirmed to have zero current value. There is no dummy
+or sentinel instrument, no candidate or target inference, and no cross-universe logic here: Phase 22 later requires an explicit zero-current confirmation for every target candidate (an empty current state
+cannot be paired directly with a non-empty target in Phase 21A/21B, which perform no universe repair).
 
 ## Decimal representation is preserved
 
@@ -50,4 +52,4 @@ no rebalance (no cash-first or band-aware plan, no trade, no weight drift or tri
 ## Next
 
 The next boundary (Phase 26D4: historical cross-universe target and state composition from the D2 eligible sleeves, this held-universe state and an explicit `CrossUniverseAuthority`) starts only after an
-independent Red Team of D3C. Its critical open case is the cash-only portfolio.
+independent Red Team of D3C. For a cash-only portfolio its confirmed zero-current ids must be exactly all target candidates.

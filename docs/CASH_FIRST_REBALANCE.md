@@ -104,6 +104,13 @@ no PortfolioTransaction / ledger event, no persistence, no API or frontend
 no allocation optimizer call and no decision about the target
 ```
 
+### Empty current universe (cash-only), Phase 26D4A
+
+`RebalanceCurrentState` may now have an empty instrument universe (`instrument_ids == ()`, `current_values == ()`, a non-negative `investable_cash` and an explicit currency): it represents a cash-only
+current state with no represented holding. The change is confined to the current-state id validation (`_validate_current_ids`); the shared non-empty `_validate_ids` is untouched, so
+`RebalanceTargetAllocation` (and the 21B band policy, the friction profile and the Phase 22 sleeve) must still be non-empty. Phase 21A itself performs no universe repair, so an empty current state
+cannot be paired directly with a non-empty target: `build_cash_first_rebalance_plan` and the 21B builder still fail the same-universe invariant. Phase 22 composition is the intended bridge.
+
 ## Phase 21B: band-aware rebalance policy
 
 Module: `backend/engine/private/allocation_rebalance_policy.py` (pure, in the static-guard `PURE_MANIFEST`; imports only the Phase

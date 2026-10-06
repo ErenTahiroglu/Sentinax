@@ -44,4 +44,4 @@ D3B does not build RebalanceCurrentState and does not compose or rebalance.
 ## Next
 
 D3C consumes D3B's classified investable cash together with D3A marked holdings to construct the held-universe Phase 21 RebalanceCurrentState (`docs/PRIVATE_BACKTEST_REBALANCE_CURRENT_STATE.md`), built after
-an independent Red Team of D3B. cash-only portfolios remain deferred to the later explicit cross-universe composition boundary.
+an independent Red Team of D3B. D3C can now carry cash-only as an empty-universe current state. Target candidates are still deferred to Phase 22/D4B explicit cross-universe composition.

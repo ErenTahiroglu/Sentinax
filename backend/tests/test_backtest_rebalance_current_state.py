@@ -189,17 +189,42 @@ def test_currency_is_the_d3a_valuation_currency_and_foreign_raw_cash_does_not_ap
     assert {f.name for f in dataclasses.fields(result)} == {"instrument_ids", "current_values", "investable_cash", "currency"}
 
 
-# --- R-T: cash-only is a representational limit --------------------------------------------------------------------------------
+# --- Phase 26D4A: cash-only is now representable as an EMPTY universe (representation only) ----------------------------------
 
 @pytest.mark.parametrize("amount", ["0", "40"])
-def test_cash_only_portfolio_fails_closed_because_the_phase_21_universe_cannot_be_empty(amount) -> None:
+def test_cash_only_portfolio_produces_the_canonical_empty_current_state(amount) -> None:
     selection = cash_only_selection(amount)
     assert selection.marked_holdings_state.marked_positions == ()
-    with pytest.raises(ValueError) as info:
-        compose(selection)
-    assert "held" in str(info.value) and "empty" in str(info.value)                 # states the representational limitation, not an investment-policy verdict
+    result = compose(selection)
+    state = result.current_state
+    assert type(state) is RebalanceCurrentState and result.investable_cash_selection is selection
+    assert state.instrument_ids == () and state.current_values == ()                                         # no dummy cash instrument, no sentinel, no inferred candidate
+    assert state.investable_cash.as_tuple() == selection.investable_cash.as_tuple() and state.investable_cash == D(amount)
+    assert state.currency is selection.marked_holdings_state.valuation_currency is TRY
+    independent = RebalanceCurrentState(instrument_ids=(), current_values=(), investable_cash=selection.investable_cash, currency=TRY)
+    assert direct(selection, independent) == result
+
+
+def test_cash_only_direct_construction_rejects_forged_holdings_dummies_cash_and_currency() -> None:
+    selection = cash_only_selection("40")
+    holdings = holdings_selection("100")
+    with pytest.raises(ValueError):
+        direct(selection, expected_state(holdings))                                                          # a forged non-empty holding in a cash-only selection
+    for dummy in (UUID(int=0), UUID(int=1), I1):
+        with pytest.raises(ValueError):
+            direct(selection, RebalanceCurrentState(instrument_ids=(dummy,), current_values=(D("0"),), investable_cash=selection.investable_cash, currency=TRY))
+        with pytest.raises(ValueError):
+            direct(selection, RebalanceCurrentState(instrument_ids=(dummy,), current_values=(D("1"),), investable_cash=selection.investable_cash, currency=TRY))
+    with pytest.raises(ValueError):
+        direct(selection, RebalanceCurrentState(instrument_ids=(), current_values=(), investable_cash=D("41"), currency=TRY))
+    with pytest.raises(ValueError):
+        direct(selection, RebalanceCurrentState(instrument_ids=(), current_values=(), investable_cash=selection.investable_cash, currency=USD))
+    with pytest.raises(ValueError):
+        direct(selection, RebalanceCurrentState(instrument_ids=(), current_values=(), investable_cash=other_representation(selection.investable_cash), currency=TRY))
+    with pytest.raises(ValueError):                                                                          # and an empty state can never stand in for a held portfolio
+        direct(holdings, RebalanceCurrentState(instrument_ids=(), current_values=(), investable_cash=holdings.investable_cash, currency=TRY))
     with pytest.raises((TypeError, ValueError)):
-        RebalanceCurrentState(instrument_ids=(), current_values=(), investable_cash=D(amount), currency=TRY)        # the closed type itself cannot represent it
+        RebalanceCurrentState(instrument_ids=(), current_values=(D("1"),), investable_cash=D("0"), currency=TRY)    # a value without an id cannot exist
 
 
 # --- U-AF: direct construction -----------------------------------------------------------------------------------------------
@@ -345,12 +370,14 @@ def test_documentation_and_ci_wiring() -> None:
     root = Path(__file__).resolve().parents[2]
     doc = (root / "docs" / "PRIVATE_BACKTEST_REBALANCE_CURRENT_STATE.md").read_text(encoding="utf-8")
     for needle in ("input-composition boundary", "historical marked values", "counterfactual", "not claimed", "held-instrument universe", "no target", "no candidate additions",
-                   "no exit inference", "no zero-current", "Decimal representation", "zero investable cash", "cash-only", "representational", "cross-universe", "no FX",
-                   "no rebalance"):
+                   "no exit inference", "no zero-current", "Decimal representation", "zero investable cash", "cash-only", "empty instrument_ids", "representation only",
+                   "explicit zero-current confirmation", "no dummy", "no FX", "no rebalance"):
         assert needle in doc, needle
     cash = (root / "docs" / "PRIVATE_BACKTEST_INVESTABLE_CASH.md").read_text(encoding="utf-8")
     assert "D3C consumes D3B's classified investable cash together with D3A marked holdings to construct the held-universe Phase 21 RebalanceCurrentState" in cash
-    assert "cash-only portfolios remain deferred to the later explicit cross-universe composition boundary" in cash
+    assert "D3C can now carry cash-only as an empty-universe current state" in cash
+    assert "Target candidates are still deferred to Phase 22/D4B explicit cross-universe composition" in cash
+    assert "cash-only portfolios remain deferred to the later explicit cross-universe composition boundary" not in cash
     ci = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     architecture = ci.split("Phase 26 backtest architecture correctness", 1)[1].split("- name:", 1)[0]
     assert "backend/tests/test_backtest_rebalance_current_state.py" in architecture
