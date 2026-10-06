@@ -34,4 +34,4 @@ content. Caller tuple order does not matter; a different manifest order does.
 Stores only the exact projection binding, the owner and the database `observed_at` (kept as parsed; UTC only for comparison; the database is the clock authority).
 It can be built only with a module-private capability: a Python application trust boundary, not cryptographic provenance (anyone with access to the module internals
 could forge it). It is valid as observed at `observed_at`, not permanent finality, and relies on the trusted service-role write boundary (migration 025). Real
-concurrent-writer behavioral verification is deferred to C2B2B3; remote CI does not run these tests yet.
+concurrent-writer behavioral verification: C2B2B3 verified by real PostgreSQL integration test (docs/PORTFOLIO_TRANSACTION_HISTORY_COVERAGE_CONCURRENCY.md).

@@ -42,5 +42,5 @@ relation. EXECUTE is revoked from PUBLIC, anon and authenticated and granted to 
 
 This is not a permanent finality claim. It proves the committed rows visible after the SHARE lock through the cutoff and relies on the trusted service-role
 write boundary of migration 025; it does not cryptographically prevent a trusted or misconfigured service-role writer from inserting a backdated row after the
-proof finished. The Python RPC transport and reconciliation against the supplied history are deferred to C2B2B2; real concurrent-writer behavioral verification
-is deferred to a later checkpoint. Supabase Preview proves the migration applies, not concurrency behavior; remote Backend CI does not run the schema test yet.
+proof finished. The Python RPC transport and reconciliation against the supplied history are deferred to C2B2B2; real concurrent-writer behavioral verification:
+C2B2B3 verified by real PostgreSQL integration test (docs/PORTFOLIO_TRANSACTION_HISTORY_COVERAGE_CONCURRENCY.md). Supabase Preview proves the migration applies, not concurrency behavior.

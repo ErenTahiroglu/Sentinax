@@ -40,6 +40,22 @@ jobs:
     name: Backend Correctness Gate
     runs-on: ubuntu-latest
 
+    # Disposable PostgreSQL for the Phase 26 real concurrent-writer test only (no production credentials).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: sentinax_concurrency
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d sentinax_concurrency"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -236,3 +252,13 @@ jobs:
         python -m pytest \
           backend/tests/test_precious_metals.py \
           -q
+
+    # Real PostgreSQL (no --disable-socket). The test-only driver is installed here, never in backend/requirements.txt.
+    - name: Phase 26 PostgreSQL history-coverage concurrency
+      env:
+        SENTINAX_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/sentinax_concurrency
+      run: |
+        python -m pip install "psycopg[binary]==3.3.6"
+        python -m pytest \
+          backend/tests/test_portfolio_transaction_history_coverage_postgres.py \
+          -v -s
