@@ -237,6 +237,7 @@ jobs:
           backend/tests/test_backtest_game_changer_replay.py \
           backend/tests/test_backtest_candidate_eligibility_replay.py \
           backend/tests/test_backtest_market_data_selected_observation.py \
+          backend/tests/test_backtest_marked_holdings.py \
           backend/tests/test_portfolio_transaction_write_surface_hardening_schema.py \
           backend/tests/test_portfolio_transaction_history_coverage_schema.py \
           -q --disable-socket

@@ -71,5 +71,5 @@ holds a strictly typed representative whose stored semantics are internally comp
 
 ## Next
 
-C2C2 alone does not create portfolio valuation. D3A (historical marked portfolio current state: ledger quantities and cash, these typed observations, explicit valuation-price and
-currency policy, fail-closed missing prices) starts only after an independent Red Team of C2C2.
+C2C2-R1 is now consumed by D3A marked-holdings construction, after its independent Red Team closure (`docs/PRIVATE_BACKTEST_MARKED_HOLDINGS.md`). C2C2 selects/reconstructs observations; D3A owns the explicit valuation-field choice
+(BIST close, Global close, TEFAS fund unit price), the valuation currency, the exact evaluation date and the positive-price rule. C2C2 alone still creates no portfolio valuation.
