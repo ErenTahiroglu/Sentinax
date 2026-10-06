@@ -29,6 +29,26 @@ so malformed selected JSON cannot be wrapped.
   offset only when the stored payload round-trips unchanged; compared only where the observation carries `retrieved_at`); effective date (None for current metrics); query semantics
   (the closed `PreciousMetalSemanticKey.matches`; the Global provider by the closed resolver's own query rule); provider; and confidence, exactly.
 
+## SELECTED eligibility (R1)
+
+Note that payload type validity is insufficient: `_enum(...)` accepts any legitimate enum member, so a directly constructed C2C1 envelope (C2C1 validates only the envelope) could otherwise carry
+top-level SELECTED over an `INVALID_OBSERVATION` or a missing price. Top-level SELECTED requires **surface-specific observation eligibility**, which C2C2 validates against the closed
+resolver's final observation-eligibility invariants without running the resolver (no selection, no source snapshots, no conflict logic, no provider lookup, no fallback):
+
+| Kind | Required |
+|---|---|
+| BIST_EOD | status VALID; `close` present and finite (no positivity rule: the closed resolver has none) |
+| GLOBAL_EOD | status VALID; `close` present and finite (`adj_close` is not required and is not a valuation authority) |
+| TEFAS_FUND_PRICE | status VALID; unit price present, finite and > 0; currency present; instrument type in the five closed TEFAS types |
+| TEFAS_CURRENT_METRICS | status VALID; portfolio size present, finite, >= 0; portfolio-size currency TRY; allowed TEFAS type; outstanding units None or finite >= 0; investor count None or int >= 0; `retrieved_at` present and the same instant as the top-level snapshot retrieval (the existing None `effective_date` / `published_at` rules remain; the diagnostic reported price is not required) |
+| PRECIOUS_METAL | status VALID; price present and finite (no positivity rule); `query_key.matches` stays the closed semantic authority |
+
+The local TEFAS allowed-type set is restated here so this module never imports the resolver; a test asserts it equals the resolver's `TEFAS_RESOLVER_ALLOWED_INSTRUMENT_TYPES` exactly.
+This prevents a directly constructed C2C1 envelope from turning an invalid observation into a typed SELECTED price.
+
+**Claim limit:** C2C2 still does not recompute the resolver resolution key and does not prove the resolver was actually called. Its claim is only that the immutable C2C1 SELECTED envelope
+holds a strictly typed representative whose stored semantics are internally compatible with a closed resolver SELECTED outcome. D3A may rely on C2C2 only after this R1 closure.
+
 ## Limits and safety
 
 - **BIST `raw_provider_symbol`:** `to_dict()` emits `raw_provider_symbol or symbol`, so an original None cannot be told from a value equal to the symbol. The representative takes the

@@ -19,6 +19,11 @@ metrics); query semantics (the closed `PreciousMetalSemanticKey.matches`; the Gl
 confidence. Confidence has two layers: the observation's own and the closed resolver's. For BIST and precious metal the resolver degrades HIGH to MEDIUM when the source snapshot is a
 stale discovery, otherwise the two agree; the other kinds never degrade. C2C2 validates that stored relationship and never promotes, degrades or recomputes either value.
 
+Top-level SELECTED also requires the closed resolver's final observation-eligibility conditions per surface (valid observation status and a finite price field; TEFAS price additionally positive
+with a currency and an allowed TEFAS instrument type; TEFAS metrics a finite non-negative TRY portfolio size, an allowed type, optional non-negative units and count and an exact retrieval lineage),
+validated without running the resolver. The resolution key is NOT recomputed, so this still does not prove the resolver was actually called: the claim is only that the immutable C2C1
+SELECTED envelope holds a strictly typed representative whose stored semantics are compatible with a closed resolver SELECTED outcome.
+
 No resolver replay, no source snapshots, no fallback of any kind and no valuation arithmetic. Which field is a portfolio valuation price (and TEFAS `reported_current_unit_price`,
 which stays diagnostic) is deliberately NOT decided here: that policy belongs to a later portfolio valuation adapter. A precious-metal observation is a dimensioned market reference,
 not automatically a portfolio instrument. Non-pure by dependency composition; no I/O, clock, randomness, UUID or hash generation.
@@ -53,6 +58,7 @@ _ERR_TOP = "top-level SELECTED resolution fields are missing or malformed"
 _ERR_VALUE = "selected observation payload holds a malformed value"
 _ERR_ROUND_TRIP = "reconstructed observation does not round-trip to the stored selected observation payload exactly"
 _ERR_CONSISTENCY = "reconstructed observation contradicts the top-level resolution result or the query key"
+_ERR_INELIGIBLE = "reconstructed observation is not eligible for a SELECTED result under the closed resolver's final observation-eligibility conditions"
 
 
 def _fail(message: str) -> ValueError:
@@ -200,6 +206,11 @@ _PROVIDER_ATTRIBUTE = {
     PrivateBacktestMarketDataKind.TEFAS_FUND_PRICE: "provider", PrivateBacktestMarketDataKind.TEFAS_CURRENT_METRICS: "provider",
     PrivateBacktestMarketDataKind.PRECIOUS_METAL: "provider",
 }
+# The closed resolver's TEFAS_RESOLVER_ALLOWED_INSTRUMENT_TYPES, restated locally so this module never imports the resolver (a test asserts exact equality).
+_TEFAS_ALLOWED_INSTRUMENT_TYPES = frozenset({
+    InstrumentType.TEFAS_FUND, InstrumentType.TEFAS_EQUITY, InstrumentType.TEFAS_MONEY_MARKET, InstrumentType.TEFAS_VARIABLE, InstrumentType.TEFAS_BALANCED,
+})
+_ZERO = Decimal("0")
 _STALE_DEGRADING_KINDS = frozenset({PrivateBacktestMarketDataKind.BIST_EOD, PrivateBacktestMarketDataKind.PRECIOUS_METAL})
 _INSTRUMENT_KINDS = frozenset({
     PrivateBacktestMarketDataKind.BIST_EOD, PrivateBacktestMarketDataKind.GLOBAL_EOD, PrivateBacktestMarketDataKind.TEFAS_FUND_PRICE,
@@ -210,6 +221,41 @@ _INSTRUMENT_KINDS = frozenset({
 def _check(condition: bool) -> None:
     if not condition:
         raise _fail(_ERR_CONSISTENCY)
+
+
+def _finite(value: object) -> bool:
+    return value is not None and value.is_finite()
+
+
+def _check_eligibility(kind: PrivateBacktestMarketDataKind, representative: SelectedObservation, snapshot_retrieved_at: datetime) -> None:
+    """Validate (never resolve) that the representative could satisfy the closed resolver's FINAL observation-eligibility conditions for a SELECTED result.
+
+    A syntactically valid enum member is not enough: a top-level SELECTED over an INVALID_OBSERVATION or a missing price is an impossible state that the C2C1 envelope
+    deliberately does not judge. Only presence, finiteness, sign and membership are checked; there is no arithmetic and no choice of a valuation field.
+    """
+    if kind is PrivateBacktestMarketDataKind.BIST_EOD:
+        eligible = representative.status is BISTObservationStatus.VALID and _finite(representative.close)
+    elif kind is PrivateBacktestMarketDataKind.GLOBAL_EOD:
+        eligible = representative.status is GlobalObservationStatus.VALID and _finite(representative.close)
+    elif kind is PrivateBacktestMarketDataKind.TEFAS_FUND_PRICE:
+        eligible = (
+            representative.status is TefasObservationStatus.VALID and _finite(representative.unit_price) and representative.unit_price > _ZERO
+            and representative.currency is not None and representative.instrument_type in _TEFAS_ALLOWED_INSTRUMENT_TYPES
+        )
+    elif kind is PrivateBacktestMarketDataKind.TEFAS_CURRENT_METRICS:
+        eligible = (
+            representative.status is TefasObservationStatus.VALID
+            and _finite(representative.portfolio_size) and representative.portfolio_size >= _ZERO
+            and representative.portfolio_size_currency is Currency.TRY
+            and representative.instrument_type in _TEFAS_ALLOWED_INSTRUMENT_TYPES
+            and (representative.outstanding_units is None or (_finite(representative.outstanding_units) and representative.outstanding_units >= _ZERO))
+            and (representative.investor_count is None or representative.investor_count >= 0)
+            and representative.retrieved_at is not None and representative.retrieved_at == snapshot_retrieved_at
+        )
+    else:
+        eligible = representative.status is PreciousMetalObservationStatus.VALID and _finite(representative.price)
+    if not eligible:
+        raise _fail(_ERR_INELIGIBLE)
 
 
 def _reconstruct(snapshot: object) -> SelectedObservation:
@@ -235,6 +281,7 @@ def _reconstruct(snapshot: object) -> SelectedObservation:
     if representative.to_dict() != stored:
         raise _fail(_ERR_ROUND_TRIP)
 
+    _check_eligibility(kind, representative, retrieved_at)
     query = snapshot.query_key
     _check(representative.id == selected_id)
     _check(representative.snapshot_id == snapshot_id and getattr(representative, _HASH_ATTRIBUTE[kind]) == snapshot_hash)

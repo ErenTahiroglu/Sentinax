@@ -524,6 +524,123 @@ def test_no_valuation_price_policy_and_tefas_metrics_price_is_not_promoted() -> 
         assert not any(word in name.lower() for name in public), word
 
 
+# --- R1: top-level SELECTED requires the closed resolver's final observation eligibility --------------------------------
+
+def envelope(snapshot, edit) -> PrivateBacktestMarketDataResolutionSnapshot:
+    """A directly constructed exact C2C1 envelope over edited canonical JSON; C2C1 (envelope authority) must accept it."""
+    edited = rebuild(snapshot, edit)
+    assert type(edited) is PrivateBacktestMarketDataResolutionSnapshot and edited.status is S.SELECTED
+    return edited
+
+
+def ineligible(snapshot, **fields) -> None:
+    edited = envelope(snapshot, lambda p: p["selected_observation"].update(fields))
+    with pytest.raises(ValueError):                                              # C2C2 rejects the impossible SELECTED semantics C2C1 deliberately does not judge
+        wrap(edited)
+
+
+def eligible(snapshot, **fields):
+    edited = envelope(snapshot, lambda p: p["selected_observation"].update(fields))
+    representative = wrap(edited).reconstruct()
+    assert representative.to_dict() == edited.selected_observation_payload()
+    return representative
+
+
+NON_TEFAS_TYPE = None
+
+
+def _non_tefas_instrument_type() -> str:
+    from backend.engine.private.domain import InstrumentType
+    return next(m.value for m in InstrumentType if m not in module_under_test._TEFAS_ALLOWED_INSTRUMENT_TYPES)
+
+
+def test_the_hole_is_real_valid_status_enums_parse_but_are_not_selectable() -> None:
+    parse = module_under_test._enum(__import__("backend.engine.private.bist.models", fromlist=["BISTObservationStatus"]).BISTObservationStatus)
+    assert parse("invalid_observation") is not None                              # syntactically valid enum member: the parser alone accepts it
+    snapshot, _ = selected(bist_case)
+    ineligible(snapshot, status="invalid_observation")                           # ... yet it contradicts a top-level SELECTED and must fail
+
+
+@pytest.mark.parametrize("case", [bist_case, global_case], ids=lambda c: c.__name__)
+def test_bist_and_global_selected_require_a_valid_finite_close(case) -> None:
+    snapshot, _ = selected(case)
+    for status in ("invalid_observation", "unresolved_identity"):
+        ineligible(snapshot, status=status)
+    ineligible(snapshot, close=None)
+    assert wrap(snapshot).reconstruct().close is not None                        # the valid finite SELECTED case stays accepted
+    eligible(snapshot, close="0")                                                # the closed resolver requires finite, not positive: no extra policy
+    eligible(snapshot, close="-1.5")
+
+
+def test_global_adj_close_is_not_required() -> None:
+    snapshot, _ = selected(global_case)
+    eligible(snapshot, adj_close=None)
+
+
+def test_tefas_price_selected_eligibility() -> None:
+    snapshot, _ = selected(tefas_price_case)
+    ineligible(snapshot, status="invalid_observation")
+    ineligible(snapshot, status="rate_limited")
+    ineligible(snapshot, unit_price=None)
+    ineligible(snapshot, unit_price="0")
+    ineligible(snapshot, unit_price="0.0")
+    ineligible(snapshot, unit_price="-1.2345")
+    ineligible(snapshot, currency=None)
+    ineligible(snapshot, instrument_type=None)
+    ineligible(snapshot, instrument_type=_non_tefas_instrument_type())
+    assert wrap(snapshot).reconstruct().unit_price is not None
+
+
+def test_tefas_allowed_instrument_types_equal_the_closed_resolver_constant_exactly() -> None:
+    from backend.engine.private.market_data.resolver import TEFAS_RESOLVER_ALLOWED_INSTRUMENT_TYPES
+    assert set(module_under_test._TEFAS_ALLOWED_INSTRUMENT_TYPES) == set(TEFAS_RESOLVER_ALLOWED_INSTRUMENT_TYPES)
+    assert isinstance(module_under_test._TEFAS_ALLOWED_INSTRUMENT_TYPES, frozenset)
+    for member in TEFAS_RESOLVER_ALLOWED_INSTRUMENT_TYPES:                      # every closed allowed type is accepted for fund prices
+        eligible(selected(tefas_price_case)[0], instrument_type=member.value)
+
+
+def test_tefas_current_metrics_selected_eligibility() -> None:
+    snapshot, _ = selected(tefas_metrics_case)
+    from backend.engine.private.domain import Currency
+    other_currency = next(c.value for c in Currency if c is not Currency.TRY)
+    for fields in ({"status": "invalid_observation"}, {"portfolio_size": None}, {"portfolio_size": "-1"}, {"portfolio_size_currency": other_currency},
+                   {"portfolio_size_currency": None}, {"instrument_type": None}, {"instrument_type": _non_tefas_instrument_type()},
+                   {"outstanding_units": "-1"}, {"investor_count": -1}, {"retrieved_at": None}):
+        ineligible(snapshot, **fields)
+    stored = datetime.fromisoformat(snapshot.selected_observation_payload()["retrieved_at"])
+    ineligible(snapshot, retrieved_at=(stored + timedelta(microseconds=1)).isoformat())
+    for fields in ({"portfolio_size": "0"}, {"outstanding_units": "0"}, {"investor_count": 0}, {"outstanding_units": None}, {"investor_count": None},
+                   {"outstanding_units": None, "investor_count": None, "reported_current_unit_price": None}):
+        eligible(snapshot, **fields)                                              # zero and absent optional metrics stay eligible; the diagnostic price is never required
+
+
+def test_precious_metal_selected_eligibility() -> None:
+    snapshot, _ = selected(pm_case)
+    ineligible(snapshot, status="INVALID_OBSERVATION")
+    ineligible(snapshot, status="UNSUPPORTED_METAL")
+    ineligible(snapshot, price=None)
+    assert wrap(snapshot).reconstruct().price is not None
+    eligible(snapshot, price="0")                                                  # no positivity rule exists in the closed resolver
+
+
+@pytest.mark.parametrize("builder", [stale_bist, stale_precious_metal], ids=["bist", "precious_metal"])
+def test_valid_stale_discovery_selection_stays_eligible(builder) -> None:
+    snapshot = builder()
+    assert snapshot.resolution_payload()["is_stale_discovery"] is True
+    assert wrap(snapshot).reconstruct().to_dict() == snapshot.selected_observation_payload()
+
+
+def test_eligibility_validation_does_not_replay_the_resolver_or_recompute_the_resolution_key(monkeypatch) -> None:
+    snapshot, _ = selected(bist_case)
+    for name in dir(PointInTimeMarketDataResolver):
+        if name.startswith("resolve_"):
+            monkeypatch.setattr(PointInTimeMarketDataResolver, name, lambda *a, **k: (_ for _ in ()).throw(AssertionError("resolver replay")))
+    key_before = snapshot.resolution_key
+    edited = envelope(snapshot, lambda p: p.__setitem__("resolution_key", "tampered-key-not-recomputed"))
+    assert wrap(edited).reconstruct().to_dict() == edited.selected_observation_payload()      # claim limit: the key is not recomputed, the resolver run is not proven
+    assert key_before != edited.resolution_key
+
+
 # --- source-surface guards -------------------------------------------------------------------------------------------
 
 _PATH = Path(module_under_test.__file__)
@@ -546,9 +663,14 @@ def test_no_resolver_clock_random_uuid_hash_io_or_fallback() -> None:
 
 
 def test_no_valuation_policy_portfolio_allocation_completeness_or_rebalance_dependency() -> None:
-    assert not _names() & {"close", "adj_close", "unit_price", "reported_current_unit_price", "price", "price_quantity", "weighted_average", "valuation", "mark",
+    assert not _names() & {"adj_close", "reported_current_unit_price", "price_quantity", "weighted_average", "valuation", "mark",
                            "LedgerProjectionView", "PortfolioTransaction", "RebalanceCurrentState", "build_cash_first_rebalance_plan", "build_band_aware_rebalance_plan",
                            "PrivateBacktestInputBundle", "PrivateBacktestInputCompletenessStatus", "PrivateBacktestInputRequirement", "convert", "fx_rate"}
+    # The raw price fields are read ONLY by the eligibility validator, and only for presence / finiteness / sign: no arithmetic, no field choice for valuation.
+    for function in (n for n in ast.walk(_TREE) if isinstance(n, ast.FunctionDef)):
+        reads = {n.attr for n in ast.walk(function) if isinstance(n, ast.Attribute)} & {"close", "unit_price", "price"}
+        assert not reads or function.name == "_check_eligibility", (function.name, reads)
+    assert not [n for n in ast.walk(_TREE) if isinstance(n, (ast.BinOp, ast.AugAssign))]
     modules = {n.module for n in ast.walk(_TREE) if isinstance(n, ast.ImportFrom) and (n.module or "").startswith("backend")}
     assert modules <= {"backend.engine.private.backtest_market_data_resolution_snapshot", "backend.engine.private.bist.models", "backend.engine.private.domain",
                        "backend.engine.private.market_data.global_models", "backend.engine.private.market_data.models", "backend.engine.private.market_data.tefas_metrics_models",
@@ -567,7 +689,7 @@ def test_documentation_and_ci_wiring() -> None:
     doc = (root / "docs" / "PRIVATE_BACKTEST_MARKET_DATA_SELECTED_OBSERVATION.md").read_text(encoding="utf-8")
     for needle in ("previously deferred", "D3", "marked", "canonical typed representative", "not original object", "fresh", "SELECTED only", "round trip",
                    "raw_provider_symbol", "no resolver replay", "no fallback", "no valuation-price policy", "diagnostic", "not automatically a portfolio instrument",
-                   "stale-discovery", "Observation-level confidence", "resolver-level confidence", "strip().upper()", "invents no new normalization", "D3A", "Red Team"):
+                   "stale-discovery", "payload type validity is insufficient", "surface-specific observation eligibility", "without running the resolver", "resolution key", "R1", "Observation-level confidence", "resolver-level confidence", "strip().upper()", "invents no new normalization", "D3A", "Red Team"):
         assert needle in doc, needle
     snapshot_doc = (root / "docs" / "PRIVATE_BACKTEST_MARKET_DATA_RESOLUTION_SNAPSHOT.md").read_text(encoding="utf-8")
     assert "C2C2 is implemented because the upcoming D3 marked-portfolio-state replay creates the first real typed selected-observation consumer" in snapshot_doc
