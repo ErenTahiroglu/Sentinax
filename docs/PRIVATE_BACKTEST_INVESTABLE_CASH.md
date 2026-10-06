@@ -43,5 +43,5 @@ D3B does not build RebalanceCurrentState and does not compose or rebalance.
 
 ## Next
 
-D3C (historical Phase 21 current-state composition from the D3A marked holdings and this selection, only when everything is already in one valuation currency and no FX is needed) is the next possible
-boundary after an independent Red Team of D3B.
+D3C consumes D3B's classified investable cash together with D3A marked holdings to construct the held-universe Phase 21 RebalanceCurrentState (`docs/PRIVATE_BACKTEST_REBALANCE_CURRENT_STATE.md`), built after
+an independent Red Team of D3B. cash-only portfolios remain deferred to the later explicit cross-universe composition boundary.
