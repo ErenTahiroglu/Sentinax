@@ -13,6 +13,7 @@ import dataclasses
 import inspect
 from datetime import date, datetime, timezone
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
@@ -26,8 +27,9 @@ from backend.engine.private.backtest_decision_replay_sequence import (
 from backend.engine.private.backtest_game_changer_plan_admission import PrivateBacktestGameChangerPlanAdmission, PrivateBacktestNewCapitalAdmissionState
 from backend.engine.private.backtest_replay_plan import PrivateBacktestReplayPlan, build_private_backtest_replay_plan
 from backend.engine.private.backtest_replay_point import build_private_backtest_replay_point
-from backend.engine.private.domain import AsOfMode, Horizon, HorizonFamily
+from backend.engine.private.domain import AsOfMode, Horizon, HorizonFamily, PortfolioMode
 from backend.tests.invariants import static_guards as sg
+from backend.tests.test_backtest_cross_universe_composition import A1, TRY, USD, Scenario, bind_portfolio, buy, deposit, make_d2, make_d3c
 from backend.tests.test_backtest_game_changer_plan_admission import (
     CASH_ONLY_SPEC,
     HELD,
@@ -35,12 +37,14 @@ from backend.tests.test_backtest_game_changer_plan_admission import (
     I2,
     I3,
     MIXED_SPEC,
+    OWNER,
     admit,
     authority,
     d1_for,
     d5a_for,
     scenario,
 )
+from backend.tests.test_portfolio_projection import _make_portfolio
 
 UTC = timezone.utc
 SY = AsOfMode.SYSTEM_AS_OF
@@ -60,12 +64,27 @@ def plan_of(*days: int) -> PrivateBacktestReplayPlan:
     return build_private_backtest_replay_plan(points=tuple(point(day) for day in days))
 
 
-def admission_at(replay_point, horizon=H12, gates=(((I2,), "open"),), spec=MIXED_SPEC, held=HELD, auth=None, trigger="0", destination="0"):
-    """A complete D5B admission whose analysis context is built from THIS very replay point object."""
+OTHER_OWNER = UUID(int=0xBEEF)
+SHARED_PF = _make_portfolio(owner_id=OWNER)                                  # one portfolio (owner, id, MY_PORTFOLIO): the normal case of a single-portfolio replay
+
+
+def scenario_for(pf, held, spec, *, context, investable="100", cash_try="1000", owner=OWNER, extra=0) -> Scenario:
+    """Like the D4B scenario but over a CALLER-SUPPLIED portfolio; `extra` adds later ledger events so the projection content evolves between points."""
+    txs = [deposit(pf, A1, "1000000000", 0, USD), deposit(pf, A1, cash_try, 1, TRY)]
+    txs += [buy(pf, A1, inst, qty, 2 + index) for index, (inst, qty) in enumerate(held)]
+    txs += [deposit(pf, A1, "1", 20 + k, TRY) for k in range(extra)]
+    binding = bind_portfolio(context, pf, tuple(txs))
+    d3c, selection, state = make_d3c(context, binding, held, owner=owner, investable=investable)
+    d2, sleeves = make_d2(context, binding, spec, owner=owner)
+    return Scenario(context, pf, txs, binding, d2, d3c, selection, state, sleeves)
+
+
+def admission_at(replay_point, horizon=H12, gates=(((I2,), "open"),), spec=MIXED_SPEC, held=HELD, auth=None, trigger="0", destination="0", pf=None, owner=OWNER, extra=0):
+    """A complete D5B admission whose analysis context is built from THIS very replay point object, over the shared portfolio unless another is supplied."""
     context = build_private_backtest_analysis_context(replay_point=replay_point, horizon=horizon)
-    s = scenario(held, spec, context=context)
+    s = scenario_for(pf or SHARED_PF, held, spec, context=context, owner=owner, extra=extra)
     d5a = d5a_for(s, auth if auth is not None else authority(zero=[I2]), trigger=trigger, destination=destination)
-    return admit(d1_for(s, *gates), d5a)
+    return admit(d1_for(s, *gates, owner=owner), d5a)
 
 
 def sequence_for(plan, horizon=H12, **kw):
@@ -272,6 +291,122 @@ def test_repeated_construction_is_equivalent() -> None:
     assert build(plan, H12, admissions) == build(plan, H12, admissions)
 
 
+# --- R1: one owner, one portfolio, one bounded-context mode across the whole sequence --------------------------------------------------------
+
+def history_of(admission):
+    return admission.game_changer_replay.input_bundle.portfolio_history
+
+
+def pf_of(owner=OWNER, pid=None, mode=PortfolioMode.MY_PORTFOLIO):
+    return _make_portfolio(owner_id=owner, id=pid or SHARED_PF.id, mode=mode)
+
+
+def point_and_horizon_rules_hold(plan, admissions, horizon=H12) -> None:
+    """Every admission is individually complete and satisfies the pre-R1 D6 rules (positional point object identity, one horizon): only the cross-point portfolio rule can reject it."""
+    assert len(admissions) == len(plan.points)
+    for replay_point, admission in zip(plan.points, admissions):
+        context = admission.game_changer_replay.input_bundle.analysis_context
+        assert context.replay_point is replay_point and context.horizon is horizon
+
+
+@pytest.mark.parametrize("mode", [PortfolioMode.MY_PORTFOLIO, PortfolioMode.SANDBOX])
+def test_three_points_with_one_owner_one_portfolio_and_one_mode_succeed_while_everything_else_evolves(mode) -> None:
+    plan = plan_of(1, 2, 3)
+    pf = pf_of(mode=mode)
+    admissions = tuple(admission_at(p, pf=pf, extra=index) for index, p in enumerate(plan.points))
+    histories = [history_of(a) for a in admissions]
+    assert {h.owner_id for h in histories} == {OWNER} and {h.portfolio_id for h in histories} == {pf.id}
+    assert {h.projection_binding.projection.mode for h in histories} == {mode}
+    assert len({id(h.projection_binding) for h in histories}) == 3                                   # different projection-binding objects across points
+    assert len({id(h) for h in histories}) == 3                                                       # different coverage wrapper objects
+    assert len({h.observed_at for h in histories}) == 3                                               # different observed_at values
+    assert len({len(h.projection_binding.projection.known_transactions) for h in histories}) == 3   # the ledger content evolves between points
+    point_and_horizon_rules_hold(plan, admissions)
+    sequence = build(plan, H12, admissions)
+    assert sequence.admissions is admissions
+
+
+def test_the_default_shared_portfolio_fixture_is_my_portfolio_with_one_owner() -> None:
+    plan = plan_of(1, 2)
+    admissions = tuple(admission_at(p) for p in plan.points)
+    assert {history_of(a).projection_binding.projection.mode for a in admissions} == {PortfolioMode.MY_PORTFOLIO}
+    assert len({history_of(a).portfolio_id for a in admissions}) == 1 and len({history_of(a).owner_id for a in admissions}) == 1
+
+
+@pytest.mark.parametrize("position", [1, 2])
+def test_a_different_owner_at_a_later_point_is_rejected(position) -> None:
+    plan = plan_of(1, 2, 3)
+    admissions = [admission_at(p) for p in plan.points]
+    admissions[position] = admission_at(plan.points[position], pf=pf_of(owner=OTHER_OWNER), owner=OTHER_OWNER)       # same portfolio UUID, different owner
+    assert history_of(admissions[position]).portfolio_id == history_of(admissions[0]).portfolio_id and history_of(admissions[position]).owner_id != history_of(admissions[0]).owner_id
+    point_and_horizon_rules_hold(plan, admissions)
+    with pytest.raises(ValueError, match="owner"):
+        build(plan, H12, tuple(admissions))
+
+
+@pytest.mark.parametrize("position", [1, 2])
+def test_a_different_portfolio_id_at_a_later_point_is_rejected_even_for_the_same_owner(position) -> None:
+    plan = plan_of(1, 2, 3)
+    admissions = [admission_at(p) for p in plan.points]
+    other_portfolio = _make_portfolio(owner_id=OWNER)                                                    # same owner, another portfolio
+    admissions[position] = admission_at(plan.points[position], pf=other_portfolio)
+    assert history_of(admissions[position]).owner_id == history_of(admissions[0]).owner_id
+    assert history_of(admissions[position]).portfolio_id != history_of(admissions[0]).portfolio_id
+    point_and_horizon_rules_hold(plan, admissions)
+    with pytest.raises(ValueError, match="portfolio id"):
+        build(plan, H12, tuple(admissions))
+
+
+def test_both_owner_and_portfolio_differing_and_portfolio_switching_are_rejected() -> None:
+    plan = plan_of(1, 2)
+    first = admission_at(plan.points[0])
+    second = admission_at(plan.points[1], pf=_make_portfolio(owner_id=OTHER_OWNER), owner=OTHER_OWNER)
+    point_and_horizon_rules_hold(plan, (first, second))
+    with pytest.raises(ValueError):
+        build(plan, H12, (first, second))
+    with pytest.raises(ValueError):
+        build(plan, H12, (admission_at(plan.points[0], pf=_make_portfolio(owner_id=OWNER)), admission_at(plan.points[1])))                  # switching portfolio at the second point
+
+
+@pytest.mark.parametrize("first_mode,second_mode", [(PortfolioMode.MY_PORTFOLIO, PortfolioMode.SANDBOX), (PortfolioMode.SANDBOX, PortfolioMode.MY_PORTFOLIO)])
+def test_crossing_my_portfolio_and_sandbox_inside_one_sequence_is_rejected_only_by_the_bounded_context_rule(first_mode, second_mode) -> None:
+    plan = plan_of(1, 2)
+    first = admission_at(plan.points[0], pf=pf_of(mode=first_mode))
+    second = admission_at(plan.points[1], pf=pf_of(mode=second_mode))                                       # same owner and same portfolio UUID
+    assert history_of(first).owner_id == history_of(second).owner_id and history_of(first).portfolio_id == history_of(second).portfolio_id
+    assert history_of(first).projection_binding.projection.mode is first_mode and history_of(second).projection_binding.projection.mode is second_mode
+    point_and_horizon_rules_hold(plan, (first, second))
+    with pytest.raises(ValueError, match="PortfolioMode"):
+        build(plan, H12, (first, second))
+    with pytest.raises(ValueError, match="PortfolioMode"):
+        PrivateBacktestDecisionReplaySequence(replay_plan=plan, horizon=H12, admissions=(first, second))
+
+
+def test_direct_construction_enforces_the_same_cross_point_rules() -> None:
+    plan = plan_of(1, 2)
+    mixed_owner = (admission_at(plan.points[0]), admission_at(plan.points[1], pf=pf_of(owner=OTHER_OWNER), owner=OTHER_OWNER))
+    mixed_portfolio = (admission_at(plan.points[0]), admission_at(plan.points[1], pf=_make_portfolio(owner_id=OWNER)))
+    for bad in (mixed_owner, mixed_portfolio):
+        with pytest.raises(ValueError):
+            PrivateBacktestDecisionReplaySequence(replay_plan=plan, horizon=H12, admissions=bad)
+
+
+def test_the_result_surface_and_stored_fields_are_unchanged_by_the_portfolio_rule() -> None:
+    plan = plan_of(1, 2)
+    _, sequence = sequence_for(plan)
+    assert [f.name for f in dataclasses.fields(PrivateBacktestDecisionReplaySequence)] == ["replay_plan", "horizon", "admissions"]
+    assert {n for n in dir(sequence) if not n.startswith("_")} == {"replay_plan", "horizon", "admissions"}
+    for forbidden in ("owner_id", "portfolio_id", "portfolio_mode", "mode"):
+        assert not hasattr(sequence, forbidden)
+
+
+def test_different_valuation_currency_and_policies_across_points_remain_outside_the_portfolio_rule() -> None:
+    plan = plan_of(1, 2)
+    first = admission_at(plan.points[0], spec=MIXED_SPEC, auth=authority(zero=[I2]))
+    second = admission_at(plan.points[1], spec=CASH_ONLY_SPEC, held=(), auth=authority(zero=[I1, I2, I3]), trigger="1")
+    assert len(build(plan, H12, (first, second)).admissions) == 2
+
+
 # --- direct construction ---------------------------------------------------------------------------------------------------------------------------
 
 def test_direct_construction_reruns_the_same_validation() -> None:
@@ -350,7 +485,10 @@ def test_documentation_and_ci_wiring() -> None:
     root = Path(__file__).resolve().parents[2]
     doc = (root / "docs" / "PRIVATE_BACKTEST_DECISION_REPLAY_SEQUENCE.md").read_text(encoding="utf-8")
     for needle in ("sequence/provenance closure", "exactly one", "object identity", "explicit Horizon", "no sorting", "no early stop", "no execution", "state propagation",
-                   "no performance", "walk-forward", "policy-stability", "pointwise counterfactual", "macro", "zero-event", "no sentinel", "Phase 26 claim boundary"):
+                   "no performance", "walk-forward", "policy-stability", "pointwise counterfactual", "macro", "zero-event", "no sentinel", "Phase 26 claim boundary",
+                   "one owner and one portfolio", "owner_id and portfolio_id must remain equal", "PortfolioMode must remain one bounded context",
+                   "projection bindings themselves are expected to differ", "coverage wrappers", "not proof of historical portfolio-metadata revision provenance",
+                   "valuation currency is not made historically stable"):
         assert needle in doc, needle
     plan_doc = (root / "docs" / "PRIVATE_BACKTEST_REPLAY_PLAN.md").read_text(encoding="utf-8")
     assert "D6 is now the downstream consumer that binds exactly one completed D5B result to every replay-plan point in caller order" in plan_doc

@@ -13,6 +13,13 @@ tuple. All are retained by identity (the tuple is not copied, sorted or rebuilt;
 - **Positional replay-point object identity:** for every index the admission's analysis context (through its D1 side) must carry the very replay-point OBJECT at that plan position. Equal-valued clones, another plan's
   equal point, and the same evaluation date at another cutoff do not match; several points may legitimately share an evaluation date.
 - **Caller order is authoritative:** no sorting, no matching by date or cutoff, no searching, no deduplication, no repair; a reversed or permuted tuple fails.
+- **one owner and one portfolio per sequence:** owner_id and portfolio_id must remain equal across all points (UUID value equality, read through each admission's retained D1-side portfolio history; D5B already proved that
+  history shares the exact binding and owner with the D5A/D4B side inside its own point). Portfolio A at one point and portfolio B at another is rejected even when the replay points, horizons and each decision are valid.
+- **PortfolioMode must remain one bounded context:** every point's ledger projection must carry the same `PortfolioMode` member; MY_PORTFOLIO and SANDBOX are strict bounded contexts and a sequence never crosses them. This
+  check is consistency of the supplied pointwise states, not proof of historical portfolio-metadata revision provenance (no such authority exists in Phase 26; it does not say the mode was historically immutable).
+- **Expected to differ across points:** the projection bindings themselves are expected to differ (different analysis contexts, recorded-time cutoffs and ledger projections); ledger contents evolve; coverage wrappers
+  and their `observed_at` times differ. None of these is compared, and the same exact binding is required only within one point's own chain.
+- **Not made stable by this rule:** strategy and policy parameters may still vary pointwise, and the valuation currency is not made historically stable (D3A treats it as a fixed replay parameter, not portfolio metadata).
 - **explicit Horizon:** one `Horizon` for the whole sequence, never inferred from a result, the evaluation date, point spacing, a goal date or portfolio state. Every admission's analysis-context horizon must be that
   member; a mixed run fails and another horizon needs another sequence. No second `AsOfMode` parameter exists: the plan enforces one mode and each admission sits on its exact plan point.
 - **Direct construction** re-runs the same validation; there are no stored derived fields to forge.
@@ -38,6 +45,6 @@ completed sequence, and a raw D5A result must not bypass D5B. A future source-wi
 
 ## Phase 26 claim boundary
 
-If D6 closes after independent Red Team review, the intended Phase 26 claim is narrow: deterministic point-in-time decision replay architecture is closed. It does not mean simulated execution exists, strategy performance is
-backtested, walk-forward or out-of-sample evaluation exists, one fixed historical strategy configuration is proven, Game Changer source-wide zero-event coverage exists, or the omitted macro, risk and user-view surfaces were
-consumed. Phase 27 (a final adversarial review of the whole closed architecture, not another policy layer) starts only after that closure.
+If D6 closes after independent Red Team review, the intended Phase 26 claim is narrow: deterministic point-in-time, single-portfolio decision replay architecture is closed. It does not mean simulated execution exists, strategy performance is
+backtested, walk-forward or out-of-sample evaluation exists, one fixed historical strategy configuration is proven, Game Changer source-wide zero-event coverage exists, the omitted macro, risk and user-view surfaces were
+consumed, historical CashBucket or band/friction policy provenance exists, or a historical portfolio-metadata revision is proven (beyond the cross-point mode consistency check). Phase 27 (a final adversarial review of the whole closed architecture, not another policy layer) starts only after that closure.
