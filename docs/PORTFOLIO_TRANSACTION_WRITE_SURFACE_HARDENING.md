@@ -28,3 +28,8 @@ INSERT grant; the backend client uses the `SUPABASE_SERVICE_ROLE_KEY` environmen
 This does not prove historical coverage or completeness. service_role is still trusted to submit canonical inserts; migration 025 only removes the
 authenticated/raw-table bypass that would undermine ingestion-time authority. A persistent-history coverage proof is the next owner (C2B2B). Local tests are
 SQL-text structural checks; Supabase Preview is the real migration-execution check, and remote Backend CI does not run this schema test yet.
+
+## Follow-up (Phase 27 FIX A)
+
+Because service_role has no UPDATE, the SECURITY INVOKER Phase 14G.2 trigger locks (`FOR UPDATE`) failed with `42501` after this migration. Migration 027 makes those two trigger
+functions SECURITY DEFINER with a pinned search_path and grants nothing; see `docs/PORTFOLIO_TRIGGER_PRIVILEGE_HARDENING.md`.
