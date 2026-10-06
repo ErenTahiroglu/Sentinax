@@ -59,5 +59,4 @@ explicitly complete bundle whose manifest matches its own declared decision cont
 ## Not here
 
 No decision, gate, view set, posterior, optimizer, rebalance, order or execution. No C2C2: typed selected market observations are not reconstructed (deferred unless a real
-Phase 26D consumer proves it is required). No I/O, clock, randomness, hash or persistence. Non-pure by dependency composition; not in the PURE manifest. The next layer is
-Phase 26D only after an independent Red Team of C2E.
+Phase 26D consumer proves it is required). No I/O, clock, randomness, hash or persistence. Non-pure by dependency composition; not in the PURE manifest. Phase 26D1 consumes COMPLETE C2E bundles for the historical Game Changer replay slice (see `docs/PRIVATE_BACKTEST_GAME_CHANGER_REPLAY.md`). C2C2 remains deferred because D1 consumes no typed market observation. Later Phase 26D slices need an independent Red Team first.
