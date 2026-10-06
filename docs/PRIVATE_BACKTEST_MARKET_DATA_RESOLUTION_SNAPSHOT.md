@@ -49,6 +49,12 @@ observation object, no second status/mode/`as_of`, and no digest or id of the bi
 Direct construction validates the evidence envelope only (exact types, JSON object with the closed result key set, mode and `as_of` match the context, canonical status).
 It cannot prove that the caller ran the resolver. The typed builders are the authoritative normal path.
 
+## Audit-envelope authority (Phase 27 FIX B)
+
+C2C1 remains an audit-envelope authority: direct construction proves the envelope contract (mode and as_of bound to the replay market context, canonical status, shape) and can represent a stored payload whose
+claims a later semantic consumer rejects. It does not itself prove SELECTED semantic or temporal eligibility: for example a SELECTED envelope whose snapshot was retrieved after `as_of`, or one under SOURCE_AS_OF,
+is representable here but impossible for the closed resolver. Economic consumers must pass through C2C2, which now requires temporal compatibility (`docs/PRIVATE_BACKTEST_MARKET_DATA_SELECTED_OBSERVATION.md`).
+
 ## No completeness claim
 
 C2C1 is provenance capture, not a completeness judgment. There is no notion of required, missing-category, ready or decision-ready market data here; that belongs to C2E.

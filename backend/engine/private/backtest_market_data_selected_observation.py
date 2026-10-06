@@ -22,7 +22,8 @@ stale discovery, otherwise the two agree; the other kinds never degrade. C2C2 va
 Top-level SELECTED also requires the closed resolver's final observation-eligibility conditions per surface (valid observation status and a finite price field; TEFAS price additionally positive
 with a currency and an allowed TEFAS instrument type; TEFAS metrics a finite non-negative TRY portfolio size, an allowed type, optional non-negative units and count and an exact retrieval lineage),
 validated without running the resolver. The resolution key is NOT recomputed, so this still does not prove the resolver was actually called: the claim is only that the immutable C2C1
-SELECTED envelope holds a strictly typed representative whose stored semantics are compatible with a closed resolver SELECTED outcome.
+SELECTED envelope holds a strictly typed representative whose stored semantics are compatible with a closed resolver SELECTED outcome, including its temporal frontier (Phase 27 FIX B: SYSTEM_AS_OF only,
+and snapshot retrieved_at <= as_of, inclusive; SOURCE_AS_OF never selects).
 
 No resolver replay, no source snapshots, no fallback of any kind and no valuation arithmetic. Which field is a portfolio valuation price (and TEFAS `reported_current_unit_price`,
 which stays diagnostic) is deliberately NOT decided here: that policy belongs to a later portfolio valuation adapter. A precious-metal observation is a dimensioned market reference,
@@ -41,7 +42,7 @@ from backend.engine.private.backtest_market_data_resolution_snapshot import Priv
 from backend.engine.private.bist.models import BISTEODObservation, BISTObservationStatus
 from backend.engine.private.domain import AssetClass, Currency, DataConfidenceLevel, InstrumentType, SourceTier
 from backend.engine.private.market_data.global_models import GlobalEODObservation, GlobalObservationStatus
-from backend.engine.private.market_data.models import MarketDataResolutionStatus
+from backend.engine.private.market_data.models import MarketDataResolutionMode, MarketDataResolutionStatus
 from backend.engine.private.market_data.tefas_metrics_models import TefasFundCurrentMetricsObservation
 from backend.engine.private.market_data.tefas_models import TefasFundPriceObservation, TefasObservationStatus
 from backend.engine.private.precious_metals.constants import PreciousMetalMarket, PreciousMetalPriceType, PreciousMetalType, PreciousMetalUnit
@@ -58,6 +59,7 @@ _ERR_TOP = "top-level SELECTED resolution fields are missing or malformed"
 _ERR_VALUE = "selected observation payload holds a malformed value"
 _ERR_ROUND_TRIP = "reconstructed observation does not round-trip to the stored selected observation payload exactly"
 _ERR_CONSISTENCY = "reconstructed observation contradicts the top-level resolution result or the query key"
+_ERR_TEMPORAL = "SELECTED market-data snapshot is incompatible with the replay temporal frontier"
 _ERR_INELIGIBLE = "reconstructed observation is not eligible for a SELECTED result under the closed resolver's final observation-eligibility conditions"
 
 
@@ -258,6 +260,17 @@ def _check_eligibility(kind: PrivateBacktestMarketDataKind, representative: Sele
         raise _fail(_ERR_INELIGIBLE)
 
 
+def _check_temporal_frontier(snapshot: PrivateBacktestMarketDataResolutionSnapshot, snapshot_retrieved_at: datetime) -> None:
+    """A stored SELECTED envelope must not contradict what every closed-resolver SELECTED result necessarily satisfies at its own frontier (no resolver replay, no clock).
+
+    For all five current surfaces the closed resolver never selects under SOURCE_AS_OF (it returns UNAVAILABLE_SOURCE_AS_OF) and, under SYSTEM_AS_OF, selects only a snapshot
+    whose retrieved_at <= as_of (inclusive, exact instant, no tolerance). The frontier is read through the C2C1 market context, whose payload mode and as_of C2C1 already bound.
+    """
+    context = snapshot.market_context
+    if context.resolution_mode is not MarketDataResolutionMode.SYSTEM_AS_OF or snapshot_retrieved_at > context.as_of:
+        raise _fail(_ERR_TEMPORAL)
+
+
 def _reconstruct(snapshot: object) -> SelectedObservation:
     """The single reconstruction path: admission, strict parse, exact round trip, then cross-layer consistency. Returns a fresh object."""
     if type(snapshot) is not PrivateBacktestMarketDataResolutionSnapshot:
@@ -276,6 +289,7 @@ def _reconstruct(snapshot: object) -> SelectedObservation:
     snapshot_hash, retrieved_at = _str(top["snapshot_hash"]), _datetime(top["snapshot_retrieved_at"])
     if snapshot_hash == "":
         raise _fail(_ERR_TOP)
+    _check_temporal_frontier(snapshot, retrieved_at)
 
     representative = observation_class(**{key: parser(stored[key]) for key, parser in spec})
     if representative.to_dict() != stored:

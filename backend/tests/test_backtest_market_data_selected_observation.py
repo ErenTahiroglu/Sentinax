@@ -641,6 +641,100 @@ def test_eligibility_validation_does_not_replay_the_resolver_or_recompute_the_re
     assert key_before != edited.resolution_key
 
 
+# --- Phase 27 FIX B: temporal admission of a SELECTED envelope (the closed resolver's necessary conditions) -----------------------------------------------------------
+# A directly constructed C2C1 envelope is an audit object. C2C2 is the first typed consumer, so it must refuse a SELECTED envelope that the closed resolver could never produce at the
+# envelope's own mode/frontier: SOURCE_AS_OF never selects, and SYSTEM_AS_OF selects only snapshots with retrieved_at <= as_of (inclusive, exact instant).
+
+from backend.engine.private.market_data.models import MarketDataResolutionMode  # noqa: E402
+from backend.tests.test_backtest_market_data_resolution_snapshot import PLUS3, SO, SY, T0  # noqa: E402
+
+
+def rebind(snapshot, context):
+    """Direct C2C1 construction under another frontier: only the claimed top-level mode/as_of change; the stored selection and its retrieval instant are untouched."""
+    def edit(payload):
+        payload["resolution_mode"] = context.resolution_mode.value
+        payload["as_of"] = context.as_of.isoformat()
+    payload = snapshot.resolution_payload()
+    edit(payload)
+    text = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return PrivateBacktestMarketDataResolutionSnapshot(market_context=context, kind=snapshot.kind, query_key=snapshot.query_key, resolution_payload_json=text)
+
+
+def temporal_rejects(envelope) -> None:
+    with pytest.raises(ValueError, match="temporal frontier"):
+        wrap(envelope)
+
+
+@all_cases
+def test_system_snapshot_strictly_before_the_cutoff_is_admitted(case) -> None:
+    snapshot, kind = selected(case)
+    assert snapshot.market_context.resolution_mode is MarketDataResolutionMode.SYSTEM_AS_OF
+    wrap(snapshot)
+    assert datetime.fromisoformat(snapshot.resolution_payload()["snapshot_retrieved_at"]) < snapshot.market_context.as_of
+
+
+@all_cases
+def test_system_snapshot_retrieved_exactly_at_the_cutoff_is_admitted(case) -> None:
+    snapshot, key, snaps, kind = bound(case, ctx(cutoff=T0))
+    assert snapshot.status is S.SELECTED and snapshot.market_context.as_of == T0
+    wrap(snapshot)
+    assert datetime.fromisoformat(snapshot.resolution_payload()["snapshot_retrieved_at"]) == snapshot.market_context.as_of
+
+
+@all_cases
+def test_exact_boundary_is_an_instant_comparison_across_equivalent_offsets(case) -> None:
+    snapshot, key, snaps, kind = bound(case, ctx(cutoff=T0.astimezone(PLUS3)))          # same instant written at +03:00
+    assert snapshot.market_context.as_of.utcoffset() == timedelta(hours=3) and snapshot.status is S.SELECTED
+    wrap(snapshot)
+
+
+@all_cases
+def test_system_snapshot_retrieved_after_the_cutoff_is_rejected_even_by_one_microsecond(case) -> None:
+    late, key, snaps, kind = bound(case, ctx(cutoff=T0 + timedelta(hours=1)))             # a genuine resolver SELECTED result at a later frontier
+    assert late.status is S.SELECTED
+    for early_cutoff in (T0 - timedelta(hours=1), T0 - timedelta(microseconds=1)):
+        envelope = rebind(late, ctx(cutoff=early_cutoff))                                   # C2C1 still accepts the audit envelope
+        assert envelope.status is S.SELECTED
+        temporal_rejects(envelope)
+    # the closed resolver itself selects nothing at that earlier frontier
+    honest, _key, _snaps, _kind = bound(case, ctx(cutoff=T0 - timedelta(hours=1)))
+    assert honest.status is not S.SELECTED
+
+
+@all_cases
+def test_source_as_of_selected_is_rejected_for_every_surface(case) -> None:
+    system, key, snaps, kind = bound(case)
+    honest, _k, _s, _kind = bound(case, ctx(mode=SO))
+    assert honest.status is S.UNAVAILABLE_SOURCE_AS_OF                                       # the closed resolver never selects under SOURCE_AS_OF
+    forged = rebind(system, ctx(mode=SO))
+    assert forged.status is S.SELECTED and forged.market_context.resolution_mode is MarketDataResolutionMode.SOURCE_AS_OF
+    temporal_rejects(forged)
+
+
+@all_cases
+def test_the_temporal_rule_is_additional_to_the_exact_retrieval_lineage(case) -> None:
+    snapshot, kind = selected(case)
+    if snapshot.selected_observation_payload()["retrieved_at"] is not None:        # (a TEFAS price observation may carry no retrieval instant of its own: the existing rule)
+        rejects(snapshot, lambda p: p.__setitem__("snapshot_retrieved_at", (datetime.fromisoformat(p["snapshot_retrieved_at"]) - timedelta(hours=1)).isoformat()))   # earlier but different
+    rejects(snapshot, lambda p: p.__setitem__("snapshot_retrieved_at", "2026-09-10T06:00:00"))                                                                       # naive text
+
+
+def test_a_selected_envelope_that_fails_only_the_temporal_rule_does_not_get_a_shape_or_eligibility_message() -> None:
+    late, key, snaps, kind = bound(bist_case, ctx(cutoff=T0 + timedelta(hours=1)))
+    with pytest.raises(ValueError) as error:
+        wrap(rebind(late, ctx(cutoff=T0 - timedelta(hours=1))))
+    assert "temporal frontier" in str(error.value) and "eligib" not in str(error.value) and "payload" not in str(error.value)
+
+
+def test_a_top_level_as_of_mismatch_is_still_rejected_by_c2c1_itself() -> None:
+    snapshot, kind = selected(bist_case)
+    payload = snapshot.resolution_payload()
+    payload["as_of"] = (snapshot.market_context.as_of + timedelta(seconds=1)).isoformat()
+    with pytest.raises(ValueError):
+        PrivateBacktestMarketDataResolutionSnapshot(market_context=snapshot.market_context, kind=snapshot.kind, query_key=snapshot.query_key,
+                                                    resolution_payload_json=json.dumps(payload, sort_keys=True, separators=(",", ":")))
+
+
 # --- source-surface guards -------------------------------------------------------------------------------------------
 
 _PATH = Path(module_under_test.__file__)
@@ -657,9 +751,18 @@ def _names() -> set:
 def test_no_resolver_clock_random_uuid_hash_io_or_fallback() -> None:
     assert not _names() & {"PointInTimeMarketDataResolver", "resolve_bist_eod", "resolve_global_eod", "resolve_tefas_fund_price", "resolve_tefas_current_metrics",
                            "resolve_precious_metal", "uuid4", "uuid1", "now", "utcnow", "today", "time", "random", "secrets", "urandom", "sha256", "hashlib", "hmac",
-                           "hash", "open", "client", "rpc", "table", "environ", "getenv", "sleep", "json", "loads", "dumps", "CURRENT_REPORTED", "MarketDataResolutionMode",
-                           "SOURCE_AS_OF", "SYSTEM_AS_OF", "snapshots", "diagnostics_fallback"}
+                           "hash", "open", "client", "rpc", "table", "environ", "getenv", "sleep", "json", "loads", "dumps", "CURRENT_REPORTED", "SOURCE_AS_OF", "snapshots", "diagnostics_fallback"}
     assert not [n for n in ast.walk(_TREE) if isinstance(n, (ast.Global, ast.Nonlocal, ast.AsyncFunctionDef, ast.Await))]
+
+
+def test_temporal_admission_uses_the_canonical_enum_member_only_with_no_clock_tolerance_or_other_mode() -> None:
+    names = _names()
+    assert "MarketDataResolutionMode" in names and "SYSTEM_AS_OF" in names
+    assert not names & {"CURRENT_REPORTED", "SOURCE_AS_OF", "timedelta", "timezone", "astimezone", "replace", "timestamp", "total_seconds", "float", "round"}
+    assert not [n for n in ast.walk(_TREE) if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value in {"SYSTEM_AS_OF", "SOURCE_AS_OF", "CURRENT_REPORTED"}]      # no raw mode strings
+    import re
+    assert re.search(r"context\.resolution_mode is not MarketDataResolutionMode\.SYSTEM_AS_OF", _SOURCE)          # exact enum-member identity
+    assert re.search(r"snapshot_retrieved_at > context\.as_of", _SOURCE)                                           # inclusive boundary: only strictly-after is rejected
 
 
 def test_no_valuation_policy_portfolio_allocation_completeness_or_rebalance_dependency() -> None:
@@ -689,7 +792,7 @@ def test_documentation_and_ci_wiring() -> None:
     doc = (root / "docs" / "PRIVATE_BACKTEST_MARKET_DATA_SELECTED_OBSERVATION.md").read_text(encoding="utf-8")
     for needle in ("previously deferred", "D3", "marked", "canonical typed representative", "not original object", "fresh", "SELECTED only", "round trip",
                    "raw_provider_symbol", "no resolver replay", "no fallback", "no valuation-price policy", "diagnostic", "not automatically a portfolio instrument",
-                   "stale-discovery", "payload type validity is insufficient", "surface-specific observation eligibility", "without running the resolver", "resolution key", "R1", "Observation-level confidence", "resolver-level confidence", "strip().upper()", "invents no new normalization", "D3A", "Red Team"):
+                   "stale-discovery", "payload type validity is insufficient", "surface-specific observation eligibility", "without running the resolver", "resolution key", "R1", "Observation-level confidence", "resolver-level confidence", "strip().upper()", "invents no new normalization", "D3A", "Red Team", "temporal compatibility", "retrieved_at <= as_of", "exact boundary", "SOURCE_AS_OF SELECTED", "Phase 27 FIX B", "does not prove the resolver actually ran"):
         assert needle in doc, needle
     snapshot_doc = (root / "docs" / "PRIVATE_BACKTEST_MARKET_DATA_RESOLUTION_SNAPSHOT.md").read_text(encoding="utf-8")
     assert "C2C2 is implemented because the upcoming D3 marked-portfolio-state replay creates the first real typed selected-observation consumer" in snapshot_doc
@@ -699,3 +802,5 @@ def test_documentation_and_ci_wiring() -> None:
     ci = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     architecture = ci.split("Phase 26 backtest architecture correctness", 1)[1].split("- name:", 1)[0]
     assert "backend/tests/test_backtest_market_data_selected_observation.py" in architecture
+    assert "backend/tests/test_backtest_market_data_temporal_admission.py" in architecture
+    assert "audit-envelope authority" in snapshot_doc and "Economic consumers must pass through C2C2" in snapshot_doc

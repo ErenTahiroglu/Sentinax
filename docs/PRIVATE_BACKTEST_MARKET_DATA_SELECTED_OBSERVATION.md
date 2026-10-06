@@ -49,6 +49,23 @@ This prevents a directly constructed C2C1 envelope from turning an invalid obser
 **Claim limit:** C2C2 still does not recompute the resolver resolution key and does not prove the resolver was actually called. Its claim is only that the immutable C2C1 SELECTED envelope
 holds a strictly typed representative whose stored semantics are internally compatible with a closed resolver SELECTED outcome. D3A may rely on C2C2 only after this R1 closure.
 
+## Temporal compatibility (Phase 27 FIX B)
+
+Typed validity and observation eligibility are insufficient. A directly constructed C2C1 SELECTED envelope can carry a snapshot retrieved AFTER the replay frontier, or claim SELECTED under
+SOURCE_AS_OF, although the closed resolver would never produce either (Phase 27 finding F-01). C2C2 is the first typed consumer that may become economic authority, so temporal compatibility is
+now required there (not in C2C1, which stays an audit envelope, and not in D3A, which only delegates):
+
+- **SYSTEM_AS_OF:** the top-level `snapshot_retrieved_at` must satisfy `retrieved_at <= as_of` against the bound `market_context.as_of`: an exact instant comparison, no tolerance, no date truncation and no
+  timezone stripping; equivalent offsets of the same instant are equal. The exact boundary (retrieved exactly at the cutoff) is admissible because the closed resolver uses `<=`. A strictly later retrieval fails closed
+  with a dedicated "incompatible with the replay temporal frontier" `ValueError`.
+- **SOURCE_AS_OF SELECTED is impossible** for all five current resolver surfaces (BIST_EOD, GLOBAL_EOD, TEFAS_FUND_PRICE, TEFAS_CURRENT_METRICS, PRECIOUS_METAL: each returns UNAVAILABLE_SOURCE_AS_OF) and is rejected.
+  No fallback to SYSTEM_AS_OF or CURRENT_REPORTED; Phase 26 has no CURRENT_REPORTED replay mapping. No rule is invented for future market-data kinds.
+- The frontier is read only through `resolution_snapshot.market_context` using the canonical `MarketDataResolutionMode` member identity (C2C1 already binds the payload mode and as_of to it). No clock is used.
+- The rule is ADDITIONAL to the exact retrieval lineage checks (top-level versus observation retrieval, snapshot id, hash, observation id); it does not replace them.
+- There is no resolver replay and no resolution key recomputation, so C2C2 still does not prove the resolver actually ran. The claim is only: the stored SELECTED envelope is typed, semantically eligible, cross-layer
+  consistent and temporally compatible with an outcome the current closed resolver could select at that mode and frontier. No provider authenticity or source-completeness claim is added.
+- D3A may rely on this repaired admission: it adds no temporal logic and the valuation policy is unchanged (no new price, currency or field rules).
+
 ## Limits and safety
 
 - **BIST `raw_provider_symbol`:** `to_dict()` emits `raw_provider_symbol or symbol`, so an original None cannot be told from a value equal to the symbol. The representative takes the
