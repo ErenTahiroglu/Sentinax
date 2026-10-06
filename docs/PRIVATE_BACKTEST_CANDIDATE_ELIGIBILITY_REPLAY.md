@@ -51,3 +51,6 @@ objects is accepted; equal-valued cloned resolutions, reordered universes or a f
 Portfolio history is only the replay anchor retained through the bundle (no holding, transaction or value is read; candidates are not filtered by holdings). No candidate discovery,
 ranking or weight change; no cross-asset composition and no `CrossUniverseAuthority`; no rebalance; no Game Changer composition (D1 stays independent); no user-view or optimizer path;
 no market data, so C2C2 remains deferred; no execution or performance. Later slices require an independent Red Team first.
+
+D4B consumes the exact D2 sleeves only after proving the D2 and D3C sides share the same replay analysis context and exact portfolio projection binding (`docs/PRIVATE_BACKTEST_CROSS_UNIVERSE_COMPOSITION.md`).
+D2 remains candidate eligibility only.

@@ -51,5 +51,5 @@ no rebalance (no cash-first or band-aware plan, no trade, no weight drift or tri
 
 ## Next
 
-The next boundary (Phase 26D4: historical cross-universe target and state composition from the D2 eligible sleeves, this held-universe state and an explicit `CrossUniverseAuthority`) starts only after an
-independent Red Team of D3C. For a cash-only portfolio its confirmed zero-current ids must be exactly all target candidates.
+D4B consumes this current state together with D2 candidate-eligible sleeves and explicit CrossUniverseAuthority (`docs/PRIVATE_BACKTEST_CROSS_UNIVERSE_COMPOSITION.md`), after an independent Red Team of D3C.
+For a cash-only portfolio, D4B requires exact confirmation of every target-only candidate.
