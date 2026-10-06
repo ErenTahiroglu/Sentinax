@@ -1,6 +1,6 @@
-"""Phase 27 FIX D: real PostgreSQL verification of migration 028 (Supabase Security Advisor closure).
+"""Phase 27 FIX D / D-R1: real PostgreSQL verification of migrations 028 and 029 (Supabase Security Advisor closure).
 
-No mocks: the REAL repository migrations 001 through 028 are executed in order against a disposable database. Fixture limits (the database is not a Supabase project):
+No mocks: the REAL repository migrations 001 through 029 are executed in order against a disposable database. Fixture limits (the database is not a Supabase project):
 roles anon / authenticated / service_role, an auth schema stand-in with auth.uid(), a vault schema stand-in (secrets table and decrypted_secrets view; the supabase_vault
 extension cannot exist here, so only that CREATE EXTENSION line is removed), Supabase-style default grants, and, only when the server lacks the contrib extensions
 btree_gist / uuid-ossp (the CI postgres:16 image has them), their CREATE EXTENSION lines and migration 005's single gist EXCLUDE constraint are removed.
@@ -142,10 +142,10 @@ def has_table(pg, role, priv, table="public.rate_limits"):
     return pg.scalar("SELECT has_table_privilege(%s, %s, %s)", (role, table, priv))
 
 
-def test_server_version_and_all_migrations_through_028_ran(pg):
+def test_server_version_and_all_migrations_through_029_ran(pg):
     major = int(pg.scalar("SHOW server_version_num")) // 10000
     print(f"EVIDENCE postgres_server_version={pg.scalar('SHOW server_version')} migrations={len(MIGRATIONS)} last={MIGRATIONS[-1].name}")
-    assert major >= 16 and MIGRATIONS[-1].name.startswith("028_")
+    assert major >= 16 and MIGRATIONS[-1].name.startswith("029_")
 
 
 # --- rate_limits: RLS on, no client table access ----------------------------------------------------------------------------------------------
@@ -402,3 +402,92 @@ def test_migration_028_is_rerunnable_and_tolerates_a_live_database_that_lacks_le
     pg.admin.execute(sql)
     assert pg.scalar("SELECT count(*) FROM pg_proc WHERE proname IN ('prevent_raw_snapshot_tamper', 'check_user_has_api_key', 'prevent_observation_tamper')") == 0
     assert pg.scalar("SELECT relrowsecurity FROM pg_class WHERE oid = 'public.rate_limits'::regclass") is True
+
+
+# --- Phase 27 FIX D-R1: live function-signature drift ----------------------------------------------------------------------------------------------------------------
+TARGETS = ("resolve_instrument_to_provider_symbol", "get_pit_observation")
+M028 = next(m for m in MIGRATIONS if m.name.startswith("028_"))
+M029 = next(m for m in MIGRATIONS if m.name.startswith("029_"))
+
+
+def target_rows(pg, name):
+    return pg.admin.execute(
+        "SELECT p.oid, p.proname, p.proconfig, p.prosrc, p.provolatile, p.prosecdef, p.proacl::text AS acl, p.prorettype::regtype::text AS ret,"
+        " p.proretset, pg_get_function_arguments(p.oid) AS args, pg_get_function_identity_arguments(p.oid) AS identity"
+        " FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = %s",
+        (name,),
+    ).fetchall()
+
+
+def contract(row):
+    return {k: row[k] for k in ("prosrc", "provolatile", "prosecdef", "acl", "ret", "proretset", "args", "identity")}
+
+
+def test_fresh_replay_through_029_has_exactly_one_of_each_target_with_an_explicit_path(pg):
+    assert MIGRATIONS[-1].name.startswith("029_")
+    for name in TARGETS:
+        rows = target_rows(pg, name)
+        assert len(rows) == 1, name
+        assert rows[0]["proconfig"] == ["search_path=pg_catalog, public, pg_temp"], name
+        assert rows[0]["prosecdef"] is False                                   # the security mode is untouched (still INVOKER)
+
+
+def drift(pg):
+    """Historical live-signature drift: alternative argument types/defaults, same kind of SQL body, no pinned path (what Advisor reported on the live project)."""
+    pg.admin.execute("DROP FUNCTION public.resolve_instrument_to_provider_symbol(uuid, character varying, date)")
+    pg.admin.execute("DROP FUNCTION public.get_pit_observation(uuid, character varying, date, timestamp with time zone, character varying)")
+    pg.admin.execute(
+        """
+        CREATE FUNCTION public.resolve_instrument_to_provider_symbol(p_instrument_id uuid, p_provider text, p_as_of_date date DEFAULT NULL)
+        RETURNS TABLE (provider_symbol character varying) LANGUAGE sql STABLE
+        AS $$ SELECT a.provider_symbol FROM public.provider_aliases a WHERE a.instrument_id = p_instrument_id LIMIT 1 $$
+        """
+    )
+    pg.admin.execute(
+        """
+        CREATE FUNCTION public.get_pit_observation(p_instrument_id uuid, p_observation_type text, p_effective_date date, p_as_of_time timestamptz)
+        RETURNS SETOF public.normalized_observations LANGUAGE sql STABLE
+        AS $$ SELECT o.* FROM public.normalized_observations o WHERE o.instrument_id = p_instrument_id $$
+        """
+    )
+
+
+def test_red_migration_028_fixed_signatures_miss_drifted_live_functions_and_029_closes_them(pg):
+    drift(pg)
+    sql028 = prepared(M028, True, True)
+    pg.admin.execute(sql028)                                                   # 028 completes, silently skipping the two non-matching live signatures
+    before = {name: target_rows(pg, name) for name in TARGETS}
+    for name in TARGETS:
+        assert len(before[name]) == 1 and before[name][0]["proconfig"] is None, name   # RED: still mutable, exactly what the live Advisor showed
+    pg.admin.execute("GRANT EXECUTE ON FUNCTION public.get_pit_observation(uuid, text, date, timestamptz) TO authenticated")   # a non-default ACL must survive
+    before = {name: target_rows(pg, name) for name in TARGETS}
+
+    pg.admin.execute(prepared(M029, True, True))                               # GREEN
+    for name in TARGETS:
+        after = target_rows(pg, name)
+        assert len(after) == 1
+        assert after[0]["oid"] == before[name][0]["oid"]                       # the very same object was altered, never replaced
+        assert after[0]["proconfig"] == ["search_path=pg_catalog, public, pg_temp"], name
+        assert contract(after[0]) == contract(before[name][0]), name           # body, arguments, return type, volatility, security mode, ACL: unchanged
+    pg.admin.execute(prepared(M029, True, True))                               # re-runnable
+    assert target_rows(pg, "get_pit_observation")[0]["proconfig"] == ["search_path=pg_catalog, public, pg_temp"]
+
+
+@pytest.mark.parametrize("name", TARGETS)
+def test_029_fails_closed_when_the_live_contract_is_ambiguous_or_absent(pg, name):
+    sql029 = prepared(M029, True, True)
+    # more than one overload: never first-match, never an overload sweep
+    pg.admin.execute(f"CREATE FUNCTION public.{name}(p_extra integer, p_other integer, p_third integer, p_fourth integer, p_fifth integer, p_sixth integer) RETURNS integer LANGUAGE sql AS 'SELECT 1'")
+    with pytest.raises(pgerr.RaiseException, match="exactly one"):
+        pg.admin.execute(sql029)
+    pg.admin.execute(f"DROP FUNCTION public.{name}(integer, integer, integer, integer, integer, integer)")
+    # absent: no silent skip
+    pg.admin.execute(f"DROP FUNCTION public.{name}({target_rows(pg, name)[0]['identity']})")
+    with pytest.raises(pgerr.RaiseException, match="exactly one"):
+        pg.admin.execute(sql029)
+
+
+def test_029_is_catalog_driven_with_no_hard_coded_signature():
+    text = re.sub(r"--[^\n]*", "", M029.read_text(encoding="utf-8"))
+    assert "to_regprocedure" not in text and not re.search(r"public\.(resolve_instrument_to_provider_symbol|get_pit_observation)\s*\(", text)
+    assert "pg_catalog.pg_proc" in text and "n.nspname = 'public'" in text and "STRICT" in text

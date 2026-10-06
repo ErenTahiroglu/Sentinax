@@ -66,3 +66,22 @@ default grants. Its behavior against live Supabase (platform-owned grants and de
 After applying 028 to the production project and deploying the Edge Function: Security Advisor, Refresh / Rerun linter, then provide fresh screenshots of Errors, Warnings and Info or (preferably) the Security Advisor Export.
 Expected: ERRORS 0 (no `RLS Disabled in Public`); the targeted `Function Search Path Mutable` and `Public Can Execute SECURITY DEFINER Function` warnings gone; Scheduler `RLS Enabled No Policy` INFO and Leaked Password Protection
 on the Free plan remain accepted. This document does not prove the LIVE project is repaired.
+
+## Phase 27 FIX D-R1: live function-signature drift (migration 029)
+
+Fresh live Advisor after 028 was applied: **ERRORS 0**. Only two search-path warnings remained, `public.resolve_instrument_to_provider_symbol` and `public.get_pit_observation`, plus the accepted Free-plan
+Leaked Password Protection warning and three INFO findings (scheduler runs, scheduler run transitions, `rate_limits`: RLS enabled, no policy).
+
+**Cause.** The live database has historical function-signature drift. 028 pinned those two functions through fixed repository signatures behind `to_regprocedure` guards (added after Supabase Preview rejected unconditional
+ALTERs), so on the live database the signatures did not match, the guard skipped them and the functions stayed mutable.
+
+**Repair (migration 029).** Catalog identity instead of signature assumptions: the two functions are found in `pg_catalog.pg_proc` / `pg_namespace` (schema `public`, exact name); exactly ONE match is required per name
+(zero or several raises, so there is no silent skip, no first-match guess and no overload sweep); the ALTER uses the catalog-derived `regprocedure` and changes only `proconfig` to
+`search_path = pg_catalog, public, pg_temp` (public is kept because the historical live bodies may use unqualified public relations). Bodies, arguments, return types, volatility, security mode (still INVOKER) and ACLs are unchanged;
+the real PostgreSQL test proves this on both a fresh replay of 001 to 029 and a simulated drift (alternative signatures, 028 skips them, 029 alters the very same objects).
+
+**Accepted live findings (unchanged).** WARN Leaked Password Protection Disabled: `ACCEPTED_PLATFORM_LIMITATION_FREE_PLAN`. INFO `private_scheduler_runs`, `private_scheduler_run_transitions` and `rate_limits`
+"RLS Enabled No Policy": `ACCEPTED_INTENTIONAL_INFO` (direct-client inaccessible by design; no permissive policy is added to silence them).
+
+**Closure condition.** After applying 029 to production, re-run the Security Advisor and return the export: expected WARNINGS are only Leaked Password Protection; no Function Search Path Mutable finding may remain.
+Repository tests do not prove the LIVE project.
