@@ -44,5 +44,5 @@ no FX, no cost basis (no average cost, FIFO, realized or unrealized gain), no re
 
 ## Next
 
-D3B must resolve the investable-cash authority (a genuine PIT-safe CashBucket history, or an explicit fixed replay cash-classification policy with clearly conditional semantics) before Phase 21 can
-consume this state. D3B starts only after an independent Red Team of D3A.
+D3B uses explicit fixed replay cash allocations because the current mutable CashBucket lifecycle does not provide a PIT-safe classification history (`docs/PRIVATE_BACKTEST_INVESTABLE_CASH.md`).
+D3B remains counterfactual and does not claim the policy was historically used. D3B (after an independent Red Team) was the prerequisite before Phase 21 can consume this state; D3A itself still builds no RebalanceCurrentState.
