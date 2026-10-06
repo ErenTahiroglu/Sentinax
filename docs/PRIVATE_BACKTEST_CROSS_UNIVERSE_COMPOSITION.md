@@ -57,5 +57,6 @@ no rebalance (no cash-first or band-aware plan, band, friction or trade).
 
 ## Next
 
-After an independent Red Team of D4B the next policy boundary must be decided: whether and how D1 gates constrain deployment, whether band and friction parameters are fixed counterfactual parameters, and whether
+D5A consumes the canonical D4B target/state pair through closed Phase 21B with explicit fixed replay band/friction parameters (`docs/PRIVATE_BACKTEST_REBALANCE_PLAN.md`); those parameters are explicit counterfactual inputs, not historical evidence.
+After an independent Red Team of D4B the next policy boundary had to be decided: whether and how D1 gates constrain deployment, whether band and friction parameters are fixed counterfactual parameters, and whether
 the next decision slice is a frictionless Phase 21A or a Phase 21B replay.
