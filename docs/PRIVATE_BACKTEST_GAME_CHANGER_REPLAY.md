@@ -42,3 +42,6 @@ immutable bundle: no clock, randomness, generated id, environment or global stat
 No market data is consumed: D1 imports no market-data module, calls no resolver and parses no selected observation, so C2C2 remains deferred (no typed market-data
 consumer exists yet). No allocation benchmark, optimizer, user-view posterior, candidate sleeve binding, rebalance, macro, technical analyzer or scheduler. No simulated
 execution, performance attribution or walk-forward. Later Phase 26D slices require an independent Red-Team design review.
+
+D5B later consumes the exact D1 gates only after proving D1 and D5A share the same analysis context and exact portfolio projection binding (`docs/PRIVATE_BACKTEST_GAME_CHANGER_PLAN_ADMISSION.md`).
+The later plan-admission layer does not change D1 gate semantics.

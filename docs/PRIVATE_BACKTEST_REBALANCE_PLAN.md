@@ -41,6 +41,10 @@ friction. A separately built canonical plan over the same D4B target/state with 
 
 ## Not here
 
-no Game Changer consumption yet (admission constraints on new capital must not silently change weights, bands, friction or the Phase 21B arithmetic; they are a separate checkpoint that must also prove its own
-replay anchors), no target-weight or sleeve change, no candidate discovery, no market data or valuation work, no raw cash access, and no execution: no order, broker call, settlement, ledger transaction,
+no Game Changer consumption inside D5A itself (admission constraints on new capital must not silently change weights, bands, friction or the Phase 21B arithmetic).
+
+D5B evaluates the completed canonical plan without mutating it (`docs/PRIVATE_BACKTEST_GAME_CHANGER_PLAN_ADMISSION.md`).
+Specifically, both CASH_FUNDED_BUY and SALE_FUNDED_BUY are treated as new-capital deployment for instrument-scoped Phase 23 admission, and a SELL is not.
+
+D5A has no Game Changer input, no target-weight or sleeve change, no candidate discovery, no market data or valuation work, no raw cash access, and no execution: no order, broker call, settlement, ledger transaction,
 notional-to-quantity translation or persistence.
