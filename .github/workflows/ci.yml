@@ -85,6 +85,119 @@ jobs:
           backend/tests/test_no_crypto_path.py \
           -q --disable-socket
 
+    # Phase 27 FIX C: Shared source/identity authorities (instrument identity, private PIT storage, provider framework). The provider framework tests are asyncio tests: pytest-asyncio opens an AF_UNIX socketpair for its event loop, so AF_UNIX is allowed while every network socket stays blocked.
+    - name: Phase 8-11 source and identity foundations
+      run: |
+        python -m pytest \
+          backend/tests/test_instrument_identity.py \
+          backend/tests/test_private_storage.py \
+          backend/tests/test_provider_framework.py \
+          -q --disable-socket --allow-unix-socket
+
+    # Phase 27 FIX C: Mocked/fixture SEC contract tests only (no live SEC). AF_UNIX allowed for the asyncio event loop; network sockets stay blocked.
+    - name: Phase 8 SEC fundamental-data correctness
+      run: |
+        python -m pytest \
+          backend/tests/test_sec_concept_resolver.py \
+          backend/tests/test_sec_edgar.py \
+          backend/tests/test_sec_fiscal_series.py \
+          backend/tests/test_sec_period_context.py \
+          backend/tests/test_sec_quarter_derivation.py \
+          backend/tests/test_sec_winner_resolver.py \
+          -q --disable-socket --allow-unix-socket
+
+    # Phase 27 FIX C: BIST source-adapter tests (distinct from the Phase 26 resolver regression below). AF_UNIX allowed for the asyncio event loop only.
+    - name: Phase 9 BIST EOD ingestion correctness
+      run: |
+        python -m pytest \
+          backend/tests/test_bist_eod.py \
+          -q --disable-socket --allow-unix-socket
+
+    # Phase 27 FIX C: Alpha Vantage, Marketstack and Tiingo adapters (distinct from the global EOD PIT resolver). AF_UNIX allowed for the asyncio event loop only.
+    - name: Phase 10 global EOD provider correctness
+      run: |
+        python -m pytest \
+          backend/tests/test_alpha_vantage_eod.py \
+          backend/tests/test_marketstack_eod.py \
+          backend/tests/test_tiingo_eod.py \
+          -q --disable-socket --allow-unix-socket
+
+    # Phase 27 FIX C: TEFAS price and current-metrics ingestion (distinct from Phase 16 fund analytics and the Phase 26 TEFAS resolvers). AF_UNIX allowed for the asyncio event loop only.
+    - name: Phase 11 TEFAS source-ingestion correctness
+      run: |
+        python -m pytest \
+          backend/tests/test_tefas_eod.py \
+          backend/tests/test_tefas_metrics.py \
+          -q --disable-socket --allow-unix-socket
+
+    # Phase 27 FIX C: Core accounting/persistence authorities; full network-socket isolation.
+    - name: Phase 12 portfolio domain and persistence correctness
+      run: |
+        python -m pytest \
+          backend/tests/test_portfolio_accounting.py \
+          backend/tests/test_portfolio_accounting_service.py \
+          backend/tests/test_portfolio_cash.py \
+          backend/tests/test_portfolio_domain.py \
+          backend/tests/test_portfolio_ledger.py \
+          backend/tests/test_portfolio_persistence.py \
+          backend/tests/test_portfolio_persistence_schema.py \
+          backend/tests/test_portfolio_positions.py \
+          backend/tests/test_portfolio_postgrest_transport.py \
+          backend/tests/test_portfolio_projection.py \
+          backend/tests/test_portfolio_repository.py \
+          -q --disable-socket
+
+    # Phase 27 FIX C: Import pipeline including the canonical CSV path; full network-socket isolation.
+    - name: Phase 13 portfolio import pipeline correctness
+      run: |
+        python -m pytest \
+          backend/tests/test_portfolio_import_assessment.py \
+          backend/tests/test_portfolio_import_atomic_batch_commit_repository.py \
+          backend/tests/test_portfolio_import_atomic_batch_commit_schema.py \
+          backend/tests/test_portfolio_import_atomic_commit_repository.py \
+          backend/tests/test_portfolio_import_atomic_commit_schema.py \
+          backend/tests/test_portfolio_import_batch.py \
+          backend/tests/test_portfolio_import_claim_schema.py \
+          backend/tests/test_portfolio_import_commit.py \
+          backend/tests/test_portfolio_import_commit_persistence.py \
+          backend/tests/test_portfolio_import_draft.py \
+          backend/tests/test_portfolio_import_draft_batch.py \
+          backend/tests/test_portfolio_import_instrument_resolution.py \
+          backend/tests/test_portfolio_import_instrument_resolver.py \
+          backend/tests/test_portfolio_import_materialization.py \
+          backend/tests/test_portfolio_import_parsed_batch.py \
+          backend/tests/test_portfolio_import_parsing.py \
+          backend/tests/test_portfolio_import_pipeline.py \
+          backend/tests/test_portfolio_import_provenance.py \
+          backend/tests/test_portfolio_import_write_surface_schema.py \
+          backend/tests/test_sentinax_canonical_csv_import.py \
+          backend/tests/test_sentinax_canonical_csv_import_execution.py \
+          backend/tests/test_sentinax_canonical_csv_parser.py \
+          backend/tests/test_sentinax_canonical_csv_semantics.py \
+          -q --disable-socket
+
+    # Phase 27 FIX C: In addition to (never instead of) the real PostgreSQL Phase 27 privilege/concurrency gate below; full network-socket isolation.
+    - name: Phase 14 fee-tax attribution correctness
+      run: |
+        python -m pytest \
+          backend/tests/test_portfolio_fee_tax.py \
+          backend/tests/test_portfolio_fee_tax_attribution.py \
+          backend/tests/test_portfolio_fee_tax_attribution_active_ledger_schema.py \
+          backend/tests/test_portfolio_fee_tax_attribution_binding.py \
+          backend/tests/test_portfolio_fee_tax_attribution_command.py \
+          backend/tests/test_portfolio_fee_tax_attribution_cross_stream_pit_schema.py \
+          backend/tests/test_portfolio_fee_tax_attribution_history.py \
+          backend/tests/test_portfolio_fee_tax_attribution_history_schema.py \
+          backend/tests/test_portfolio_fee_tax_attribution_persistence.py \
+          backend/tests/test_portfolio_fee_tax_attribution_repository.py \
+          backend/tests/test_portfolio_fee_tax_attribution_schema.py \
+          backend/tests/test_portfolio_fee_tax_attribution_service.py \
+          backend/tests/test_portfolio_fee_tax_attribution_transport.py \
+          backend/tests/test_portfolio_fee_tax_attribution_write_repository.py \
+          backend/tests/test_portfolio_fee_tax_phase14_end_to_end.py \
+          backend/tests/test_portfolio_fee_tax_service.py \
+          -q --disable-socket
+
     - name: Phase 15A temporal and risk context correctness
       run: |
         python -m pytest \

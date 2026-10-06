@@ -27,7 +27,7 @@ INSERT grant; the backend client uses the `SUPABASE_SERVICE_ROLE_KEY` environmen
 
 This does not prove historical coverage or completeness. service_role is still trusted to submit canonical inserts; migration 025 only removes the
 authenticated/raw-table bypass that would undermine ingestion-time authority. A persistent-history coverage proof is the next owner (C2B2B). Local tests are
-SQL-text structural checks; Supabase Preview is the real migration-execution check, and remote Backend CI does not run this schema test yet.
+SQL-text structural checks; Supabase Preview is the real migration-execution check, and remote Backend CI runs this schema test permanently (Phase 26 backtest architecture step); real-PostgreSQL behavior is gated separately (history-coverage concurrency and Phase 27 trigger privilege regression).
 
 ## Follow-up (Phase 27 FIX A)
 
