@@ -60,6 +60,9 @@ BEGIN
     END LOOP;
 END $$;
 
+-- Supabase's service_role bypasses RLS; the fixture must match that runtime fact.
+ALTER ROLE service_role BYPASSRLS;
+
 CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$;
 
 GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
