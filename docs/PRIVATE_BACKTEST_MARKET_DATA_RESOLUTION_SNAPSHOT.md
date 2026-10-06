@@ -55,6 +55,6 @@ C2C1 is provenance capture, not a completeness judgment. There is no notion of r
 
 ## Deferred
 
-- C2B2B3 real PostgreSQL concurrent-writer verification remains mandatory before C2E and before Phase 26 closure.
+- C2B2B3 real PostgreSQL concurrent-writer verification is closed (verified by a real PostgreSQL integration test in CI).
 - C2C2 typed selected-observation reconstruction is deferred unless later decision replay actually needs it.
 - C2D user-view historical provenance, C2E completeness, Phase 26D onward are not part of this checkpoint.

@@ -28,6 +28,6 @@ no completeness enum (C2E owns requirement policy). No raw risk content is store
 - portfolio (C2B): a bare `LedgerProjectionView` cannot prove canonical builder provenance.
 - market data (C2C): `MarketObservationResolutionResult` is mutable and not self-revalidating.
 - user views (C2D): the current user-view types carry no explicit historical availability authority.
-- requirement/completeness bundle (C2E).
+- requirement/completeness bundle (C2E): now the explicit requirement manifest boundary in `docs/PRIVATE_BACKTEST_INPUT_COMPLETENESS.md`.
 
 No fetching, resolver, repository, clock, hash, randomness, loop or decision. Remote CI does not run the Phase 26 tests yet.

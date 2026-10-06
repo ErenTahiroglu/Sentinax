@@ -69,5 +69,5 @@ requirement/completeness bundle owns whether user views are required and the ove
 
 ## Deferred gates
 
-- C2B2B3 real PostgreSQL concurrent-writer verification remains mandatory before C2E and before Phase 26 closure.
+- C2B2B3 real PostgreSQL concurrent-writer verification is closed (verified by a real PostgreSQL integration test in CI).
 - C2C2 typed market-data reconstruction remains deferred unless a real consumer requires it.
