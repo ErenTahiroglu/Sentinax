@@ -390,3 +390,15 @@ def test_the_phase_27_fix_a_ledger_trigger_functions_are_unchanged(pg):
         row = pg.admin.execute("SELECT prosecdef, proconfig FROM pg_proc WHERE proname = %s", (name,)).fetchone()
         assert row["prosecdef"] is True and row["proconfig"] == ["search_path=pg_catalog, pg_temp"]
     assert not has_table(pg, "service_role", "UPDATE", "public.portfolio_transactions")
+
+
+def test_migration_028_is_rerunnable_and_tolerates_a_live_database_that_lacks_legacy_functions(pg):
+    """Supabase Preview once failed on an unconditional ALTER of a function absent from the live history: sections 4 to 6 must tolerate absence and re-runs."""
+    pg.admin.execute("DROP FUNCTION public.prevent_raw_snapshot_tamper() CASCADE")
+    pg.admin.execute("DROP FUNCTION public.check_user_has_api_key()")
+    pg.admin.execute("DROP FUNCTION public.prevent_observation_tamper() CASCADE")
+    sql = prepared(next(m for m in MIGRATIONS if m.name.startswith("028_")), True, True)
+    pg.admin.execute(sql)
+    pg.admin.execute(sql)
+    assert pg.scalar("SELECT count(*) FROM pg_proc WHERE proname IN ('prevent_raw_snapshot_tamper', 'check_user_has_api_key', 'prevent_observation_tamper')") == 0
+    assert pg.scalar("SELECT relrowsecurity FROM pg_class WHERE oid = 'public.rate_limits'::regclass") is True

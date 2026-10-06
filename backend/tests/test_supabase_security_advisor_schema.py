@@ -65,32 +65,34 @@ def test_every_security_definer_function_in_028_pins_the_strict_search_path_and_
 
 
 def test_execute_is_revoked_from_public_and_api_roles_and_only_service_role_or_reviewed_roles_are_granted(sql):
-    grants = re.findall(r"GRANT (.*?) ON (.*?) TO ([^;]*);", sql)
+    grants = re.findall(r"(?<!RE)(?<!\w)GRANT (.*?) ON (.*?) TO ([^;']*)[;']", sql)
     allowed = {
         "public.consume_rate_limit(TEXT)": "service_role",
         "public.get_user_api_key_for_service(UUID)": "service_role",
-        "public.get_pit_macro_observation(VARCHAR, DATE, TIMESTAMPTZ, VARCHAR)": "authenticated, service_role",
+        "FUNCTION %s": "authenticated, service_role",                                   # get_pit_macro_observation, guarded
     }
     seen = {}
     for privilege, target, roles in grants:
         assert privilege == "EXECUTE" and target.startswith("FUNCTION "), (privilege, target)
-        seen[target.replace("FUNCTION ", "")] = roles
+        seen[target.replace("FUNCTION ", "", 1) if target != "FUNCTION %s" else target] = roles.strip()
     assert seen == allowed
-    for signature in ("public.consume_rate_limit(TEXT)", "public.get_user_api_key_for_service(UUID)", "public.upsert_user_api_key(TEXT)", "public.check_user_has_api_key()"):
+    for signature in ("public.consume_rate_limit(TEXT)", "public.get_user_api_key_for_service(UUID)"):
         for role in ("PUBLIC", "anon", "authenticated"):
             assert f"REVOKE ALL ON FUNCTION {signature} FROM {role};" in sql, (signature, role)
-    assert "anon" not in seen.get("public.get_pit_macro_observation(VARCHAR, DATE, TIMESTAMPTZ, VARCHAR)", "")
+    assert "REVOKE ALL ON FUNCTION %s FROM PUBLIC, anon, authenticated, service_role" in sql        # dormant helpers (guarded loop)
+    assert "REVOKE ALL ON FUNCTION %s FROM PUBLIC, anon" in sql and "GRANT EXECUTE ON FUNCTION %s TO authenticated, service_role" in sql
 
 
 def test_legacy_caller_scoped_decryption_rpc_is_dropped_and_dormant_helpers_lose_every_api_role(sql):
     assert "DROP FUNCTION IF EXISTS public.get_user_api_key();" in sql
-    for signature in ("public.upsert_user_api_key(TEXT)", "public.check_user_has_api_key()"):
-        assert f"REVOKE ALL ON FUNCTION {signature} FROM service_role;" in sql
+    assert "ARRAY['public.upsert_user_api_key(text)', 'public.check_user_has_api_key()']" in sql
+    assert "FROM PUBLIC, anon, authenticated, service_role" in sql
 
 
 def test_macro_pit_authority_is_only_re_flagged_never_redefined(sql):
     assert "CREATE OR REPLACE FUNCTION public.get_pit_macro_observation" not in sql
     assert "SECURITY INVOKER SET search_path = public, pg_temp" in sql
+    assert "public.get_pit_macro_observation(character varying, date, timestamp with time zone, character varying)" in sql
 
 
 def test_every_function_defined_by_any_migration_has_a_pinned_search_path_after_028(sql):
@@ -99,7 +101,9 @@ def test_every_function_defined_by_any_migration_has_a_pinned_search_path_after_
         text = re.sub(r"\s+", " ", code(path))
         for match in re.finditer(r"CREATE (?:OR REPLACE )?FUNCTION public\.(\w+)\(.*?(\$\w*\$).*?\2[^;]*;", text):
             last_header[match.group(1)] = re.sub(r"\$\w*\$.*?\$\w*\$", " ", match.group(0))     # the declaration with the body removed
-    altered = set(re.findall(r"ALTER FUNCTION public\.(\w+)\([^)]*\)[^;]*SET search_path", sql))
+    guarded = re.findall(r"'public\.(\w+)\([^']*\)'", sql)                             # the constant signature lists of the to_regprocedure-guarded loops
+    assert guarded and "ALTER FUNCTION %s SET search_path" in sql
+    altered = set(guarded)
     dropped = set(re.findall(r"DROP FUNCTION IF EXISTS public\.(\w+)\(", sql))
     missing = [
         name for name, header in last_header.items()
@@ -183,3 +187,10 @@ def test_ci_runs_the_three_gates_permanently():
         assert f"backend/tests/{path}" in ci
     for kept in ("Phase 26 PostgreSQL history-coverage concurrency", "Phase 27 PostgreSQL ledger trigger privilege regression", "Phase 14 fee-tax attribution correctness"):
         assert kept in ci
+
+
+def test_missing_functions_are_tolerated_through_a_constant_to_regprocedure_guard(sql):
+    assert sql.count("pg_catalog.to_regprocedure(v_signature) IS NOT NULL") == 3
+    assert not re.search(r"(?m)^ALTER FUNCTION public\.", code(M028))                    # no unconditional ALTER FUNCTION: live drift must not fail the deployment
+    for statement in re.findall(r"EXECUTE (pg_catalog\.format\('[^']*', v_signature\));", code(M028)):
+        assert "%s" in statement

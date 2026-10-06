@@ -49,6 +49,13 @@ Edge Function (the new function calls the new RPCs; the old RPCs are dropped by 
 real PostgreSQL test proves a newly created function is not executable by PUBLIC/anon/authenticated. Supabase may hold additional default ACLs for other owner roles (for example supabase_admin) that a migration run as `postgres`
 cannot change; explicit REVOKE statements in each migration plus the ACL inventory test remain the actual guard.
 
+## Live-history drift and the Preview failure
+
+The first FIX_D commit (`326ba78c`) failed Supabase Preview: `function public.prevent_raw_snapshot_tamper() does not exist` for an unconditional `ALTER FUNCTION`. A fresh replay of the repository
+creates that function (migration 004), so the deployment target's history differs from the repository. Sections 4 to 6 of 028 therefore act only on functions that exist (a constant-signature
+`to_regprocedure` guard, no dynamic names) and the migration is re-runnable; a real PostgreSQL test drops legacy functions and runs 028 twice. This also means the live database may hold functions that are
+absent from the repository: the Security Advisor re-run, not the repository, is the authority for those.
+
 ## Fixture limits of the real PostgreSQL test
 
 The test runs migrations 001 to 028 against a plain PostgreSQL 16 database, not a Supabase project: roles, an `auth` stand-in with `auth.uid()`, a `vault` stand-in (the `supabase_vault` extension line is removed), and Supabase-style

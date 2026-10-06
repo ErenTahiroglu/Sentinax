@@ -121,50 +121,71 @@ REVOKE ALL ON FUNCTION public.get_user_api_key_for_service(UUID) FROM anon;
 REVOKE ALL ON FUNCTION public.get_user_api_key_for_service(UUID) FROM authenticated;
 GRANT EXECUTE ON FUNCTION public.get_user_api_key_for_service(UUID) TO service_role;
 
--- ============================================================================
--- 4. Dormant privileged helpers (no active caller in the repository): no API-role EXECUTE
--- ============================================================================
-ALTER FUNCTION public.upsert_user_api_key(TEXT) SET search_path = pg_catalog, pg_temp;
-REVOKE ALL ON FUNCTION public.upsert_user_api_key(TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.upsert_user_api_key(TEXT) FROM anon;
-REVOKE ALL ON FUNCTION public.upsert_user_api_key(TEXT) FROM authenticated;
-REVOKE ALL ON FUNCTION public.upsert_user_api_key(TEXT) FROM service_role;
+-- Sections 4 to 6 act only on functions that exist in the target database (to_regprocedure guard): the live project's migration history may differ from a fresh replay of the repository
+-- (Supabase Preview reported `function public.prevent_raw_snapshot_tamper() does not exist` for an unconditional ALTER). Signatures are constants; no caller-selected names, no data access.
 
-ALTER FUNCTION public.check_user_has_api_key() SET search_path = pg_catalog, pg_temp;
-REVOKE ALL ON FUNCTION public.check_user_has_api_key() FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.check_user_has_api_key() FROM anon;
-REVOKE ALL ON FUNCTION public.check_user_has_api_key() FROM authenticated;
-REVOKE ALL ON FUNCTION public.check_user_has_api_key() FROM service_role;
+-- ============================================================================
+-- 4. Dormant privileged helpers (no active caller in the repository): no API-role EXECUTE, strict search_path
+-- ============================================================================
+DO $$
+DECLARE
+    v_signature TEXT;
+BEGIN
+    FOREACH v_signature IN ARRAY ARRAY['public.upsert_user_api_key(text)', 'public.check_user_has_api_key()'] LOOP
+        IF pg_catalog.to_regprocedure(v_signature) IS NOT NULL THEN
+            EXECUTE pg_catalog.format('ALTER FUNCTION %s SET search_path = pg_catalog, pg_temp', v_signature);
+            EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %s FROM PUBLIC, anon, authenticated, service_role', v_signature);
+        END IF;
+    END LOOP;
+END
+$$;
 
 -- ============================================================================
 -- 5. get_pit_macro_observation: same Phase 17 PIT body, no privileged execution (macro tables already have public read policies)
 -- ============================================================================
-ALTER FUNCTION public.get_pit_macro_observation(VARCHAR, DATE, TIMESTAMPTZ, VARCHAR)
-    SECURITY INVOKER
-    SET search_path = public, pg_temp;
-REVOKE ALL ON FUNCTION public.get_pit_macro_observation(VARCHAR, DATE, TIMESTAMPTZ, VARCHAR) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.get_pit_macro_observation(VARCHAR, DATE, TIMESTAMPTZ, VARCHAR) FROM anon;
-GRANT EXECUTE ON FUNCTION public.get_pit_macro_observation(VARCHAR, DATE, TIMESTAMPTZ, VARCHAR) TO authenticated, service_role;
+DO $$
+DECLARE
+    v_signature CONSTANT TEXT := 'public.get_pit_macro_observation(character varying, date, timestamp with time zone, character varying)';
+BEGIN
+    IF pg_catalog.to_regprocedure(v_signature) IS NOT NULL THEN
+        EXECUTE pg_catalog.format('ALTER FUNCTION %s SECURITY INVOKER SET search_path = public, pg_temp', v_signature);
+        EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %s FROM PUBLIC, anon', v_signature);
+        EXECUTE pg_catalog.format('GRANT EXECUTE ON FUNCTION %s TO authenticated, service_role', v_signature);
+    END IF;
+END
+$$;
 
 -- ============================================================================
 -- 6. Pinned search_path for every remaining public function (bodies untouched)
 -- ============================================================================
-ALTER FUNCTION public.update_updated_at_column() SET search_path = public, pg_temp;
-ALTER FUNCTION public.handle_record_supersession() SET search_path = public, pg_temp;
-ALTER FUNCTION public.prevent_raw_snapshot_tamper() SET search_path = public, pg_temp;
-ALTER FUNCTION public.prevent_observation_tamper() SET search_path = public, pg_temp;
-ALTER FUNCTION public.get_pit_observation(UUID, VARCHAR, DATE, TIMESTAMPTZ, VARCHAR) SET search_path = public, pg_temp;
-ALTER FUNCTION public.resolve_provider_symbol_to_instrument(VARCHAR, VARCHAR, DATE) SET search_path = public, pg_temp;
-ALTER FUNCTION public.resolve_instrument_to_provider_symbol(UUID, VARCHAR, DATE) SET search_path = public, pg_temp;
-ALTER FUNCTION public.prevent_macro_observation_tamper() SET search_path = public, pg_temp;
-ALTER FUNCTION public.handle_macro_observation_supersession() SET search_path = public, pg_temp;
-ALTER FUNCTION public.prevent_sec_immutability_violation() SET search_path = public, pg_temp;
-ALTER FUNCTION public.validate_sec_fact_filing_link_integrity() SET search_path = public, pg_temp;
-ALTER FUNCTION public.prevent_cash_bucket_identity_mutation() SET search_path = public, pg_temp;
-ALTER FUNCTION public.validate_portfolio_transaction_integrity() SET search_path = public, pg_temp;
-ALTER FUNCTION public.prevent_portfolio_transaction_tamper() SET search_path = public, pg_temp;
-ALTER FUNCTION public.prevent_import_claim_binding_tamper() SET search_path = public, pg_temp;
-ALTER FUNCTION public.prevent_fee_tax_attribution_event_tamper() SET search_path = public, pg_temp;
+DO $$
+DECLARE
+    v_signature TEXT;
+BEGIN
+    FOREACH v_signature IN ARRAY ARRAY[
+        'public.update_updated_at_column()',
+        'public.handle_record_supersession()',
+        'public.prevent_raw_snapshot_tamper()',
+        'public.prevent_observation_tamper()',
+        'public.get_pit_observation(uuid, character varying, date, timestamp with time zone, character varying)',
+        'public.resolve_provider_symbol_to_instrument(character varying, character varying, date)',
+        'public.resolve_instrument_to_provider_symbol(uuid, character varying, date)',
+        'public.prevent_macro_observation_tamper()',
+        'public.handle_macro_observation_supersession()',
+        'public.prevent_sec_immutability_violation()',
+        'public.validate_sec_fact_filing_link_integrity()',
+        'public.prevent_cash_bucket_identity_mutation()',
+        'public.validate_portfolio_transaction_integrity()',
+        'public.prevent_portfolio_transaction_tamper()',
+        'public.prevent_import_claim_binding_tamper()',
+        'public.prevent_fee_tax_attribution_event_tamper()'
+    ] LOOP
+        IF pg_catalog.to_regprocedure(v_signature) IS NOT NULL THEN
+            EXECUTE pg_catalog.format('ALTER FUNCTION %s SET search_path = public, pg_temp', v_signature);
+        END IF;
+    END LOOP;
+END
+$$;
 
 -- ============================================================================
 -- 7. Forward-looking default function privileges (functions created later by this role are not executable by PUBLIC/anon/authenticated
