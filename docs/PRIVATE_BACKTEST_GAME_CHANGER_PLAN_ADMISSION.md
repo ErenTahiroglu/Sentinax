@@ -42,3 +42,6 @@ redirected, no replacement plan generated. The retained plan stays unchanged.
 NOT_BLOCKED is not approval: it does not mean recommended, safe, suitable, target accepted, execution authorized or that no human review is required. It means only that this exact completed plan has no BUY prohibited by the
 supplied historical Game Changer gates. The result is counterfactual like its inputs (D2 sleeves, D3B cash, D4B authority and D5A band/friction parameters are fixed replay parameters). no execution: no order, broker
 call, settlement, ledger write or persistence, and no performance or walk-forward evaluation.
+
+D6 may sequence completed D5B admissions against a PrivateBacktestReplayPlan by exact replay-point identity and one explicit horizon (`docs/PRIVATE_BACKTEST_DECISION_REPLAY_SEQUENCE.md`).
+D6 does not turn NOT_BLOCKED into approval and does not execute admitted plans.

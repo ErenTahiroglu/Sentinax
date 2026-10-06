@@ -22,5 +22,5 @@ after the cutoff's calendar date (a future-effective regime announced in advance
 ## Not here
 
 Replay dates are not generated: no interpolation, no calendar, no market sessions, no scheduler recurrence (a later explicit adapter would be needed). No
-market-data (A2) dependency, input resolution, decision replay, execution, performance, clock, randomness, hash or I/O. Remote CI does not run the Phase 26
-tests yet.
+market-data (A2) dependency, input resolution, execution, performance, clock, randomness, hash or I/O. The Phase 26 architecture tests are permanently wired in CI.
+D6 is now the downstream consumer that binds exactly one completed D5B result to every replay-plan point in caller order (`docs/PRIVATE_BACKTEST_DECISION_REPLAY_SEQUENCE.md`).
