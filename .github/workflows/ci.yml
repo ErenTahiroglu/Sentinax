@@ -386,6 +386,19 @@ jobs:
           backend/tests/test_precious_metals.py \
           -q
 
+    # Phase 28B-0: isolated learning evidence contracts (no model, no live collection, no network). Dependency isolation is enforced by test_learning_boundary.py.
+    - name: Phase 28B-0 learning evidence contracts
+      run: |
+        python -m pytest \
+          backend/tests/test_learning_provenance.py \
+          backend/tests/test_learning_source_authority.py \
+          backend/tests/test_learning_universe_coverage.py \
+          backend/tests/test_learning_observation_status.py \
+          backend/tests/test_learning_preregistration.py \
+          backend/tests/test_learning_adapters.py \
+          backend/tests/test_learning_boundary.py \
+          -q --disable-socket
+
     # Real PostgreSQL (no --disable-socket). The test-only driver is installed here, never in backend/requirements.txt.
     - name: Phase 26 PostgreSQL history-coverage concurrency
       env:
