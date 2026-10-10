@@ -4,6 +4,9 @@ backend/engine/learning/adapters.py
 The only learning module that touches existing private evidence types (Phase 28B-0). It READS `RawProviderSnapshotRecord` and `TefasFundPriceObservation` and maps them
 into learning contracts; it does not construct, mutate or re-define them, and adds no persistence.
 
+The retained `raw_payload` is re-hashed with the closed storage authority's `compute_payload_hash` and must equal `payload_hash`. This establishes local content
+consistency only, NOT provider authenticity.
+
 Publication time is never imported: a provider-supplied `published_at` is not independently evidenced here, so publication stays UNKNOWN. The economic date stays the
 observation's trade date; the retrieval instant is the stored `retrieved_at`.
 """
@@ -19,7 +22,7 @@ from backend.engine.learning.source_authority import AvailabilityStatus, Licensi
 from backend.engine.learning.temporal_provenance import TemporalProvenance
 from backend.engine.learning.universe_coverage import LearningSubjectRef
 from backend.engine.private.market_data.tefas_models import TefasFundPriceObservation, TefasObservationStatus
-from backend.engine.private.storage_models import RawProviderSnapshotRecord
+from backend.engine.private.storage_models import RawProviderSnapshotRecord, compute_payload_hash
 
 
 def source_authority_from_raw_snapshot(
@@ -31,10 +34,13 @@ def source_authority_from_raw_snapshot(
     known_limitations: Tuple[str, ...],
     availability: AvailabilityStatus,
     licensing: LicensingStatus,
+    licensing_evidence_sha256s: Tuple[str, ...] = (),
     document_version: "str | None" = None,
 ) -> SourceAuthorityRecord:
     require_exact_type("record", record, RawProviderSnapshotRecord)
     require_sha256("record.payload_hash", record.payload_hash)
+    if compute_payload_hash(record.raw_payload) != record.payload_hash:
+        raise ValueError("retained raw_payload does not match its payload_hash (local content inconsistency)")
     return SourceAuthorityRecord(
         source_id=source_id,
         source_reference=source_reference,
@@ -46,6 +52,7 @@ def source_authority_from_raw_snapshot(
         availability=availability,
         licensing=licensing,
         raw_snapshot_id=record.id,
+        licensing_evidence_sha256s=licensing_evidence_sha256s,
     )
 
 

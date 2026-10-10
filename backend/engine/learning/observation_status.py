@@ -4,7 +4,8 @@ backend/engine/learning/observation_status.py
 Captured-observation status for forward learning-data capture (Phase 28B-0).
 
 The vocabulary deliberately has NO "missing", "absent" or zero member: NOT_OBSERVED_IN_RESPONSE only says a captured response did not contain the observation. It never
-establishes an economic absence, a lifecycle event or a zero. Only OBSERVED_IN_RESPONSE carries a value (exact positive Decimal unit price). Origin (forward capture versus
+establishes an economic absence, a lifecycle event or a zero. EXPLICITLY_UNAVAILABLE_BY_SOURCE additionally requires a semantics label AND cited evidence hashes, and even
+then remains an unverified source statement, never confirmed nonexistence. Only OBSERVED_IN_RESPONSE carries a value (exact positive Decimal unit price). Origin (forward capture versus
 retrospective rows inside the same response) is declared explicitly and never inferred. Non-authoritative for financial decisions.
 """
 
@@ -57,10 +58,12 @@ class CapturedObservation:
     source_semantics_ref: Optional[str] = None
     failure_reason: Optional[str] = None
     evidence_sha256s: Tuple[str, ...] = ()
+    source_semantics_evidence_sha256s: Tuple[str, ...] = ()
 
     # Absence from a captured response is never an economic or lifecycle finding.
     establishes_economic_absence = False
     establishes_lifecycle_event = False
+    source_semantics_verified = False     # constant: referenced source-semantics evidence is never independently verified here
 
     def __post_init__(self) -> None:
         require_exact_type("subject", self.subject, LearningSubjectRef)
@@ -72,6 +75,8 @@ class CapturedObservation:
         optional(require_canonical_token, "failure_reason", self.failure_reason)
         for h in require_tuple_of("evidence_sha256s", self.evidence_sha256s, str):
             require_sha256("evidence_sha256s item", h)
+        for h in require_tuple_of("source_semantics_evidence_sha256s", self.source_semantics_evidence_sha256s, str):
+            require_sha256("source_semantics_evidence_sha256s item", h)
 
         if self.provenance.economic_date != self.economic_date:
             raise ValueError("economic_date must equal provenance.economic_date")
@@ -81,8 +86,9 @@ class CapturedObservation:
             require_positive_finite_decimal("observed_unit_price", self.observed_unit_price)
         elif self.observed_unit_price is not None:
             raise ValueError("only OBSERVED_IN_RESPONSE may carry a value; absence is never represented as zero or a price")
-        if (self.status is ObservationStatus.EXPLICITLY_UNAVAILABLE_BY_SOURCE) != (self.source_semantics_ref is not None):
-            raise ValueError("source_semantics_ref is required for, and only valid with, EXPLICITLY_UNAVAILABLE_BY_SOURCE")
+        explicit = self.status is ObservationStatus.EXPLICITLY_UNAVAILABLE_BY_SOURCE
+        if explicit != (self.source_semantics_ref is not None) or explicit != bool(self.source_semantics_evidence_sha256s):
+            raise ValueError("source_semantics_ref and source_semantics_evidence_sha256s are required together for, and only valid with, EXPLICITLY_UNAVAILABLE_BY_SOURCE")
         if (self.status is ObservationStatus.RETRIEVAL_FAILED) != (self.failure_reason is not None):
             raise ValueError("failure_reason is required for, and only valid with, RETRIEVAL_FAILED")
         if self.status is ObservationStatus.RETRIEVAL_FAILED and self.provenance.publication_time is not None:
@@ -102,6 +108,7 @@ class CapturedObservation:
             "source_semantics_ref": self.source_semantics_ref,
             "failure_reason": self.failure_reason,
             "evidence_sha256s": sorted(self.evidence_sha256s),
+            "source_semantics_evidence_sha256s": sorted(self.source_semantics_evidence_sha256s),
         }
 
 

@@ -84,18 +84,32 @@ def require_unambiguous_subjects(subjects: Tuple[LearningSubjectRef, ...]) -> No
 
 @dataclass(frozen=True)
 class CompletenessAttestation:
-    """Explicit upstream evidence that the source itself claims the list is complete: cites the stored source document and where it says so."""
-    source_id: str
-    source_content_sha256: str
+    """
+    Caller-supplied claim that an evidence document states a list is complete. It names the evidence document (id + stored content hash), where it says so, and the claim
+    TARGET: the universe it applies to and the observed-list source it applies to. The evidence document may legitimately differ from the observed-list source. This object
+    does not independently prove that the cited document exists in storage or contains the asserted text; a future persistence/evidence-binding layer must verify that.
+    """
+    evidence_source_id: str
+    evidence_content_sha256: str
     claim_reference: str
+    universe_key: str
+    observed_list_source_id: str
 
     def __post_init__(self) -> None:
-        require_canonical_token("source_id", self.source_id)
-        require_sha256("source_content_sha256", self.source_content_sha256)
+        require_canonical_token("evidence_source_id", self.evidence_source_id)
+        require_sha256("evidence_content_sha256", self.evidence_content_sha256)
         require_nonblank_text("claim_reference", self.claim_reference)
+        require_canonical_token("universe_key", self.universe_key)
+        require_canonical_token("observed_list_source_id", self.observed_list_source_id)
 
     def to_canonical_dict(self) -> Dict[str, Any]:
-        return {"source_id": self.source_id, "source_content_sha256": self.source_content_sha256, "claim_reference": self.claim_reference}
+        return {
+            "evidence_source_id": self.evidence_source_id,
+            "evidence_content_sha256": self.evidence_content_sha256,
+            "claim_reference": self.claim_reference,
+            "universe_key": self.universe_key,
+            "observed_list_source_id": self.observed_list_source_id,
+        }
 
 
 @dataclass(frozen=True)
@@ -109,6 +123,7 @@ class UniverseSnapshotEvidence:
     selection_rule_ref: Optional[str] = None
 
     economic_scope_note = "Learning-evidence snapshot only; not a candidate-selection, investment-universe or membership authority."
+    completeness_attestation_verified = False      # constant: the attestation is a caller-supplied claim, never verified here
 
     def __post_init__(self) -> None:
         require_canonical_token("universe_key", self.universe_key)
@@ -126,6 +141,9 @@ class UniverseSnapshotEvidence:
             raise ValueError("completeness_attestation is required for, and only valid with, SOURCE_CLAIMED_COMPLETE")
         if pilot != (self.selection_rule_ref is not None):
             raise ValueError("selection_rule_ref is required for, and only valid with, CURATED_PILOT")
+        att = self.completeness_attestation
+        if att is not None and (att.universe_key != self.universe_key or att.observed_list_source_id != self.source_id):
+            raise ValueError("completeness attestation targets a different universe or observed-list source")
         if (complete or pilot) and not self.members:
             raise ValueError("SOURCE_CLAIMED_COMPLETE and CURATED_PILOT snapshots must list members")
 

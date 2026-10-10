@@ -67,9 +67,28 @@ def test_old_economic_date_does_not_become_system_known_time() -> None:
     assert p.system_known_at_utc.date() != date(2021, 3, 4)
 
 
-def test_retrieval_before_economic_date_rejected() -> None:
-    with pytest.raises(ValueError):
-        TemporalProvenance(**provenance_kwargs(economic_date=date(2026, 10, 20)))
+def test_turkish_local_midnight_economic_date_is_valid_when_utc_date_is_earlier() -> None:
+    # 00:30 on 13 Oct in Turkey (UTC+3) is 21:30 UTC on 12 Oct: no UTC-calendar comparison with the economic date is made.
+    p = TemporalProvenance(economic_date=date(2026, 10, 13), retrieved_at=datetime(2026, 10, 12, 21, 30, tzinfo=timezone.utc),
+                           capture_attempted_at=datetime(2026, 10, 12, 21, 29, tzinfo=timezone.utc))
+    assert p.economic_date == date(2026, 10, 13)
+
+
+def test_future_effective_documentation_published_in_advance_is_valid() -> None:
+    p = TemporalProvenance(**provenance_kwargs(economic_date=date(2027, 1, 1), publication_basis=PublicationBasis.SOURCE_DOCUMENT_STATED,
+                                               publication_time=plus(10), publication_evidence_sha256=HASH_A))
+    assert p.publication_time == plus(10) and p.economic_date == date(2027, 1, 1)
+
+
+def test_historical_observation_retrieved_years_later_keeps_retrieval_as_only_knowledge_instant() -> None:
+    p = TemporalProvenance(**provenance_kwargs(economic_date=date(2019, 5, 6)))
+    assert p.system_known_at_utc == plus(60) and p.economic_date == date(2019, 5, 6)
+
+
+def test_provenance_module_makes_no_economic_date_to_calendar_comparison() -> None:
+    import inspect
+    from backend.engine.learning import temporal_provenance
+    assert ".date()" not in inspect.getsource(temporal_provenance.TemporalProvenance)
 
 
 def test_capture_attempt_after_retrieval_rejected() -> None:
@@ -91,12 +110,6 @@ def test_publication_requires_stated_basis_and_evidence() -> None:
 def test_publication_after_retrieval_rejected() -> None:
     with pytest.raises(ValueError):
         TemporalProvenance(**provenance_kwargs(publication_basis=PublicationBasis.SOURCE_DOCUMENT_STATED, publication_time=plus(120), publication_evidence_sha256=HASH_A))
-
-
-def test_publication_before_economic_date_rejected() -> None:
-    with pytest.raises(ValueError):
-        TemporalProvenance(**provenance_kwargs(economic_date=date(2026, 10, 9), publication_basis=PublicationBasis.SOURCE_DOCUMENT_STATED,
-                                               publication_time=datetime(2026, 10, 1, tzinfo=timezone.utc), publication_evidence_sha256=HASH_A))
 
 
 def test_evidenced_publication_is_kept_separate_from_retrieval() -> None:

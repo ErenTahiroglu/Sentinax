@@ -11,6 +11,10 @@ Separate temporal axes of one piece of learning evidence (Phase 28B-0):
 
 A historical first-publication instant is NEVER inferred from retrieval, and an old economic date never becomes a retrieval or knowledge time. The only knowledge instant
 this type exposes is `system_known_at_utc` (= retrieved_at). Non-authoritative for financial decisions.
+
+Only instant-versus-instant ordering is enforced (capture attempt <= retrieval; evidenced publication <= retrieval). The economic date is deliberately NOT compared with any
+UTC calendar date: its timezone and event semantics are source-specific (local-midnight observations, documents published ahead of a future effective date, historical
+observations retrieved years later). Any source-specific rule (e.g. a price cannot precede its valuation day) belongs to a separately approved source authority.
 """
 
 from __future__ import annotations
@@ -64,11 +68,6 @@ class TemporalProvenance:
             raise ValueError("capture_attempted_at must not be after retrieved_at")
         if self.publication_time is not None and utc(self.publication_time) > utc(self.retrieved_at):
             raise ValueError("publication_time must not be after retrieved_at")
-        if self.economic_date is not None:
-            if utc(self.retrieved_at).date() < self.economic_date:
-                raise ValueError("retrieved_at must not precede the economic date")
-            if self.publication_time is not None and utc(self.publication_time).date() < self.economic_date:
-                raise ValueError("publication_time must not precede the economic date")
 
     @property
     def system_known_at_utc(self) -> datetime:

@@ -31,6 +31,14 @@ Key rules:
 - An old economic date never becomes a retrieval or knowledge time; the only knowledge instant exposed is `system_known_at_utc` (the retrieval instant).
 - No ambient clock, entropy, I/O, network or `float` in the package (static guards G1, G2, G4, G5 run over it).
 
+### R1 hardening (evidence integrity and temporal provenance)
+
+- **Raw-payload consistency.** `source_authority_from_raw_snapshot` re-hashes the retained `raw_payload` with the existing `compute_payload_hash` and rejects a well-formed `payload_hash` that does not match. This proves local content consistency only, not provider authenticity. A directly constructed `SourceAuthorityRecord` has no payload to compare, so only the adapter path checks integrity.
+- **Completeness target binding.** `CompletenessAttestation` names the evidence document (id and stored hash), the claim reference, the `universe_key` and the `observed_list_source_id`. A `UniverseSnapshotEvidence` rejects an attestation whose universe or observed-list source differs. The evidence document may differ from the list source. An attestation is a caller-supplied claim, never verified here (`completeness_attestation_verified` is constant False) and never an investment authority.
+- **Time model.** Only instant ordering is enforced (capture attempt <= retrieval, evidenced publication <= retrieval). The economic date is not compared with any UTC calendar date, so Turkish-local-midnight observations, documents published ahead of a future effective date and historical observations retrieved years later are valid. Source-specific rules need a separately approved source authority. No universal publication hour is assumed.
+- **Licensing is declaration-only.** `LicensingStatus` values are `UNRESOLVED`, `PERMISSION_DECLARED`, `PROHIBITION_DECLARED`. A declaration must cite licensing evidence hashes, and `capture_authorized` and `licensing_verified` are constant False. The former `capture_permission_resolved` property was removed. Phase 28B-1 must verify the stored evidence independently.
+- **Explicit unavailability.** `EXPLICITLY_UNAVAILABLE_BY_SOURCE` requires a semantics label and cited evidence hashes. It stays an unverified source statement (`source_semantics_verified` constant False) and never establishes economic absence or a lifecycle event.
+
 ## 3. Dependency isolation
 
 - Allowed imports: a stdlib allowlist, `backend.engine.learning.*`, and (adapters only) `backend.engine.private.storage_models` and `backend.engine.private.market_data.tefas_models`.

@@ -32,7 +32,14 @@ def snap(**over) -> UniverseSnapshotEvidence:
     return UniverseSnapshotEvidence(**base)
 
 
-ATTEST = CompletenessAttestation(source_id="tefas.fund-list", source_content_sha256=HASH_A, claim_reference="page section stating the list is exhaustive")
+def attest(**over) -> CompletenessAttestation:
+    base = dict(evidence_source_id="tefas.fund-list", evidence_content_sha256=HASH_A, claim_reference="page section stating the list is exhaustive",
+                universe_key="tefas.try.discovered", observed_list_source_id="tefas.fund-list")
+    base.update(over)
+    return CompletenessAttestation(**base)
+
+
+ATTEST = attest()
 
 
 def test_coverage_vocabulary_is_exactly_four_values() -> None:
@@ -67,9 +74,39 @@ def test_complete_claim_cannot_be_empty_list() -> None:
 
 def test_attestation_must_reference_a_stored_source_hash() -> None:
     with pytest.raises(ValueError):
-        CompletenessAttestation(source_id="tefas.fund-list", source_content_sha256="nope", claim_reference="x")
+        attest(evidence_content_sha256="nope")
     with pytest.raises((TypeError, ValueError)):
-        CompletenessAttestation(source_id="tefas.fund-list", source_content_sha256=HASH_A, claim_reference="")
+        attest(claim_reference="")
+
+
+def test_attestation_identifies_its_claim_target() -> None:
+    a = attest()
+    assert (a.universe_key, a.observed_list_source_id, a.evidence_source_id) == ("tefas.try.discovered", "tefas.fund-list", "tefas.fund-list")
+    for bad in ("Bad Key", None, 3):
+        with pytest.raises((TypeError, ValueError)):
+            attest(universe_key=bad)
+        with pytest.raises((TypeError, ValueError)):
+            attest(observed_list_source_id=bad)
+
+
+def test_attestation_for_a_different_universe_is_rejected() -> None:
+    with pytest.raises(ValueError):
+        snap(coverage=CoverageClaim.SOURCE_CLAIMED_COMPLETE, completeness_attestation=attest(universe_key="tefas.try.other"))
+
+
+def test_attestation_for_a_different_observed_list_source_is_rejected() -> None:
+    with pytest.raises(ValueError):
+        snap(coverage=CoverageClaim.SOURCE_CLAIMED_COMPLETE, completeness_attestation=attest(observed_list_source_id="tefas.other-list"))
+
+
+def test_independent_evidence_document_may_attest_a_different_observed_list_source() -> None:
+    s = snap(coverage=CoverageClaim.SOURCE_CLAIMED_COMPLETE, completeness_attestation=attest(evidence_source_id="spk.official-fund-register", evidence_content_sha256=HASH_B))
+    assert s.completeness_attestation.evidence_source_id != s.source_id
+
+
+def test_attestation_is_a_caller_supplied_claim_not_verified_evidence() -> None:
+    assert "does not independently prove" in (CompletenessAttestation.__doc__ or "")
+    assert snap(coverage=CoverageClaim.SOURCE_CLAIMED_COMPLETE, completeness_attestation=ATTEST).completeness_attestation_verified is False
 
 
 def test_curated_pilot_requires_preregistered_selection_rule_and_members() -> None:

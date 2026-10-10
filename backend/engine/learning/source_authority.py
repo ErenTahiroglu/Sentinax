@@ -3,8 +3,9 @@ backend/engine/learning/source_authority.py
 ===========================================
 Authority record for one stored source document or provider response (Phase 28B-0).
 
-A `content_sha256` proves stored-content identity only: it is not publisher authenticity and not a historical publication time. Licensing and availability default to
-nothing: unresolved or unknown values never count as capture permission.
+A `content_sha256` proves stored-content identity only: it is not publisher authenticity and not a historical publication time. Licensing and availability are
+caller-supplied, UNVERIFIED declarations. A declared permission or prohibition must cite licensing/access evidence hashes, but even then this record never authorizes
+capture: `capture_authorized` is constant False in Phase 28B-0. A future source-access gate (Phase 28B-1) must verify the referenced stored evidence independently.
 """
 
 from __future__ import annotations
@@ -45,9 +46,10 @@ class AvailabilityStatus(Enum):
 
 
 class LicensingStatus(Enum):
+    """Caller DECLARATIONS about licensing; never verified here and never authorization."""
     UNRESOLVED = "unresolved"
-    PERMISSION_DOCUMENTED = "permission_documented"
-    PROHIBITED_DOCUMENTED = "prohibited_documented"
+    PERMISSION_DECLARED = "permission_declared"
+    PROHIBITION_DECLARED = "prohibition_declared"
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,10 @@ class SourceAuthorityRecord:
     availability: AvailabilityStatus
     licensing: LicensingStatus
     raw_snapshot_id: Optional[UUID] = None
+    licensing_evidence_sha256s: Tuple[str, ...] = ()
+
+    capture_authorized = False          # constant: no live capture is authorized by any record in Phase 28B-0
+    licensing_verified = False          # constant: declarations are not independently verified here
 
     def __post_init__(self) -> None:
         require_canonical_token("source_id", self.source_id)
@@ -79,11 +85,10 @@ class SourceAuthorityRecord:
         require_enum("licensing", self.licensing, LicensingStatus)
         if self.raw_snapshot_id is not None:
             require_exact_type("raw_snapshot_id", self.raw_snapshot_id, UUID)
-
-    @property
-    def capture_permission_resolved(self) -> bool:
-        """True only when licensing permission is documented AND the source is documented as publicly available. Unknown/unresolved is never permission."""
-        return self.licensing is LicensingStatus.PERMISSION_DOCUMENTED and self.availability is AvailabilityStatus.PUBLICLY_AVAILABLE
+        for h in require_tuple_of("licensing_evidence_sha256s", self.licensing_evidence_sha256s, str):
+            require_sha256("licensing_evidence_sha256s item", h)
+        if (self.licensing is not LicensingStatus.UNRESOLVED) != bool(self.licensing_evidence_sha256s):
+            raise ValueError("a declared licensing permission/prohibition must cite licensing evidence hashes, and unresolved licensing must cite none")
 
     def to_canonical_dict(self) -> Dict[str, Any]:
         return {
@@ -97,6 +102,9 @@ class SourceAuthorityRecord:
             "availability": self.availability.value,
             "licensing": self.licensing.value,
             "raw_snapshot_id": str(self.raw_snapshot_id) if self.raw_snapshot_id else None,
+            "licensing_evidence_sha256s": sorted(self.licensing_evidence_sha256s),
+            "capture_authorized": False,
+            "licensing_verified": False,
         }
 
     def canonical_sha256(self) -> str:

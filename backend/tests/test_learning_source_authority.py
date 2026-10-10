@@ -27,16 +27,45 @@ def record(**over) -> SourceAuthorityRecord:
     return SourceAuthorityRecord(**base)
 
 
-def test_valid_record_defaults_do_not_resolve_capture_permission() -> None:
+def test_valid_record_defaults_authorize_nothing() -> None:
     r = record()
-    assert r.capture_permission_resolved is False
-    assert r.raw_snapshot_id is None
+    assert r.capture_authorized is False and r.licensing_evidence_sha256s == () and r.raw_snapshot_id is None
 
 
-def test_unknown_licensing_or_availability_is_never_resolved() -> None:
-    assert record(licensing=LicensingStatus.UNRESOLVED, availability=AvailabilityStatus.PUBLICLY_AVAILABLE).capture_permission_resolved is False
-    assert record(licensing=LicensingStatus.PERMISSION_DOCUMENTED, availability=AvailabilityStatus.UNKNOWN).capture_permission_resolved is False
-    assert record(licensing=LicensingStatus.PERMISSION_DOCUMENTED, availability=AvailabilityStatus.PUBLICLY_AVAILABLE).capture_permission_resolved is True
+def test_no_permission_property_exists_on_the_type() -> None:
+    assert not hasattr(SourceAuthorityRecord, "capture_permission_resolved")
+
+
+def test_declared_permission_without_evidence_reference_is_rejected() -> None:
+    for st in (LicensingStatus.PERMISSION_DECLARED, LicensingStatus.PROHIBITION_DECLARED):
+        with pytest.raises(ValueError):
+            record(licensing=st)
+
+
+def test_unresolved_licensing_must_not_carry_evidence() -> None:
+    with pytest.raises(ValueError):
+        record(licensing=LicensingStatus.UNRESOLVED, licensing_evidence_sha256s=(HASH_B,))
+
+
+def test_declared_permission_with_evidence_is_still_never_capture_authorization() -> None:
+    r = record(licensing=LicensingStatus.PERMISSION_DECLARED, licensing_evidence_sha256s=(HASH_B,), availability=AvailabilityStatus.PUBLICLY_AVAILABLE)
+    assert r.capture_authorized is False and r.licensing_verified is False
+
+
+def test_licensing_evidence_hashes_validated_and_unique() -> None:
+    with pytest.raises(ValueError):
+        record(licensing=LicensingStatus.PERMISSION_DECLARED, licensing_evidence_sha256s=(HASH_B, HASH_B))
+    with pytest.raises(ValueError):
+        record(licensing=LicensingStatus.PERMISSION_DECLARED, licensing_evidence_sha256s=("zz",))
+    with pytest.raises(TypeError):
+        record(licensing=LicensingStatus.PERMISSION_DECLARED, licensing_evidence_sha256s=[HASH_B])
+
+
+def test_authorization_flags_cannot_be_set_by_construction() -> None:
+    with pytest.raises(TypeError):
+        record(capture_authorized=True)
+    with pytest.raises(Exception):
+        record().capture_authorized = True  # type: ignore[misc]
 
 
 @pytest.mark.parametrize("field,bad", [
@@ -44,7 +73,7 @@ def test_unknown_licensing_or_availability_is_never_resolved() -> None:
     ("content_sha256", "xyz"), ("content_sha256", "A" * 64),
     ("source_reference", ""), ("source_reference", " x"), ("source_reference", "a\nb"),
     ("document_version", ""), ("document_version", 3),
-    ("authority_class", "primary"), ("availability", "unknown"), ("licensing", None),
+    ("authority_class", "primary"), ("availability", "unknown"), ("licensing", None), ("licensing", "permission_declared"),
     ("known_limitations", ["a"]), ("known_limitations", (1,)), ("known_limitations", ("",)),
     ("retrieved_at", datetime(2026, 1, 1)), ("raw_snapshot_id", "00000000-0000-4000-8000-000000000001"),
 ])

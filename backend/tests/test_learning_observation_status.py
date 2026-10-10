@@ -59,13 +59,40 @@ def test_not_observed_does_not_establish_economic_absence() -> None:
     assert obs().establishes_economic_absence is False
 
 
-def test_explicit_unavailability_requires_documented_source_semantics() -> None:
+def test_explicit_unavailability_requires_semantics_label_and_evidence_references() -> None:
+    from backend.tests.learning_support import HASH_A
+    base = dict(status=ObservationStatus.EXPLICITLY_UNAVAILABLE_BY_SOURCE, observed_unit_price=None)
     with pytest.raises(ValueError):
-        not_observed(status=ObservationStatus.EXPLICITLY_UNAVAILABLE_BY_SOURCE)
-    o = not_observed(status=ObservationStatus.EXPLICITLY_UNAVAILABLE_BY_SOURCE, source_semantics_ref="tefas.docs.price-zero-meaning")
-    assert o.source_semantics_ref == "tefas.docs.price-zero-meaning"
+        not_observed(**base)                                                                  # nothing
     with pytest.raises(ValueError):
-        obs(source_semantics_ref="tefas.docs.x")        # only valid for explicit unavailability
+        not_observed(**base, source_semantics_ref="tefas.docs.price-zero-meaning")           # free-form label alone
+    with pytest.raises(ValueError):
+        not_observed(**base, source_semantics_evidence_sha256s=(HASH_A,))                    # evidence without the semantics label
+    o = not_observed(**base, source_semantics_ref="tefas.docs.price-zero-meaning", source_semantics_evidence_sha256s=(HASH_A,))
+    assert o.source_semantics_evidence_sha256s == (HASH_A,)
+
+
+def test_explicit_unavailability_is_never_verified_absence() -> None:
+    from backend.tests.learning_support import HASH_A
+    o = not_observed(status=ObservationStatus.EXPLICITLY_UNAVAILABLE_BY_SOURCE, source_semantics_ref="tefas.docs.x", source_semantics_evidence_sha256s=(HASH_A,))
+    assert o.source_semantics_verified is False and o.establishes_economic_absence is False and o.establishes_lifecycle_event is False
+
+
+def test_semantics_fields_only_valid_with_explicit_unavailability() -> None:
+    from backend.tests.learning_support import HASH_A
+    with pytest.raises(ValueError):
+        obs(source_semantics_ref="tefas.docs.x")
+    with pytest.raises(ValueError):
+        obs(source_semantics_evidence_sha256s=(HASH_A,))
+
+
+def test_semantics_evidence_hashes_validated_and_unique() -> None:
+    from backend.tests.learning_support import HASH_A
+    kw = dict(status=ObservationStatus.EXPLICITLY_UNAVAILABLE_BY_SOURCE, observed_unit_price=None, source_semantics_ref="tefas.docs.x")
+    with pytest.raises(ValueError):
+        not_observed(**kw, source_semantics_evidence_sha256s=(HASH_A, HASH_A))
+    with pytest.raises(ValueError):
+        not_observed(**kw, source_semantics_evidence_sha256s=("zz",))
 
 
 def test_retrieval_failure_requires_reason_and_forbids_publication_and_value() -> None:
