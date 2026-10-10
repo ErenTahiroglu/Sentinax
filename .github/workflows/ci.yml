@@ -439,3 +439,15 @@ jobs:
         python -m pytest \
           backend/tests/test_learning_persistence_postgres.py \
           -v -s
+
+    # Post-28B-1A hardening H1: real PostgreSQL (no --disable-socket). Executes the REAL migrations 001 through 031 (TRUNCATE closure on the legacy PIT store: effective privileges,
+    # RESTRICT and CASCADE for anon/authenticated/service_role with zero and nonzero learning bindings, preserved read/insert/supersession, historical evidence through 030).
+    - name: Post-28B-1A H1 legacy PIT TRUNCATE closure
+      env:
+        SENTINAX_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/sentinax_concurrency
+      run: |
+        python -m pip install "psycopg[binary]==3.3.6"
+        python -m pytest \
+          backend/tests/test_legacy_pit_truncate_hardening_schema.py \
+          backend/tests/test_legacy_pit_truncate_hardening_postgres.py \
+          -v -s

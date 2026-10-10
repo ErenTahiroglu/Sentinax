@@ -193,7 +193,7 @@ def test_migration_030_creates_one_table_no_policy_no_security_definer_and_no_ap
 def test_postgres_ci_step_is_permanent_runs_against_real_postgres_and_is_not_socket_disabled() -> None:
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert f"- name: {PG_STEP}" in ci
-    block = ci.split(f"- name: {PG_STEP}", 1)[1].split("\n    - name:", 1)[0]
+    block = ci.split(f"- name: {PG_STEP}", 1)[1].split("\n    - name:", 1)[0].split("\n    #", 1)[0]
     assert "SENTINAX_TEST_POSTGRES_URL" in block and "psycopg[binary]==3.3.6" in block and "--disable-socket" not in block
     for t in PG_TESTS:
         assert f"backend/tests/{t}.py" in block, t
@@ -202,7 +202,7 @@ def test_postgres_ci_step_is_permanent_runs_against_real_postgres_and_is_not_soc
 def test_ci_gate_is_permanent_and_lists_every_learning_test() -> None:
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert f"- name: {STEP}" in ci
-    block = ci.split(f"- name: {STEP}", 1)[1].split("\n    - name:", 1)[0]
+    block = ci.split(f"- name: {STEP}", 1)[1].split("\n    - name:", 1)[0].split("\n    #", 1)[0]
     for t in CI_TESTS:
         assert f"backend/tests/{t}.py" in block, t
     assert "--disable-socket" in block

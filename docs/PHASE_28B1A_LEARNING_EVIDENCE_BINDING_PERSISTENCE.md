@@ -22,7 +22,7 @@ Smallest corrections made (all in migration 030, additive, not touching unbound 
 
 1. A bound snapshot is protected by `guard_learning_bound_raw_snapshot()` independently of the original trigger: only `is_superseded`/`superseded_at` may change; deletion is refused.
 2. Because the binding table references the raw store and no role may `TRUNCATE` the binding table, `TRUNCATE ... CASCADE` of the raw store is denied to `service_role` (permission denied on the dependent table). A superuser/owner can still act; that is outside this threat model.
-3. No grant on pre-existing tables was changed. Unbound raw rows remain governed exactly as before; the pre-existing `TRUNCATE` grant and missing hash validation are reported, not silently altered.
+3. No grant on pre-existing tables was changed by migration 030. The pre-existing `TRUNCATE` grant was reported and then closed by migration 031 (section 12); the missing hash validation on the raw table remains reported, not altered.
 
 ## 3. Evidence-binding contract
 
@@ -84,3 +84,26 @@ Kept separate: `economic_date`, `publication_time` (only with an evidence hash),
 ## 11. Next source-access requirements (not started)
 
 An independent verifier for referenced licensing/access evidence; a source-access and operational-limit policy for any automated collection; verification of the consolidated 2026 Takasbank procedure; and, separately, persistence of universe and observation claims.
+
+## 12. Post-28B-1A hardening H1: legacy PIT store TRUNCATE closure (migration 031)
+
+Finding, measured on disposable PostgreSQL 16 with Supabase-style default grants (`TRUNCATE` bypasses RLS and does not fire row DELETE triggers):
+
+| Stage | `TRUNCATE raw_provider_snapshots` (RESTRICT) | `... CASCADE` | `TRUNCATE normalized_observations` (RESTRICT and CASCADE) |
+|---|---|---|---|
+| through migration 029 | denied, SQLSTATE `0A000` (dependency error) | **allowed** for anon, authenticated, service_role | **allowed** for all three roles |
+| through migration 030 | denied, `0A000` | denied, `42501`, only because the dependent binding table grants nobody TRUNCATE (indirect; also with zero bindings) | **allowed** for all three roles |
+| after migration 031 | denied, `42501` (the role no longer holds the privilege) | denied, `42501` | denied, `42501` |
+
+The cascade closure of the raw store reaches `macro_observations`, `normalized_observations`, `sec_filings`, `sec_raw_facts`, `sec_fact_filing_links` (and the binding table since 030).
+
+- **Reachability:** direct SQL sessions only. The Supabase Data API (PostgREST) exposes no TRUNCATE verb, no function in the public schema truncates, and no public REST exploit was established. Live-project privilege state was not inspected and may differ from this replay.
+- **Fix:** migration 031 is two table-scoped `REVOKE TRUNCATE ... FROM PUBLIC, anon, authenticated, service_role` statements. SELECT, INSERT, UPDATE (including system supersession) and all other privileges, ownership, triggers, policies, constraints, RLS and default privileges are unchanged (asserted by a before/after fingerprint test). Re-running it is a no-op.
+- **Not changed (residual):** `macro_observations`, `sec_filings`, `sec_raw_facts`, `sec_fact_filing_links` and other public tables still carry the default `TRUNCATE` grant; the global default privileges still grant `TRUNCATE` on future tables (the binding table needed an explicit revoke); owner/superuser paths are out of scope; the row-level `DELETE` grant on the legacy tables remains behind the existing triggers.
+
+Trust boundaries, restated:
+
+- **A. Source identity.** `source_identity_binding = VERIFIED_BY_DATABASE` means only that the stored provider and endpoint equal the declared provider and endpoint. The caller-chosen `source_id` and `source_reference` are neither authenticated nor mapped to a canonical source registry; different `source_id` values may reference the same raw snapshot (test `test_different_sources_may_bind_the_same_snapshot_independently`).
+- **B. Content integrity.** The Python adapter re-hashes the retained payload with the existing canonical function. The database only compares the declared hash with the stored column and does not recompute it. `WRITER_REHASH_ASSERTED` is a writer assertion, never an independent database hash verification; the direct-`service_role` bypass test (`test_forged_valid_looking_hash_is_stopped_by_the_python_verifier_and_the_db_trust_boundary_is_explicit`) remains valid.
+- **C. Temporal authority.** Economic date, publication evidence, retrieval time, capture-attempt time and database recording time stay distinct. Neither historical source publication nor historical Sentinax knowledge is inferred from an economic date.
+- **D. Licensing.** `capture_authorized` stays false. A licensing hash or a public dataset URL grants no collection permission.

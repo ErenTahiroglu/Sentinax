@@ -360,10 +360,11 @@ def test_rpc_privileges_and_function_properties(pg):
 
 
 # --- the existing raw store: audit-driven guarantees -----------------------------------------------------------------------------------
-def test_audit_existing_raw_store_grants_and_tamper_triggers_without_this_layer(pg):
-    """Documents the pre-existing facts the design must not assume away (fresh replay with Supabase-style default grants)."""
+def test_audit_existing_raw_store_tamper_triggers_and_hash_validation_gap(pg):
+    """Documents pre-existing facts the design must not assume away. The legacy TRUNCATE grant that this audit originally recorded was removed by migration 031 (post-28B-1A
+    hardening H1); its historical existence through migration 030 is asserted in test_legacy_pit_truncate_hardening_postgres.py, not here."""
     for role in ("anon", "authenticated", "service_role"):
-        assert pg.scalar("SELECT has_table_privilege(%s, 'public.raw_provider_snapshots', 'TRUNCATE')", (role,)), role     # privilege exists; only triggers/FKs guard rows
+        assert not pg.scalar("SELECT has_table_privilege(%s, 'public.raw_provider_snapshots', 'TRUNCATE')", (role,)), role
     names = {r["tgname"] for r in pg.admin.execute("SELECT tgname FROM pg_trigger WHERE tgrelid = 'public.raw_provider_snapshots'::regclass AND NOT tgisinternal").fetchall()}
     assert {"trg_protect_raw_snapshot_immutability", "trg_supersede_raw_snapshot"} <= names
     seed_snapshot(pg, payload_hash="f" * 64)                                                                # the raw table does not validate that payload_hash matches the payload
