@@ -17,14 +17,20 @@ from backend.tests.invariants import static_guards as sg
 
 ROOT = Path(__file__).resolve().parents[2]
 LEARNING = ROOT / "backend" / "engine" / "learning"
-MODULES = ["__init__", "_checks", "temporal_provenance", "source_authority", "universe_coverage", "observation_status", "preregistration", "adapters"]
+MODULES = ["__init__", "_checks", "temporal_provenance", "source_authority", "universe_coverage", "observation_status", "preregistration", "evidence_binding", "adapters"]
+STORE = ROOT / "backend" / "engine" / "learning_store"
+STORE_MODULES = ["__init__", "evidence_binding_repository"]
 CI_TESTS = [
     "test_learning_provenance", "test_learning_source_authority", "test_learning_universe_coverage", "test_learning_observation_status",
-    "test_learning_preregistration", "test_learning_adapters", "test_learning_boundary",
+    "test_learning_preregistration", "test_learning_adapters", "test_learning_evidence_binding", "test_learning_store", "test_learning_boundary",
 ]
+PG_TESTS = ["test_learning_persistence_postgres"]
 STEP = "Phase 28B-0 learning evidence contracts"
+PG_STEP = "Phase 28B-1A learning evidence PostgreSQL persistence"
 
 STDLIB_ALLOWED = {"__future__", "dataclasses", "datetime", "decimal", "enum", "hashlib", "json", "re", "typing", "collections", "math", "uuid"}
+STORE_PRIVATE_ALLOWED = {"backend.engine.private.storage_models"}
+DRIVER_ROOTS = {"psycopg", "psycopg2", "asyncpg", "postgrest", "supabase", "sqlalchemy", "httpx", "requests", "aiohttp", "urllib", "socket", "os", "pathlib", "subprocess", "time", "asyncio", "threading", "random", "secrets"}
 PRIVATE_ALLOWED = {"backend.engine.private.storage_models", "backend.engine.private.market_data.tefas_models"}
 FORBIDDEN_PRIVATE_FRAGMENTS = (
     "portfolio", "allocation_rebalance", "backtest_", "scheduler_", "game_changer", "providers", "orchestrator", "identity", "user_view", "trade", "order", "ledger",
@@ -77,7 +83,7 @@ def test_only_the_adapter_module_touches_private_code() -> None:
 def test_importing_learning_pulls_in_no_economic_decision_authority() -> None:
     code = (
         f"import json, sys\nsys.path.insert(0, {str(ROOT)!r})\n"
-        "import backend.engine.learning.adapters, backend.engine.learning.preregistration, backend.engine.learning.universe_coverage\n"
+        "import backend.engine.learning.adapters, backend.engine.learning.preregistration, backend.engine.learning.universe_coverage, backend.engine.learning.evidence_binding, backend.engine.learning_store.evidence_binding_repository\n"
         "print(json.dumps(sorted(m for m in sys.modules if m.startswith('backend.engine.private') or m.startswith('backend.services') or m.startswith('backend.api'))))\n"
     )
     out = subprocess.run([sys.executable, "-I", "-c", code], cwd=ROOT, capture_output=True, text=True, check=True).stdout
@@ -120,7 +126,7 @@ def test_no_module_outside_learning_imports_it() -> None:
     for base in ("backend",):
         for p in (ROOT / base).rglob("*.py"):
             rel = p.relative_to(ROOT).as_posix()
-            if rel.startswith(("backend/engine/learning/", "backend/tests/")) or ".venv" in rel:
+            if rel.startswith(("backend/engine/learning/", "backend/engine/learning_store/", "backend/tests/")) or ".venv" in rel:
                 continue
             if "backend.engine.learning" in p.read_text(encoding="utf-8", errors="ignore"):
                 offenders.append(rel)
@@ -135,7 +141,62 @@ def test_private_engine_does_not_reference_learning_by_path() -> None:
 def test_only_learning_tests_import_learning_besides_boundary_exceptions() -> None:
     for p in (ROOT / "backend" / "tests").glob("*.py"):
         if "backend.engine.learning" in p.read_text(encoding="utf-8"):
-            assert p.stem in CI_TESTS or p.stem == "learning_support", p.name
+            assert p.stem in CI_TESTS or p.stem in PG_TESTS or p.stem == "learning_support", p.name
+
+
+def store_sources() -> dict[str, str]:
+    return {p.stem: p.read_text(encoding="utf-8") for p in sorted(STORE.glob("*.py"))}
+
+
+def test_store_module_inventory_is_exactly_the_reviewed_set() -> None:
+    assert sorted(store_sources()) == sorted(STORE_MODULES)
+
+
+def test_store_imports_only_learning_contracts_and_the_private_storage_type() -> None:
+    for name, src in store_sources().items():
+        for mod in imported_modules(src):
+            root = mod.split(".")[0]
+            assert root not in DRIVER_ROOTS, (name, mod)             # no DB driver, HTTP client, clock, filesystem or process access: transports are injected
+            if root == "backend":
+                assert mod.startswith(("backend.engine.learning.", "backend.engine.learning_store")) or mod in STORE_PRIVATE_ALLOWED, (name, mod)
+            else:
+                assert mod in STDLIB_ALLOWED or root in STDLIB_ALLOWED, (name, mod)
+
+
+def test_pure_learning_package_never_imports_the_store_or_a_database_driver() -> None:
+    for name, src in sources().items():
+        for mod in imported_modules(src):
+            assert not mod.startswith("backend.engine.learning_store"), (name, mod)
+            assert mod.split(".")[0] not in DRIVER_ROOTS, (name, mod)
+
+
+def test_store_sources_pass_clock_entropy_float_and_missing_zero_guards() -> None:
+    for name, src in store_sources().items():
+        for scan in (sg.scan_g1, sg.scan_g2, sg.scan_g4, sg.scan_g5):
+            assert scan(src, f"backend/engine/learning_store/{name}.py") == [], (name, scan.__name__)
+
+
+def test_store_issues_no_sql_and_never_names_the_raw_snapshot_table() -> None:
+    for name, src in store_sources().items():
+        for token in ("raw_provider_snapshots", "INSERT INTO", "DELETE FROM", "TRUNCATE", "UPDATE public"):
+            assert token not in src, (name, token)
+
+
+def test_migration_030_creates_one_table_no_policy_no_security_definer_and_no_api_role_grant() -> None:
+    sql = (ROOT / "supabase" / "migrations" / "030_learning_evidence_bindings.sql").read_text(encoding="utf-8")
+    assert "SECURITY DEFINER" not in sql.upper() and "CREATE POLICY" not in sql.upper()
+    assert sql.count("CREATE TABLE") == 1 and "ALTER TABLE public.raw_provider_snapshots" not in sql
+    grants = [line.strip() for line in sql.splitlines() if line.strip().upper().startswith("GRANT")]
+    assert grants and all(line.rstrip(";").endswith("TO service_role") for line in grants), grants
+
+
+def test_postgres_ci_step_is_permanent_runs_against_real_postgres_and_is_not_socket_disabled() -> None:
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert f"- name: {PG_STEP}" in ci
+    block = ci.split(f"- name: {PG_STEP}", 1)[1].split("\n    - name:", 1)[0]
+    assert "SENTINAX_TEST_POSTGRES_URL" in block and "psycopg[binary]==3.3.6" in block and "--disable-socket" not in block
+    for t in PG_TESTS:
+        assert f"backend/tests/{t}.py" in block, t
 
 
 def test_ci_gate_is_permanent_and_lists_every_learning_test() -> None:

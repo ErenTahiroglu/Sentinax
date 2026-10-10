@@ -16,7 +16,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Tuple
 
-from backend.engine.learning._checks import require_enum, require_exact_type, require_sha256
+from backend.engine.learning._checks import require_aware_datetime, require_enum, require_exact_type, require_sha256, utc
+from backend.engine.learning.evidence_binding import (
+    _ISSUER,
+    BindingVerificationLevels,
+    EvidenceBindingDeclaration,
+    EvidenceBindingError,
+    VerificationLevel,
+    VerifiedEvidenceBinding,
+)
 from backend.engine.learning.observation_status import CapturedObservation, ObservationOrigin, ObservationStatus
 from backend.engine.learning.source_authority import AvailabilityStatus, LicensingStatus, SourceAuthorityClass, SourceAuthorityRecord
 from backend.engine.learning.temporal_provenance import TemporalProvenance
@@ -83,3 +91,41 @@ def captured_observation_from_tefas_price(
         provenance=provenance,
         observed_unit_price=observation.unit_price,
     )
+
+
+def verify_evidence_binding(declaration: EvidenceBindingDeclaration, record: "RawProviderSnapshotRecord | None") -> VerifiedEvidenceBinding:
+    """
+    Bind a declaration to the retained record, failing closed. Establishes ONLY stored-content integrity, record-reference existence and source-identity binding:
+    the retained payload must re-hash (closed `compute_payload_hash`) to the record's stored hash and to the declared hash, and the declared retrieval instant must be the
+    retained record's own `retrieved_at` (never an economic date). It does not verify licensing, completeness, document assertions or publication time, and does not prove
+    provider authenticity.
+    """
+    require_exact_type("declaration", declaration, EvidenceBindingDeclaration)
+    if record is None:
+        raise EvidenceBindingError("the referenced raw snapshot does not exist")
+    if type(record) is not RawProviderSnapshotRecord:
+        raise EvidenceBindingError(f"the retained record must be exactly a RawProviderSnapshotRecord, got {type(record).__name__}")
+    src = declaration.source_authority
+    if record.id != src.raw_snapshot_id:
+        raise EvidenceBindingError("conflicting snapshot identity: the retained record is not the referenced snapshot")
+    if record.provider != declaration.expected_provider or record.endpoint != declaration.expected_endpoint:
+        raise EvidenceBindingError("source identity mismatch between the declaration and the retained record")
+    if record.raw_payload is None:
+        raise EvidenceBindingError("the retained record holds no payload this verifier can re-hash")
+    try:
+        require_sha256("record.payload_hash", record.payload_hash)
+        require_aware_datetime("record.retrieved_at", record.retrieved_at)
+    except (TypeError, ValueError) as exc:
+        raise EvidenceBindingError(f"the retained record is malformed: {exc}") from exc
+    if compute_payload_hash(record.raw_payload) != record.payload_hash:
+        raise EvidenceBindingError("the retained payload does not re-hash to its stored hash")
+    if src.content_sha256 != record.payload_hash:
+        raise EvidenceBindingError("the declared content hash is not the retained record's hash")
+    if utc(src.retrieved_at) != utc(record.retrieved_at):
+        raise EvidenceBindingError("the declared retrieval instant is not the retained record's retrieved_at")
+    levels = BindingVerificationLevels(
+        stored_content_integrity=VerificationLevel.VERIFIED,
+        record_reference_existence=VerificationLevel.VERIFIED,
+        source_identity_binding=VerificationLevel.VERIFIED,
+    )
+    return VerifiedEvidenceBinding(declaration=declaration, snapshot_retrieved_at=record.retrieved_at, levels=levels, _issuer=_ISSUER)

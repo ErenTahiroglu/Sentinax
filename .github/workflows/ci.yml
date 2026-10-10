@@ -396,6 +396,8 @@ jobs:
           backend/tests/test_learning_observation_status.py \
           backend/tests/test_learning_preregistration.py \
           backend/tests/test_learning_adapters.py \
+          backend/tests/test_learning_evidence_binding.py \
+          backend/tests/test_learning_store.py \
           backend/tests/test_learning_boundary.py \
           -q --disable-socket
 
@@ -425,4 +427,15 @@ jobs:
       run: |
         python -m pytest \
           backend/tests/test_supabase_security_advisor_postgres.py \
+          -v -s
+
+    # Phase 28B-1A: real PostgreSQL (no --disable-socket). Executes the REAL migrations 001 through 030 (append-only learning evidence bindings, RLS/grants, atomic idempotent RPC,
+    # concurrency, rollback, direct UPDATE/DELETE/TRUNCATE denial). The test-only driver is installed here, never in backend/requirements.txt. Offline: no provider is contacted.
+    - name: Phase 28B-1A learning evidence PostgreSQL persistence
+      env:
+        SENTINAX_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/sentinax_concurrency
+      run: |
+        python -m pip install "psycopg[binary]==3.3.6"
+        python -m pytest \
+          backend/tests/test_learning_persistence_postgres.py \
           -v -s

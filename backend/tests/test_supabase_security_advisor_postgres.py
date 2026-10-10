@@ -145,7 +145,7 @@ def has_table(pg, role, priv, table="public.rate_limits"):
 def test_server_version_and_all_migrations_through_029_ran(pg):
     major = int(pg.scalar("SHOW server_version_num")) // 10000
     print(f"EVIDENCE postgres_server_version={pg.scalar('SHOW server_version')} migrations={len(MIGRATIONS)} last={MIGRATIONS[-1].name}")
-    assert major >= 16 and MIGRATIONS[-1].name.startswith("029_")
+    assert major >= 16 and any(m.name.startswith("029_") for m in MIGRATIONS)       # "through 029": later migrations (030+) may follow
 
 
 # --- rate_limits: RLS on, no client table access ----------------------------------------------------------------------------------------------
@@ -424,7 +424,7 @@ def contract(row):
 
 
 def test_fresh_replay_through_029_has_exactly_one_of_each_target_with_an_explicit_path(pg):
-    assert MIGRATIONS[-1].name.startswith("029_")
+    assert any(m.name.startswith("029_") for m in MIGRATIONS)                    # replayed through 029 (later migrations may follow)
     for name in TARGETS:
         rows = target_rows(pg, name)
         assert len(rows) == 1, name
