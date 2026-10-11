@@ -89,8 +89,18 @@ class TestPortfolioImportWriteSurfaceSchema:
         assert "prevent_import_claim_binding_tamper" in sql_014
 
     def test_backend_uses_service_role_key(self):
-        """Section 28: Prove architecture expects a service-role backend client."""
-        deps_path = Path(__file__).resolve().parent.parent / "api" / "dependencies.py"
-        assert deps_path.exists()
-        deps_src = deps_path.read_text(encoding="utf-8")
-        assert "SUPABASE_SERVICE_ROLE_KEY" in deps_src
+        """Section 28: the architecture expects a trusted service-role writer, not an API-layer client.
+
+        Phase 25D1E2: this used to assert that the public API layer's dependencies.py mentioned SUPABASE_SERVICE_ROLE_KEY. That helper (and the legacy quota dependency
+        that read the key for any authenticated user) was retired, so the evidence is now the real contract: the import-commit RPCs are executable by service_role ONLY
+        (migrations 016/017), and the ledger repository receives its privileged client by injection instead of reading secrets.
+        """
+        sql_016 = MIGRATION_016.read_text(encoding="utf-8")
+        assert re.search(r"GRANT\s+EXECUTE\s+ON\s+FUNCTION\s+public\.commit_portfolio_import_claim\(JSONB,\s*JSONB\)\s+TO\s+service_role", sql_016, re.IGNORECASE)
+        sql_017 = (MIGRATIONS_DIR / "017_portfolio_import_atomic_batch_commit.sql").read_text(encoding="utf-8")
+        assert re.search(r"GRANT\s+EXECUTE\s+ON\s+FUNCTION\s+public\.commit_portfolio_import_claim_batch\(JSONB\)\s+TO\s+service_role", sql_017, re.IGNORECASE)
+        repo_src = (MIGRATIONS_DIR.parent.parent / "backend" / "engine" / "private" / "portfolio" / "repository.py").read_text(encoding="utf-8")
+        assert re.search(r"def __init__\(\s*self,\s*client: Any,", repo_src)
+        assert not re.search(r"os\.environ|getenv|create_client|SERVICE_ROLE", repo_src)
+        deps_src = (Path(__file__).resolve().parent.parent / "api" / "dependencies.py").read_text(encoding="utf-8")
+        assert "SUPABASE_SERVICE_ROLE_KEY" not in deps_src

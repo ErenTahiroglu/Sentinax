@@ -514,10 +514,13 @@ class TestLegacyWatchlistNameCollision:
         assert "/rest/v1/legacy_portfolio_watchlists?select=user_id,tickers" in source
         assert "/rest/v1/portfolios?select=user_id,tickers" not in source
 
-    def test_health_check_still_targets_the_private_portfolios_table(self):
+    def test_health_check_references_no_portfolio_table_at_all(self):
+        # Phase 25D1E2: /api/health used to probe the PRIVATE portfolios table with the service-role key (this test then pinned that it did not point at the renamed legacy
+        # table). The endpoint is now a pure liveness probe with no database access, so it can neither hit the legacy collision nor touch private data.
         with open(MAIN_API_PATH, "r", encoding="utf-8") as f:
             source = f.read()
-        assert "/rest/v1/portfolios?limit=1" in source
+        assert "/rest/v1/" not in source
+        assert "legacy_portfolio_watchlists" not in source and "/rest/v1/portfolios?select=user_id,tickers" not in source
 
     @pytest.mark.parametrize("path", LEGACY_SETUP_FILES, ids=["schema.sql", "supabase_setup.sql"])
     def test_legacy_setup_files_no_longer_create_the_colliding_table(self, path: str):

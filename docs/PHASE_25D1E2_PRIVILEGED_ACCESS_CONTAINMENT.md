@@ -24,5 +24,10 @@ Başka kritik canlı sızıntı bulunmadı; bulunsaydı kapsam sessizce genişle
 ## 3. Mevcut invariant değişikliği (belgelenmiş)
 `backend/tests/test_portfolio_transaction_write_surface_hardening_schema.py::test_canonical_repository_append_path_still_inserts_with_service_role_privilege` son satırı "`SUPABASE_SERVICE_ROLE_KEY` `backend/api/dependencies.py` içinde geçer" diyordu (güvenilir istemci kanıtı). Bu varsayım eskiydi: gerçek yazma sınırı `PortfolioRepository`'nin **enjekte edilmiş istemcisi**dir; anahtarın API katmanında okunması bir gereklilik değil bir sızıntı yüzeyiydi. Test artık (a) depo yapıcısının istemciyi enjekte aldığını, (b) depo modülünün ortam okumadığını/istemci üretmediğini, (c) API katmanında service-role kullanımı olmadığını doğrular. Ledger INSERT-only ve ekleme yolu doğrulamaları aynen korunur.
 
+Aynı gerekçeyle iki eski invariant daha güncellendi (silinmedi, zayıflatılmadı; ilkinin amacı olan "private tabloyu hedefler" şartı artık "hiçbir tabloya dokunmaz" ile daha güçlü karşılanır):
+- `test_portfolio_persistence_schema.py::test_health_check_still_targets_the_private_portfolios_table` → `test_health_check_references_no_portfolio_table_at_all`: `main.py` içinde `/rest/v1/` yok, eski `legacy_portfolio_watchlists` çarpışmasına dokunan sorgu yok.
+- `test_portfolio_import_write_surface_schema.py::test_backend_uses_service_role_key`: kanıt artık gerçek sözleşme — import-commit RPC'leri yalnızca `service_role`'e açık (migration 016/017 GRANT), ledger deposu ayrıcalıklı istemciyi enjeksiyonla alır (ortam okumaz/istemci üretmez) ve `dependencies.py` anahtarı içermez.
+**Süreç notu:** ilk push'ta bu iki test yerelde çalıştırılmayan CI adımlarında (Phase 12/13) vardı ve Backend Correctness Gate'i kırdı; düzeltme normal bir takip commit'iyle yapıldı ve CI'daki tüm PostgreSQL-dışı backend adımları (32) yerelde eksiksiz çalıştırıldı.
+
 ## 4. Artık riskler
 Diğer service-role çağıranları (yukarıdaki tablo), `/api/metrics` açığı, CORS varsayılanları, idempotency ve WebSocket kimlik doğrulaması, canlı Edge Function ayarı, ledger yazıcının üretim kablolaması: ayrı kapılar.
