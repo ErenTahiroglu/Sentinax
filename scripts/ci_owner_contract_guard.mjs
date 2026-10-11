@@ -16,10 +16,12 @@ const VITEST_FLOORS = {
     'owner_session_isolation_static.test.js': 8,
     'owner_static_boundaries.test.js': 5,
     'owner_deploy_artifact.test.js': 36, // Phase 25D1C3: isolated deployment artifact, routing, headers, build fail-closed, gitleaks scope
+    'private_ui_shell.test.js': 15, // Phase 25D1E1: offline private Deep Ocean shell (honest states, no figures/session/network, deployment isolation)
     'owner_cloudflare_artifact.test.js': 29, // Phase 25D1C5: Cloudflare Pages package (artifact, 404 vs SPA fallback, _headers, fail-closed build, no CF credentials in CI)
 };
 const PLAYWRIGHT_FLOORS = [
     { file: 'owner_bootstrap.spec.js', projects: ['chromium', 'Mobile Chrome'], perProject: 6 },
+    { file: 'private_ui_shell.spec.js', projects: ['chromium', 'Mobile Chrome'], perProject: 5 },
     { file: 'owner_deploy_artifact.spec.js', projects: ['chromium', 'Mobile Chrome'], perProject: 10 }, // 5 tests x (vercel legacy package + cloudflare package)
 ];
 const failures = [];
@@ -92,6 +94,7 @@ for (const f of fs.readdirSync(path.join(REPO, '.github/workflows'))) {
 }
 const pwCfg = fs.readFileSync(path.join(REPO, 'playwright.config.js'), 'utf8');
 if (!pwCfg.includes('scripts/owner_deploy_serve.mjs') || !pwCfg.includes('127.0.0.1:3001')) fail('playwright.config.js does not start the owner artifact smoke server');
+if (!pwCfg.includes("directory='private_ui'") || !pwCfg.includes('127.0.0.1:3003')) fail('playwright.config.js does not serve the offline private shell');
 if (!pwCfg.includes('owner_deploy_serve.mjs cloudflare') || !pwCfg.includes('127.0.0.1:3002')) fail('playwright.config.js does not start the Cloudflare owner artifact smoke server');
 const deployCfg = JSON.parse(fs.readFileSync(path.join(REPO, 'deploy/owner-bootstrap/vercel.json'), 'utf8'));
 const hdr = Object.fromEntries((deployCfg.headers || []).flatMap((r) => r.headers.map((h) => [h.key.toLowerCase(), h.value])));

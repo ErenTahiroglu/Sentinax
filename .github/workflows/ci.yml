@@ -105,6 +105,20 @@ jobs:
           backend/tests/test_owner_bootstrap_readiness.py \
           -q --disable-socket --allow-unix-socket
 
+    # Phase 25D1E1: first guarded private read API (GET /private/portfolio/summary). Real FastAPI app + real JWT verifier with synthetic keys (no override, no Supabase,
+    # no network: sockets stay blocked). Fails if any test is skipped or fewer than 49 pass. TestClient needs AF_UNIX.
+    - name: Phase 25D1E1 guarded private portfolio summary API
+      run: |
+        python -m pytest backend/tests/test_private_portfolio_summary_api.py -q -rs --disable-socket --allow-unix-socket 2>&1 | tee private_api.log
+        if grep -Eiq "skipped|deselected" private_api.log; then echo "private API tests were skipped"; exit 1; fi
+        python - <<'PY'
+        import re, sys
+        m = re.search(r"(\d+) passed", open("private_api.log").read())
+        if not m or int(m.group(1)) < 49:
+            sys.exit(f"private portfolio summary API: expected >= 49 passed, got {m.group(1) if m else 'none'}")
+        print(f"private portfolio summary API: {m.group(1)} passed")
+        PY
+
     - name: No-crypto invariant
       run: |
         python -m pytest \

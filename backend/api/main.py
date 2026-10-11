@@ -6,6 +6,7 @@ aktif Buffett Engine router'ını include eder.
 
 Aktif router'lar:
 - /buffett/* (Buffett Engine — Public)
+- /private/portfolio/summary (Phase 25D1E1 — yalnızca sahip: JWT + owner + AAL2/TOTP; şimdilik her zaman UNAVAILABLE)
 
 Devre dışı (deprecated routers silindi):
 - analysis, billing, admin, user, chat, telemetry
@@ -31,7 +32,7 @@ from backend.infrastructure.redis_cache import cache_close, cache_get, cache_set
 from backend.infrastructure.http_client import init_global_http_client, close_global_http_client
 from backend.api.websocket import register_websocket_routes, _clients
 from backend.utils.logger import setup_logging, CorrelationIdMiddleware, correlation_id_ctx
-from backend.api.routers import buffett
+from backend.api.routers import buffett, private_portfolio
 
 def validate_critical_env():
     """Kritik ortam değişkenlerini başlatmadan önce doğrular (Fail-Fast)."""
@@ -156,6 +157,12 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
 class NoCacheMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
+        if request.url.path == "/private" or request.url.path.startswith("/private/"):
+            # Private owner responses (success AND 401/403/503 errors) are never stored by shared or browser caches.
+            response.headers["Cache-Control"] = "private, no-store"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Vary"] = "Authorization"
+            response.headers["X-Content-Type-Options"] = "nosniff"
         if request.url.path.startswith("/ui"):
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
             response.headers["Pragma"] = "no-cache"
@@ -215,6 +222,7 @@ register_websocket_routes(app)
 
 # ── Active Router ─────────────────────────────────────────────────────────
 app.include_router(buffett.router)
+app.include_router(private_portfolio.router)
 
 # ── Health & Metrics Endpoints ────────────────────────────────────────────
 @app.get("/api/health")

@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'">
+    <meta name="referrer" content="no-referrer">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Sentinax Özel Alan</title>
+    <link rel="stylesheet" href="css/deep_ocean.css">
+</head>
+<body data-mode="simple">
+    <a class="skip" href="#main">İçeriğe geç</a>
+    <header class="topbar">
+        <div class="brand">Sentinax <span class="brand-sub">Özel Alan</span></div>
+        <p class="proto-banner" role="note">Çevrimdışı arayüz prototipi: oturum yok, sunucu bağlantısı yok, gerçek veri yok.</p>
+        <div class="mode" role="group" aria-label="Görünüm modu">
+            <button type="button" class="mode-btn" data-mode-set="simple" aria-pressed="true">Sade</button>
+            <button type="button" class="mode-btn" data-mode-set="advanced" aria-pressed="false">Gelişmiş</button>
+        </div>
+    </header>
+
+    <div class="layout">
+        <nav class="sidenav" aria-label="Özel alan bölümleri">
+            <button type="button" class="nav-btn" data-target="overview" aria-current="page">Genel Bakış</button>
+            <button type="button" class="nav-btn" data-target="opportunities">Yatırım Fırsatları</button>
+            <button type="button" class="nav-btn" data-target="portfolio">Portföy</button>
+            <button type="button" class="nav-btn" data-target="allocation">Dağılım ve Senaryolar</button>
+            <button type="button" class="nav-btn" data-target="research">Piyasa Araştırması</button>
+            <button type="button" class="nav-btn" data-target="risk">Risk ve Kanıt</button>
+        </nav>
+
+        <main id="main" class="content">
+            <section id="panel-overview" class="panel" data-panel="overview">
+                <h1>Genel Bakış</h1>
+                <p class="lead">Öncelik sırası: fırsat keşfi, portföye uyarlanmış dağılım ve senaryolar, makro/mikro araştırma, ardından izleme.</p>
+                <div class="state-card state-unavailable">
+                    <span class="chip chip-unavailable">UNAVAILABLE</span>
+                    <p>Özel veri kaynağı bağlı değil. Bu alan şu an hiçbir portföy, fiyat, getiri veya risk bilgisi göstermiyor.</p>
+                </div>
+                <h2>Veri durumları nasıl okunur?</h2>
+                <dl class="legend">
+                    <dt><span class="chip chip-unavailable">UNAVAILABLE</span></dt>
+                    <dd>Nitelikli bir kaynak bağlı değil; boş görünen şey “yok” demek değildir.</dd>
+                    <dt><span class="chip chip-empty">EMPTY</span></dt>
+                    <dd>Yetkili bir kaynak kontrol edildi ve kayıtlı pozisyon olmadığı doğrulandı.</dd>
+                    <dt><span class="chip chip-available">AVAILABLE</span></dt>
+                    <dd>Kaynağı, veri tarihi ve hakkı belgelenmiş nitelikli kanıt mevcut.</dd>
+                </dl>
+                <div class="adv">
+                    <h2>Kaynak künyesi (sözleşme alanları)</h2>
+                    <table class="prov">
+                        <tbody>
+                            <tr><th scope="row">contract_version</th><td>private_portfolio_summary.v1</td></tr>
+                            <tr><th scope="row">data_status</th><td>UNAVAILABLE</td></tr>
+                            <tr><th scope="row">reason_code</th><td>NO_QUALIFIED_SOURCE_CONNECTED</td></tr>
+                            <tr><th scope="row">source</th><td>—</td></tr>
+                            <tr><th scope="row">as_of</th><td>—</td></tr>
+                        </tbody>
+                    </table>
+                    <p class="note">Bu tablo bir sunucu yanıtı değildir; sözleşmenin belgelenmiş durumunu gösterir.</p>
+                </div>
+            </section>
+
+            <section id="panel-opportunities" class="panel" data-panel="opportunities">
+                <h1>Yatırım Fırsatları</h1>
+                <p class="lead">BIST, TEFAS, ABD ve Almanya hisse/ETF evreninde, portföyünüze göre sıralanmış ve kaynaklı fırsat keşfi.</p>
+                <div class="state-card state-unavailable"><span class="chip chip-unavailable">UNAVAILABLE</span><p>Fırsat motoru için lisanslı ve zaman damgalı veri kaynağı bağlı değil. Öneri, skor veya sinyal gösterilmiyor.</p></div>
+                <div class="adv"><p class="note">Gelecekte her fırsat: kaynak, veri tarihi, varsayımlar ve belirsizlik aralığıyla birlikte gelecek.</p></div>
+            </section>
+
+            <section id="panel-portfolio" class="panel" data-panel="portfolio">
+                <h1>Portföy</h1>
+                <p class="lead">Gerçek mevcut pozisyonlar; bilinmeyen maliyet veya tarih “bilinmiyor” olarak kalır.</p>
+                <div class="state-card state-unavailable"><span class="chip chip-unavailable">UNAVAILABLE</span><p>Doğrulanmış bir portföy kaynağı bağlı değil. Pozisyon, değer, maliyet ve kâr/zarar gösterilmiyor.</p></div>
+                <div class="adv"><p class="note">İçe aktarma: önce mevcut pozisyon dökümü, sonra geçmiş; her adım önizleme ve açık onay gerektirecek.</p></div>
+            </section>
+
+            <section id="panel-allocation" class="panel" data-panel="allocation">
+                <h1>Dağılım ve Senaryolar</h1>
+                <p class="lead">Ufuk, risk ve likidite seçimlerinize bağlı dağılım önerileri ve “ya şöyle olsaydı” senaryoları.</p>
+                <div class="state-card state-unavailable"><span class="chip chip-unavailable">UNAVAILABLE</span><p>Portföy ve piyasa girdileri bağlı olmadığı için dağılım veya senaryo hesaplanmıyor.</p></div>
+                <div class="adv"><p class="note">Yöntemler araştırma aşamasındadır; hiçbiri otomatik olarak canlı kullanıma hazır sayılmaz.</p></div>
+            </section>
+
+            <section id="panel-research" class="panel" data-panel="research">
+                <h1>Piyasa Araştırması</h1>
+                <p class="lead">Makro ve mikro göstergeler, şirket/fon kanıtları ve haber bağlamı; her biri kaynağıyla.</p>
+                <div class="state-card state-unavailable"><span class="chip chip-unavailable">UNAVAILABLE</span><p>Haklı kullanımı doğrulanmış piyasa verisi bağlı değil. Grafik, gösterge veya özet üretilmiyor.</p></div>
+                <div class="adv"><p class="note">Genel Buffett araştırma alanı ayrı bir kaynaktır ve bu özel alanla veri paylaşmaz.</p></div>
+            </section>
+
+            <section id="panel-risk" class="panel" data-panel="risk">
+                <h1>Risk ve Kanıt</h1>
+                <p class="lead">Risk ölçütleri, veri yeterliliği ve kanıt zinciri; tek bir kör skor yok.</p>
+                <div class="state-card state-unavailable"><span class="chip chip-unavailable">UNAVAILABLE</span><p>Risk hesabı için yeterli, kaynaklı veri yok. Risk puanı veya derecelendirme gösterilmiyor.</p></div>
+                <div class="adv"><p class="note">Belirsizlik ve veri boşlukları her zaman görünür kalacak.</p></div>
+            </section>
+        </main>
+    </div>
+
+    <footer class="foot">Karar destek aracıdır; yatırım tavsiyesi veya emir değildir. Emir göndermez.</footer>
+    <script src="js/shell.js" defer></script>
+</body>
+</html>
