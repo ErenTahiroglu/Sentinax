@@ -477,3 +477,20 @@ jobs:
           backend/tests/test_legacy_pit_truncate_hardening_schema.py \
           backend/tests/test_legacy_pit_truncate_hardening_postgres.py \
           -v -s
+
+    # Phase 25D1E0: offline owner/AAL2 database contract for the Migration 032 CANDIDATE (supabase/candidates/, never auto-applied). Reuses the disposable
+    # postgres:16 service above (extra throw-away databases are created on it; no Supabase project is contacted). Fails if the tests are skipped or fewer than 175 pass.
+    - name: Phase 25D1E0 owner/AAL2 database contract (Migration 032 candidate)
+      env:
+        SENTINAX_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/sentinax_concurrency
+      run: |
+        python -m pip install "psycopg[binary]==3.3.6"
+        python -m pytest backend/tests/test_owner_aal2_database_postgres.py -q -rs 2>&1 | tee owner_aal2.log
+        if grep -Eiq "skipped" owner_aal2.log; then echo "owner/AAL2 database tests were skipped"; exit 1; fi
+        python - <<'PY'
+        import re, sys
+        m = re.search(r"(\d+) passed", open("owner_aal2.log").read())
+        if not m or int(m.group(1)) < 175:
+            sys.exit(f"owner/AAL2 database contract: expected >= 175 passed, got {m.group(1) if m else 'none'}")
+        print(f"owner/AAL2 database contract: {m.group(1)} passed")
+        PY
