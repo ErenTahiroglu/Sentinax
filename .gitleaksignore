@@ -73,3 +73,6 @@ fde329f71ab2f136789d28d2064d27cd74f4385e:frontend-vanilla-backup/js/core/config.
 
 # Cloudflare Web Analytics client-side beacon token in a downloaded public HTML page (not a Cloudflare API token)
 74974eb113328c01f1e7348b729d32f4e93497f7:fintables.html:generic-api-key:2
+
+# Phase 25D1B-H1: synthetic HS256 test-fixture string (LEGACY_SECRET) in the JWT verifier test support module; authored in this commit, signs only synthetic tokens in tests, protects nothing. Exact fingerprint only; Red Team adjudication: 25D1B-H1.
+8975bfe5a3970a8426d3eecc6f74d68a4ca457ce:backend/tests/jwt_support.py:generic-api-key:11
