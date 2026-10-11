@@ -79,6 +79,13 @@ jobs:
           backend/tests/invariants/test_static_guards.py \
           -q --disable-socket
 
+    # Phase 25D0: public Buffett API must fail closed. TestClient needs AF_UNIX; network sockets stay blocked.
+    - name: Phase 25D0 public Buffett fail-closed
+      run: |
+        python -m pytest \
+          backend/tests/test_buffett_public_unavailable.py \
+          -q --disable-socket --allow-unix-socket
+
     - name: No-crypto invariant
       run: |
         python -m pytest \

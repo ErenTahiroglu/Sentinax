@@ -400,3 +400,12 @@ body {
 .hidden {
     display: none !important;
 }
+
+.unavailable-state {
+    grid-column: 1 / -1;
+    padding: 24px;
+    border: 1px dashed var(--text-secondary);
+    border-radius: 12px;
+    color: var(--text-secondary);
+}
+.unavailable-warning { font-size: 0.85rem; }

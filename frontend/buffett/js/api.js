@@ -1,30 +1,33 @@
 const API_BASE = '/buffett';
 
-async function fetchPortfolio() {
-    try {
-        const response = await fetch(`${API_BASE}/portfolio`);
-        if (!response.ok) throw new Error('API Error');
-        const data = await response.json();
-        return data.portfolio;
-    } catch (error) {
-        console.error('Failed to fetch portfolio:', error);
-        return [];
-    }
+function unavailable(key, reason) {
+    return {
+        data_status: 'UNAVAILABLE',
+        reason_code: 'API_UNREACHABLE',
+        reason,
+        [key]: [],
+        warnings: [],
+        as_of: null,
+        generated_at: null
+    };
 }
 
-async function fetchHistory() {
+async function fetchState(path, key) {
     try {
-        const response = await fetch(`${API_BASE}/history`);
+        const response = await fetch(`${API_BASE}/${path}`);
         if (!response.ok) throw new Error('API Error');
         const data = await response.json();
-        return data.changes;
+        if (!data || data.data_status !== 'AVAILABLE') {
+            return { ...unavailable(key, 'Veri kullanılamıyor.'), ...data, [key]: [] };
+        }
+        return data;
     } catch (error) {
-        console.error('Failed to fetch history:', error);
-        return [];
+        console.error(`Failed to fetch ${path}:`, error);
+        return unavailable(key, 'Sunucuya ulaşılamadı; veri gösterilemiyor.');
     }
 }
 
 window.api = {
-    fetchPortfolio,
-    fetchHistory
+    fetchPortfolio: () => fetchState('portfolio', 'portfolio'),
+    fetchHistory: () => fetchState('history', 'changes')
 };

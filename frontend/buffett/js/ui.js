@@ -1,5 +1,28 @@
-function renderPortfolioGrid(portfolio) {
+function renderUnavailable(container, state) {
+    container.replaceChildren();
+    const box = document.createElement('div');
+    box.className = 'unavailable-state';
+    const title = document.createElement('h3');
+    title.textContent = 'Veri kullanılamıyor';
+    const reason = document.createElement('p');
+    reason.textContent = (state && state.reason) || 'Veri kullanılamıyor.';
+    box.append(title, reason);
+    ((state && state.warnings) || []).forEach(w => {
+        const note = document.createElement('p');
+        note.className = 'unavailable-warning';
+        note.textContent = w;
+        box.appendChild(note);
+    });
+    container.appendChild(box);
+}
+
+function renderPortfolioGrid(state) {
     const grid = document.getElementById('portfolio-grid');
+    if (!state || state.data_status !== 'AVAILABLE') {
+        renderUnavailable(grid, state);
+        return;
+    }
+    const portfolio = state.portfolio || [];
     grid.innerHTML = '';
 
     portfolio.forEach(stock => {
@@ -131,8 +154,13 @@ function closeDetailDrawer() {
 document.getElementById('close-drawer').addEventListener('click', closeDetailDrawer);
 document.getElementById('drawer-overlay').addEventListener('click', closeDetailDrawer);
 
-function renderHistoryList(changes) {
+function renderHistoryList(state) {
     const list = document.getElementById('history-list');
+    if (!state || state.data_status !== 'AVAILABLE') {
+        renderUnavailable(list, state);
+        return;
+    }
+    const changes = state.changes || [];
     list.innerHTML = '';
     
     if (changes.length === 0) {
