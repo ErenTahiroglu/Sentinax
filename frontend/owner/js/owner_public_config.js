@@ -8,5 +8,5 @@
  */
 export const OWNER_PUBLIC_CONFIG = Object.freeze({
     supabaseUrl: 'https://zlggrmsolklhfgijcjnz.supabase.co',
-    publishableKey: 'sb_publishable_G67qSQ6JxmUYy3fuQAHb_Q_myhSebvW', // gitleaks:allow (publishable browser key, public by design; same value as frontend/js/core/config.js)
+    publishableKey: 'sb_publishable_G67qSQ6JxmUYy3fuQAHb_Q_myhSebvW', // gitleaks:allow (publishable browser key, public by design; same value the legacy SPA ships)
 });

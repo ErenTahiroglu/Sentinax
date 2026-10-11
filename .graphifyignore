@@ -6,3 +6,8 @@
 # drowning production communities. Keep them out of Graphify; codebase-memory still indexes them.
 backend/tests/
 tests/
+
+# Phase 25D1C3: the vendored, minified Supabase SDK bundle (525 nodes / ~3.2k edges of minified-name noise, ~19% of all edges)
+# is a deterministic build artifact guarded by owner_sdk_build.mjs --check + tests, not architecture. Graphify-only exclusion;
+# the bundle stays in app tests, CI and codebase-memory.
+frontend/owner/vendor/

@@ -25,12 +25,21 @@ export default defineConfig({
     },
   ],
   // Static frontend server (frontend/ has no npm manifest)
-  webServer: {
-    // Stock `http.server` has a listen backlog of 5 and resets connections when
-    // parallel workers load the ES-module graph; raise it.
-    command: `python3 -c "import functools, http.server as h; h.ThreadingHTTPServer.request_queue_size = 128; h.test(HandlerClass=functools.partial(h.SimpleHTTPRequestHandler, directory='frontend'), ServerClass=h.ThreadingHTTPServer, port=3000, bind='127.0.0.1')"`,
-    url: 'http://127.0.0.1:3000',
-    reuseExistingServer: !process.env.CI,
-    timeout: 30 * 1000,
-  },
+  webServer: [
+    {
+      // Stock `http.server` has a listen backlog of 5 and resets connections when
+      // parallel workers load the ES-module graph; raise it.
+      command: `python3 -c "import functools, http.server as h; h.ThreadingHTTPServer.request_queue_size = 128; h.test(HandlerClass=functools.partial(h.SimpleHTTPRequestHandler, directory='frontend'), ServerClass=h.ThreadingHTTPServer, port=3000, bind='127.0.0.1')"`,
+      url: 'http://127.0.0.1:3000',
+      reuseExistingServer: !process.env.CI,
+      timeout: 30 * 1000,
+    },
+    {
+      // Phase 25D1C3: the built owner deployment artifact with its vercel.json headers (local smoke only; not Vercel).
+      command: 'node scripts/owner_deploy_serve.mjs',
+      url: 'http://127.0.0.1:3001/owner',
+      reuseExistingServer: !process.env.CI,
+      timeout: 30 * 1000,
+    },
+  ],
 });

@@ -15,8 +15,12 @@ const VITEST_FLOORS = {
     'owner_selfcontained_static.test.js': 19,
     'owner_session_isolation_static.test.js': 8,
     'owner_static_boundaries.test.js': 5,
+    'owner_deploy_artifact.test.js': 36, // Phase 25D1C3: isolated deployment artifact, routing, headers, build fail-closed, gitleaks scope
 };
-const PLAYWRIGHT_FLOOR = { file: 'owner_bootstrap.spec.js', projects: ['chromium', 'Mobile Chrome'], perProject: 6 };
+const PLAYWRIGHT_FLOORS = [
+    { file: 'owner_bootstrap.spec.js', projects: ['chromium', 'Mobile Chrome'], perProject: 6 },
+    { file: 'owner_deploy_artifact.spec.js', projects: ['chromium', 'Mobile Chrome'], perProject: 5 },
+];
 const failures = [];
 const fail = (m) => failures.push(m);
 const run = (args) => execFileSync('npx', args, { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -34,18 +38,24 @@ const pw = JSON.parse(run(['playwright', 'test', '--list', '--reporter=json']));
 const pwCount = {};
 const walk = (suite) => {
     for (const spec of suite.specs || []) {
-        if (path.basename(spec.file) !== PLAYWRIGHT_FLOOR.file) continue;
-        for (const t of spec.tests || []) pwCount[t.projectName] = (pwCount[t.projectName] || 0) + 1;
+        const name = path.basename(spec.file);
+        for (const t of spec.tests || []) {
+            const key = `${name}:${t.projectName}`;
+            pwCount[key] = (pwCount[key] || 0) + 1;
+        }
     }
     for (const s of suite.suites || []) walk(s);
 };
 for (const s of pw.suites || []) walk(s);
-for (const p of PLAYWRIGHT_FLOOR.projects) {
-    if ((pwCount[p] || 0) < PLAYWRIGHT_FLOOR.perProject) fail(`playwright: ${PLAYWRIGHT_FLOOR.file} has ${pwCount[p] || 0} tests in project ${p}, expected at least ${PLAYWRIGHT_FLOOR.perProject}`);
+for (const { file, projects, perProject } of PLAYWRIGHT_FLOORS) {
+    for (const p of projects) {
+        const n = pwCount[`${file}:${p}`] || 0;
+        if (n < perProject) fail(`playwright: ${file} has ${n} tests in project ${p}, expected at least ${perProject}`);
+    }
 }
 
 // 3. No skipped / focused / TODO owner tests, and no config that excludes them.
-const ownerTestFiles = [...Object.keys(VITEST_FLOORS).map((f) => `frontend/tests/unit/${f}`), `tests/e2e/${PLAYWRIGHT_FLOOR.file}`];
+const ownerTestFiles = [...Object.keys(VITEST_FLOORS).map((f) => `frontend/tests/unit/${f}`), ...PLAYWRIGHT_FLOORS.map((f) => `tests/e2e/${f.file}`)];
 for (const rel of ownerTestFiles) {
     const src = fs.readFileSync(path.join(REPO, rel), 'utf8');
     if (/\b(?:it|test|describe)\.(?:skip|only|todo|fixme|skipIf|runIf)\b|\btest\.fail\b/.test(src)) fail(`${rel}: contains skip/only/todo/fixme/conditional test markers`);
@@ -53,7 +63,27 @@ for (const rel of ownerTestFiles) {
 const vitestCfg = fs.readFileSync(path.join(REPO, 'vitest.config.js'), 'utf8');
 if (/exclude:[^\]]*owner/s.test(vitestCfg)) fail('vitest.config.js excludes owner tests');
 
-// 4. Vendored SDK equals a fresh deterministic build of the lockfile version.
+// 4. Isolated deployment artifact: it must build, contain exactly the owner allowlist and nothing else, and be served by the
+// two-server Playwright config (the e2e spec above needs the artifact server on port 3001).
+try {
+    execFileSync('node', ['scripts/owner_deploy_build.mjs'], { cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const dist = path.join(REPO, 'deploy/owner-bootstrap/dist');
+    const listAll = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? listAll(path.join(d, e.name)) : [path.relative(dist, path.join(d, e.name))]));
+    const expected = ['owner/css/owner.css', 'owner/index.html', 'owner/js/client_config.js', 'owner/js/mfa_flow.js', 'owner/js/owner_app.js', 'owner/js/owner_public_config.js', 'owner/vendor/supabase-js.2.117.1.mjs'];
+    const actual = listAll(dist).sort();
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) fail(`deploy artifact files differ from the owner allowlist: ${JSON.stringify(actual)}`);
+} catch (e) {
+    fail(`owner deploy artifact build failed (${String(e.stderr || e.message).trim()})`);
+}
+const pwCfg = fs.readFileSync(path.join(REPO, 'playwright.config.js'), 'utf8');
+if (!pwCfg.includes('scripts/owner_deploy_serve.mjs') || !pwCfg.includes('127.0.0.1:3001')) fail('playwright.config.js does not start the owner artifact smoke server');
+const deployCfg = JSON.parse(fs.readFileSync(path.join(REPO, 'deploy/owner-bootstrap/vercel.json'), 'utf8'));
+const hdr = Object.fromEntries((deployCfg.headers || []).flatMap((r) => r.headers.map((h) => [h.key.toLowerCase(), h.value])));
+for (const k of ['content-security-policy', 'cache-control', 'x-frame-options', 'x-content-type-options', 'referrer-policy', 'cross-origin-opener-policy', 'cross-origin-resource-policy']) if (!hdr[k]) fail(`deploy vercel.json lacks header ${k}`);
+if (/unsafe-inline|unsafe-eval|\*/.test(hdr['content-security-policy'] || '')) fail('deploy vercel.json CSP contains unsafe-inline/unsafe-eval/wildcard');
+if ((deployCfg.rewrites || []).length || (deployCfg.routes || []).length) fail('deploy vercel.json declares rewrites/routes (fallbacks are forbidden)');
+
+// 5. Vendored SDK equals a fresh deterministic build of the lockfile version.
 try {
     execFileSync('node', ['scripts/owner_sdk_build.mjs', '--check'], { cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 } catch (e) {
@@ -64,4 +94,4 @@ if (failures.length) {
     console.error(`OWNER CONTRACT GUARD FAILED:\n - ${failures.join('\n - ')}`);
     process.exit(1);
 }
-console.log(`owner contract guard OK: vitest ${JSON.stringify(Object.fromEntries(Object.keys(VITEST_FLOORS).map((f) => [f, perFile[f]])))}; playwright ${JSON.stringify(pwCount)}; SDK bundle matches fresh build`);
+console.log(`owner contract guard OK: vitest ${JSON.stringify(Object.fromEntries(Object.keys(VITEST_FLOORS).map((f) => [f, perFile[f]])))}; playwright ${JSON.stringify(pwCount)}; deploy artifact built and allowlisted; SDK bundle matches fresh build`);
