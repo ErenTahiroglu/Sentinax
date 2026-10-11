@@ -1,0 +1,13 @@
+{
+  "package": "@supabase/supabase-js",
+  "version": "2.117.1",
+  "entry": "export { createClient } from '@supabase/supabase-js'",
+  "esbuild": "0.21.5",
+  "build": "node scripts/owner_sdk_build.mjs --write",
+  "lockfileIntegrity": {
+    "@supabase/supabase-js": "sha512-VcyiuXF0jZFbN4GcHtytSGNwfXnRJwlxjGFZxeEmRVgSLSbaoHk2Avyg49/aEdTJGBSz5vK1L7uhYiYdfl0Axw==",
+    "@supabase/auth-js": "sha512-3vJpc5thxaovbZ2zrWagzp/ZtCcXpQk1xftinzneNB1XLdhAmjqChOnj2Y8wpriYEFVvlqC+sFbR0JBUi83hDA=="
+  },
+  "bytes": 222387,
+  "sha256": "fd67f317ecaf4a0aa1b047c93caf4070c89c71cd4d547a70d7442467e25f51e7"
+}

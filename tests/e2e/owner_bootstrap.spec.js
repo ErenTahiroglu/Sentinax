@@ -1,24 +1,12 @@
-// Real Chromium + real @supabase/supabase-js@2.117.1 code (bundled locally with esbuild and served in place of the CDN URL)
+// Real Chromium + the vendored @supabase/supabase-js@2.117.1 bundle that the page itself ships (no CDN, no interception)
 // against a mocked Supabase Auth origin. This proves browser behaviour (CSP, storage, module loading, DOM wiring);
 // it does NOT prove anything about the real Supabase project, real TOTP codes or the production CDN bytes.
 import { test, expect } from '@playwright/test';
-import { build } from 'esbuild';
 
 const SUPA = 'https://zlggrmsolklhfgijcjnz.supabase.co';
-const CDN = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.1/+esm';
 const CODE = '123456';
 const SECRET = 'JBSWY3DPEHPK3PXP';
 const b64u = (o) => Buffer.from(typeof o === 'string' ? o : JSON.stringify(o)).toString('base64url');
-
-let sdkBundle;
-test.beforeAll(async () => {
-    // stdin re-export so esbuild applies the package's ESM ("import") entry and keeps named exports.
-    const out = await build({
-        stdin: { contents: "export * from '@supabase/supabase-js';", resolveDir: process.cwd(), loader: 'js' },
-        bundle: true, format: 'esm', platform: 'browser', write: false, logLevel: 'silent',
-    });
-    sdkBundle = out.outputFiles[0].text;
-});
 
 function authServer() {
     const s = { factors: [], n: 0, tokens: [] };
@@ -58,7 +46,6 @@ function authServer() {
 async function wire(page) {
     const server = authServer();
     const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' };
-    await page.route(CDN, (route) => route.fulfill({ status: 200, contentType: 'application/javascript', body: sdkBundle }));
     await page.route(`${SUPA}/**`, async (route) => {
         const req = route.request();
         if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
@@ -67,13 +54,15 @@ async function wire(page) {
         return route.fulfill({ status, headers: { ...cors, 'content-type': 'application/json' }, body: payload === null ? '' : JSON.stringify(payload) });
     });
     const logs = [];
+    const origins = new Set();
+    page.on('request', (r) => origins.add(new URL(r.url()).origin));
     page.on('console', (m) => logs.push(m.text()));
     page.on('pageerror', (e) => logs.push(`pageerror: ${e.message}`));
     await page.addInitScript(() => {
         window.__csp = [];
         document.addEventListener('securitypolicyviolation', (e) => window.__csp.push(`${e.violatedDirective} ${e.blockedURI}`));
     });
-    return { server, logs };
+    return { server, logs, origins };
 }
 
 const durableState = (page) => page.evaluate(async () => ({
@@ -86,7 +75,7 @@ const durableState = (page) => page.evaluate(async () => ({
 
 test.describe('owner bootstrap page in a real browser', () => {
     test('sign-in -> TOTP enrolment -> AAL2, with no durable storage, no CSP violations and no secrets in the console', async ({ page }) => {
-        const { server, logs } = await wire(page);
+        const { server, logs, origins } = await wire(page);
         await page.goto('/owner/index.html');
         await expect(page.locator('#view-signin')).toBeVisible();
         await expect(page.locator('#view-unlocked')).toBeHidden();
@@ -118,6 +107,8 @@ test.describe('owner bootstrap page in a real browser', () => {
         const state = await durableState(page);
         expect(state).toMatchObject({ local: 0, session: 0, cookie: '', idb: 0 });
         expect(state.csp).toEqual([]);
+        // Self-contained: the only origins the page ever talks to are itself and the Supabase project.
+        expect([...origins].sort()).toEqual(['http://127.0.0.1:3000', SUPA]);
         const consoleText = logs.join('\n');
         for (const secret of [SECRET, CODE, 'pw-correct', ...server.tokens]) expect(consoleText).not.toContain(secret);
     });
@@ -158,5 +149,26 @@ test.describe('owner bootstrap page in a real browser', () => {
         const other = await context.newPage();
         await other.goto('/owner/index.html');
         await expect(other.locator('#view-signin')).toBeVisible(); // a second tab does not share the session
+    });
+
+    test('canonical owner URL forms all load the same working page (no relative-asset breakage)', async ({ page }) => {
+        await wire(page);
+        for (const url of ['/owner/', '/owner/index.html']) {
+            await page.goto(url);
+            await expect(page.locator('#view-signin')).toBeVisible();
+        }
+    });
+
+    test('missing or invalid public configuration fails closed: locked page, no Supabase request, no sign-in form', async ({ page }) => {
+        const { origins } = await wire(page);
+        await page.route('**/owner/js/owner_public_config.js', (route) => route.fulfill({
+            status: 200, contentType: 'application/javascript',
+            body: "export const OWNER_PUBLIC_CONFIG = Object.freeze({ supabaseUrl: 'https://evil.example', publishableKey: 'sb_secret_xxxxxxxxxxxxxxxxxxxxxxxx' });",
+        }));
+        await page.goto('/owner/index.html');
+        await expect(page.locator('#status')).toHaveText('Oturum durumu doğrulanamadı; erişim kapalı.');
+        await expect(page.locator('#view-signin')).toBeHidden();
+        expect([...origins]).not.toContain(SUPA);
+        expect([...origins].some((o) => o.includes('evil.example'))).toBe(false);
     });
 });

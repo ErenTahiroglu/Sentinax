@@ -1,5 +1,6 @@
 import { createOwnerMfaFlow, STATES } from './mfa_flow.js';
-import { OWNER_AUTH_OPTIONS, SUPABASE_JS_URL } from './client_config.js';
+import { OWNER_AUTH_OPTIONS, SUPABASE_SDK_PATH, resolveOwnerClientConfig } from './client_config.js';
+import { OWNER_PUBLIC_CONFIG } from './owner_public_config.js';
 
 const MESSAGES = {
     SIGN_IN_FAILED: 'Giriş başarısız. Bilgileri kontrol edin.',
@@ -66,12 +67,17 @@ function render(view) {
 }
 
 async function main() {
-    const url = window.SUPABASE_URL;
-    const key = window.SUPABASE_ANON_KEY;
-    if (!url || !key) { $('status').textContent = MESSAGES.LOCKED; return; }
-    const { createClient } = await import(SUPABASE_JS_URL);
+    const cfg = resolveOwnerClientConfig(OWNER_PUBLIC_CONFIG);
+    if (!cfg) { $('status').textContent = MESSAGES.LOCKED; return; }
+    let createClient;
+    try {
+        ({ createClient } = await import(SUPABASE_SDK_PATH));
+    } catch {
+        $('status').textContent = MESSAGES.LOCKED;
+        return;
+    }
     // Publishable key only. The session is in memory only (see client_config.js): nothing durable, nothing the legacy client can inherit.
-    const client = createClient(url, key, { auth: { ...OWNER_AUTH_OPTIONS } });
+    const client = createClient(cfg.url, cfg.key, { auth: { ...OWNER_AUTH_OPTIONS } });
     const flow = createOwnerMfaFlow(client.auth);
     flow.onChange(render);
 

@@ -11,13 +11,13 @@ describe('owner bootstrap session isolation (static)', () => {
     const cfg = await import('../../owner/js/client_config.js');
     expect(cfg.OWNER_AUTH_OPTIONS).toEqual({ persistSession: false, autoRefreshToken: true, detectSessionInUrl: false });
     expect(Object.isFrozen(cfg.OWNER_AUTH_OPTIONS)).toBe(true);
-    expect(cfg.SUPABASE_JS_URL).toMatch(/@supabase\/supabase-js@\d+\.\d+\.\d+\/\+esm$/);
+    expect(cfg.SUPABASE_SDK_PATH).toMatch(/^\.\.\/vendor\/supabase-js\.\d+\.\d+\.\d+\.mjs$/);
   });
 
   it('owner_app takes the client options from the frozen config and never re-enables persistence', () => {
     const app = read('owner/js/owner_app.js');
     expect(app).toContain("from './client_config.js'");
-    expect(app).toMatch(/createClient\(url, key, \{ auth: \{ \.\.\.OWNER_AUTH_OPTIONS \} \}\)/);
+    expect(app).toMatch(/createClient\(cfg\.url, cfg\.key, \{ auth: \{ \.\.\.OWNER_AUTH_OPTIONS \} \}\)/);
     expect(app).not.toMatch(/persistSession\s*:\s*true/);
     expect(app).not.toMatch(/storage(Key)?\s*:/);
   });

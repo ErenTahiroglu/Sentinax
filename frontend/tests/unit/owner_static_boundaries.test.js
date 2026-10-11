@@ -28,9 +28,9 @@ describe('static boundaries', () => {
     expect(html).not.toMatch(/\son[a-z]+\s*=/i);
     expect(html).toContain('name="referrer" content="no-referrer"');
     const cfg = read('owner/js/client_config.js');
-    expect(cfg).toMatch(/@supabase\/supabase-js@\d+\.\d+\.\d+\/\+esm/);
+    expect(cfg).toMatch(/supabase-js\.\d+\.\d+\.\d+\.mjs/);
     expect(cfg).not.toMatch(/supabase-js(@latest|\/\+esm)/);
-    expect(read('owner/js/owner_app.js')).toContain('SUPABASE_JS_URL');
+    expect(read('owner/js/owner_app.js')).toContain('SUPABASE_SDK_PATH');
   });
 
   it('legacy client no longer fabricates a user or token and gates on aal2', () => {
