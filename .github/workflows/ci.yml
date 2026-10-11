@@ -94,6 +94,7 @@ jobs:
           backend/tests/test_private_owner_authorization.py \
           backend/tests/test_auth_public_and_websocket_compat.py \
           backend/tests/test_logic_hardening.py \
+          backend/tests/test_owner_bootstrap_readiness.py \
           -q --disable-socket --allow-unix-socket
 
     - name: No-crypto invariant

@@ -1,4 +1,8 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm';
+import { isAal2Session } from './aalGate.js';
+
+// Phase 25D1C0: the former client-side bypass flag is never honoured; purge any leftover value.
+try { localStorage.removeItem("admin_bypass"); } catch (e) { /* storage unavailable */ }
 
 // Supabase URL ve Anon Key (Globals from config.js)
 const SUPABASE_URL = window.SUPABASE_URL;
@@ -40,16 +44,9 @@ function _friendlyAuthError(err) {
 
 // ── Auth İşlemleri ───────────────────────────────────────────────────
 
+/** Phase 25D1C0: single-owner product; OAuth sign-in/sign-up is closed (accounts are operator-invited only). */
 export async function signInWithGoogle() {
-    if (!supabase) return alert("Supabase Ayarlarını Yapın!");
-    const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: { redirectTo: window.location.origin }
-    });
-    if (error) {
-        if (typeof showToast === "function") showToast(_friendlyAuthError(error), "error");
-        console.error("Google Login Error:", error);
-    }
+    if (typeof showToast === "function") showToast("Google ile giriş kapalı. Sahip girişi için /owner/ sayfasını kullanın.", "info");
 }
 
 /** Fix 2: Email/Password Giriş */
@@ -60,10 +57,9 @@ export async function signInWithEmail(email, password) {
 }
 
 /** Fix 2: Email/Password Kayıt Ol */
-export async function signUpWithEmail(email, password) {
-    if (!supabase) return { user: null, error: { message: "Supabase bağlı değil." } };
-    const { data, error } = await supabase.auth.signUp({ email, password });
-    return { user: data?.user || null, error };
+export async function signUpWithEmail() {
+    // Phase 25D1C0: public sign-up is disabled by policy; never call the provider from this client.
+    return { user: null, error: { message: "Kayıt kapalı. Hesaplar yalnızca operatör tarafından davet edilir." } };
 }
 
 /** Fix 5: SignOut — tüm app-level localStorage anahtarlarını temizler */
@@ -87,33 +83,23 @@ export async function signOut() {
 export async function getUser() {
     if (!supabase) return null;
     try {
+        // aal1 (password only) is not an authenticated user for private content.
+        if (!(await isAal2Session(supabase.auth))) return null;
         const { data } = await supabase.auth.getUser();
-        if (data?.user) return data.user;
+        return data?.user || null;
     } catch (e) {
         console.warn("Auth check failed:", e);
+        return null;
     }
-    
-    // Check bypass ONLY if no real user persists
-    if (typeof localStorage !== "undefined" && localStorage.getItem("admin_bypass") === "true") {
-        return { id: "dev_admin", email: "admin@local", user_metadata: { full_name: "Yönetici (Bypass)" } };
-    }
-    return null;
 }
 
 export async function getValidSession() {
     try {
-        if (supabase) {
+        if (supabase && (await isAal2Session(supabase.auth))) {
             const { data } = await supabase.auth.getSession();
             if (data?.session) return data.session;
         }
-    } catch (e) { /* ignore */ }
-
-    if (typeof localStorage !== "undefined" && localStorage.getItem("admin_bypass") === "true") {
-        return { 
-            access_token: "mock_bypass_token",
-            user: { id: "dev_admin", email: "admin@local" } 
-        };
-    }
+    } catch (e) { /* fail closed */ }
     return null;
 }
 
@@ -266,6 +252,8 @@ export function setupAuthModal() {
                     _showAuthError(_friendlyAuthError(result.error));
                 } else if (_authMode === "register" && !result.user?.confirmed_at) {
                     _showAuthSuccess("Hesabınız oluşturuldu! E-postanızdaki doğrulama linkine tıklayın.");
+                } else if (!(await isAal2Session(supabase.auth))) {
+                    _showAuthError("İki adımlı doğrulama gerekli. Girişi /owner/ sayfasından tamamlayın.");
                 } else {
                     _showAuthSuccess("Giriş başarılı! Yönlendiriliyorsunuz...");
                     updateAuthUI(result.user);
@@ -315,7 +303,7 @@ export function setupAuthModal() {
     // Fix 4: onAuthStateChange — session persistence + reactive UI
     if (supabase) {
         supabase.auth.onAuthStateChange((event, session) => {
-            updateAuthUI(session?.user || null);
+            isAal2Session(supabase.auth).then((ok) => updateAuthUI(ok ? (session?.user || null) : null));
             if (event === "SIGNED_IN" && typeof showToast === "function") showToast("Hoş geldin! 👋", "success");
             if (event === "SIGNED_OUT" && typeof showToast === "function") showToast("Oturum kapatıldı.", "info");
         });

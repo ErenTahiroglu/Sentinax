@@ -32,12 +32,7 @@ async function checkAdminAccess() {
     const adminSection = document.getElementById("admin-sidebar-section");
     if (!adminSection) return;
 
-    // 1. Check for manual bypass (Development/Debug Mode)
-    if (localStorage.getItem("admin_bypass") === "true") {
-        adminSection.classList.remove("hidden");
-        return;
-    }
-
+    // Phase 25D1C0: no client-side bypass; visibility depends on a server-verified response only.
     if (!window.SupabaseAuth) return;
     try {
         const session = await window.SupabaseAuth.getValidSession();

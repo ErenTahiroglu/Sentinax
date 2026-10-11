@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self'; img-src 'self' data:; connect-src https://zlggrmsolklhfgijcjnz.supabase.co; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'">
+    <meta name="referrer" content="no-referrer">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Sentinax Sahip Girişi</title>
+    <link rel="stylesheet" href="css/owner.css">
+</head>
+<body>
+    <main class="owner-shell">
+        <h1>Sentinax <span class="accent">Sahip Girişi</span></h1>
+        <p class="lead">Yalnızca tek yetkili sahip içindir. Hesap oluşturma kapalıdır; hesap yalnızca operatör tarafından davet edilir.</p>
+        <p id="status" class="status" role="status" aria-live="polite">Yükleniyor…</p>
+
+        <section id="view-signin" hidden>
+            <h2>Giriş</h2>
+            <form id="signin-form" autocomplete="on">
+                <label for="email">E-posta</label>
+                <input id="email" type="email" autocomplete="username" required maxlength="320">
+                <label for="password">Şifre</label>
+                <input id="password" type="password" autocomplete="current-password" required maxlength="1024">
+                <button type="submit">Giriş yap</button>
+            </form>
+        </section>
+
+        <section id="view-enroll" hidden>
+            <h2>İki adımlı doğrulama kurulumu (TOTP)</h2>
+            <p>Doğrulayıcı uygulamanızla QR kodu okutun veya anahtarı elle girin. Kod doğrulanana kadar hiçbir özel içerik açılmaz.</p>
+            <div id="enroll-start">
+                <label for="factor-name">Faktör adı</label>
+                <input id="factor-name" type="text" maxlength="32" value="birincil" autocomplete="off">
+                <button id="btn-enroll" type="button">Kurulumu başlat</button>
+            </div>
+            <div id="enroll-pending" hidden>
+                <img id="qr" alt="TOTP QR kodu" width="200" height="200">
+                <p>Elle giriş anahtarı: <code id="secret"></code></p>
+                <form id="enroll-form" autocomplete="off">
+                    <label for="enroll-code">6 haneli kod</label>
+                    <input id="enroll-code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required>
+                    <button type="submit">Doğrula</button>
+                    <button id="btn-enroll-cancel" type="button">Vazgeç</button>
+                </form>
+            </div>
+        </section>
+
+        <section id="view-challenge" hidden>
+            <h2>İkinci adım doğrulaması</h2>
+            <form id="challenge-form" autocomplete="off">
+                <label for="challenge-factor">Faktör</label>
+                <select id="challenge-factor"></select>
+                <label for="challenge-code">6 haneli kod</label>
+                <input id="challenge-code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required>
+                <button type="submit">Doğrula</button>
+            </form>
+        </section>
+
+        <section id="view-unlocked" hidden>
+            <h2>Oturum doğrulandı (AAL2)</h2>
+            <p id="factor-summary"></p>
+            <p id="backup-hint" class="warn" hidden>Kısıtlayıcı veritabanı politikaları açılmadan önce ikinci, bağımsız bir TOTP faktörü eklenmeli ve doğrulanmalıdır.</p>
+            <button id="btn-add-factor" type="button" hidden>Yedek faktör ekle</button>
+            <p class="note">Bu sayfa özel finansal veri göstermez; yalnızca kimlik doğrulama durumunu doğrular.</p>
+        </section>
+
+        <p id="error" class="error" role="alert" hidden></p>
+        <nav class="actions">
+            <button id="btn-signout" type="button" hidden>Çıkış</button>
+            <button id="btn-signout-all" type="button" hidden>Tüm cihazlardan çıkış</button>
+        </nav>
+    </main>
+    <script src="../js/core/config.js"></script>
+    <script type="module" src="js/owner_app.js"></script>
+</body>
+</html>
