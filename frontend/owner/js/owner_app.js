@@ -1,7 +1,5 @@
 import { createOwnerMfaFlow, STATES } from './mfa_flow.js';
-
-// Exact version pin; the library handles credentials, so it must never float.
-const SUPABASE_JS = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.1/+esm';
+import { OWNER_AUTH_OPTIONS, SUPABASE_JS_URL } from './client_config.js';
 
 const MESSAGES = {
     SIGN_IN_FAILED: 'Giriş başarısız. Bilgileri kontrol edin.',
@@ -10,6 +8,8 @@ const MESSAGES = {
     ENROLL_FAILED: 'Kurulum başlatılamadı.',
     CODE_REJECTED: 'Kod kabul edilmedi.',
     ENROLLMENT_CANCELLED: 'Çok fazla hatalı deneme; kurulum iptal edildi.',
+    SUPERSEDED: 'Oturum durumu değişti; işlem iptal edildi. Tekrar deneyin.',
+    BUSY: 'Önceki işlem sürüyor; bekleyin.',
     LOCKED: 'Oturum durumu doğrulanamadı; erişim kapalı.',
 };
 
@@ -69,9 +69,9 @@ async function main() {
     const url = window.SUPABASE_URL;
     const key = window.SUPABASE_ANON_KEY;
     if (!url || !key) { $('status').textContent = MESSAGES.LOCKED; return; }
-    const { createClient } = await import(SUPABASE_JS);
-    // Browser client uses the publishable key only; the session lives in supabase-js's own storage.
-    const client = createClient(url, key, { auth: { autoRefreshToken: true, persistSession: true, detectSessionInUrl: false } });
+    const { createClient } = await import(SUPABASE_JS_URL);
+    // Publishable key only. The session is in memory only (see client_config.js): nothing durable, nothing the legacy client can inherit.
+    const client = createClient(url, key, { auth: { ...OWNER_AUTH_OPTIONS } });
     const flow = createOwnerMfaFlow(client.auth);
     flow.onChange(render);
 
@@ -126,8 +126,11 @@ async function main() {
     $('btn-signout').addEventListener('click', () => flow.signOut('local'));
     $('btn-signout-all').addEventListener('click', () => flow.signOut('global'));
 
-    client.auth.onAuthStateChange(() => { flow.refresh(); });
+    // Synchronous callback that never calls the SDK (reentrancy/deadlock safe); the flow schedules a coalesced refresh.
+    client.auth.onAuthStateChange((event) => flow.notifyAuthEvent(event));
     await flow.refresh();
+    // Re-verify periodically so a revoked session / removed factor cannot stay UNLOCKED.
+    setInterval(() => { flow.refresh(); }, 30000);
 }
 
 main().catch(() => { $('status').textContent = MESSAGES.LOCKED; });

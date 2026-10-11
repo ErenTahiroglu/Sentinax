@@ -6,7 +6,7 @@ const root = path.resolve(__dirname, '../..');
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
 
 describe('static boundaries', () => {
-  const ownerFiles = ['owner/js/mfa_flow.js', 'owner/js/owner_app.js', 'owner/index.html'];
+  const ownerFiles = ['owner/js/mfa_flow.js', 'owner/js/owner_app.js', 'owner/js/client_config.js', 'owner/index.html'];
 
   it('owner surface has no signup/OAuth/OTP entry points and no unsafe sinks or storage', () => {
     for (const f of ownerFiles) {
@@ -27,9 +27,10 @@ describe('static boundaries', () => {
     expect(html).not.toMatch(/<script(?![^>]*\bsrc=)/i);
     expect(html).not.toMatch(/\son[a-z]+\s*=/i);
     expect(html).toContain('name="referrer" content="no-referrer"');
-    const app = read('owner/js/owner_app.js');
-    expect(app).toMatch(/@supabase\/supabase-js@\d+\.\d+\.\d+\//);
-    expect(app).not.toMatch(/supabase-js(@latest|\/\+esm)/);
+    const cfg = read('owner/js/client_config.js');
+    expect(cfg).toMatch(/@supabase\/supabase-js@\d+\.\d+\.\d+\/\+esm/);
+    expect(cfg).not.toMatch(/supabase-js(@latest|\/\+esm)/);
+    expect(read('owner/js/owner_app.js')).toContain('SUPABASE_JS_URL');
   });
 
   it('legacy client no longer fabricates a user or token and gates on aal2', () => {

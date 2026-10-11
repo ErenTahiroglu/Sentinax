@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ai-portfoy-v2';
+const CACHE_NAME = 'ai-portfoy-v3';
 
 const STATIC_ASSETS = [
     './',
@@ -48,9 +48,26 @@ self.addEventListener('activate', (event) => {
     );
 });
 
+// Phase 25D1C0-H1: authentication surfaces must never be served from or written to this cache.
+const OWNER_PATH = /^\/(?:frontend\/)?owner(?:\/|$)/;
+const AUTH_PATH = /\/auth\/v\d+\//;
+
+function shouldBypass(request, url) {
+    return (
+        request.method !== 'GET' ||
+        url.origin !== self.location.origin ||
+        OWNER_PATH.test(url.pathname) ||
+        AUTH_PATH.test(url.pathname) ||
+        request.headers.has('Authorization')
+    );
+}
+
 self.addEventListener('fetch', (event) => {
     const url = new URL(event.request.url);
-    
+
+    // Owner bootstrap, Supabase/auth traffic, cross-origin, authenticated and non-GET requests: network only, untouched.
+    if (shouldBypass(event.request, url)) return;
+
     // API POST calls (Analysis, Chat vb.) → Network First with Timeout Catch
     if (url.pathname.startsWith('/api/')) {
         event.respondWith(
@@ -68,7 +85,8 @@ self.addEventListener('fetch', (event) => {
             const fetchPromise = fetch(event.request)
                 .then((networkResponse) => {
                     // Sadece başarılı ve geçerli yanıtları önbelleğe al
-                    if (networkResponse && networkResponse.ok) {
+                    const cacheControl = (networkResponse && networkResponse.headers && networkResponse.headers.get('Cache-Control')) || '';
+                    if (networkResponse && networkResponse.ok && !/no-store|private/i.test(cacheControl)) {
                         const responseToCache = networkResponse.clone();
                         caches.open(CACHE_NAME).then((cache) => {
                             cache.put(event.request, responseToCache);
