@@ -26,6 +26,12 @@ jobs:
     - name: Install dependencies
       run: npm ci
 
+    # Phase 25D1C2 CI widening: owner-bootstrap contracts must be discovered (per-file floors, vitest + both Playwright projects),
+    # not skipped/focused, and the vendored SDK must equal a fresh build of the lockfile version. Lists tests; `npm test` and
+    # `npm run test:e2e` below run them (route/asset, legacy config.js, external CDN, session persistence, MFA race, Chromium).
+    - name: Owner bootstrap contract guard
+      run: node scripts/ci_owner_contract_guard.mjs
+
     - name: Run Unit and Integration Tests (Vitest)
       run: npm test
 
