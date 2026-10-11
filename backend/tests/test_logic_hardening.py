@@ -69,30 +69,28 @@ def test_circuit_breaker_high_beta():
 
 # ── 2. Auth Resilience Tests ────────────────────────────────────────────────
 
-@patch("jwt.decode")
-@patch("backend.infrastructure.redis_cache.cache_get")
-@patch("backend.infrastructure.auth.SUPABASE_JWT_SECRET", "dummy_secret_for_tests")
-def test_auth_expired_token(mock_redis, mock_jwt_decode):
-    """Süresi dolmuş token ile 401 hatası fırlatır."""
-    import jwt
-    mock_jwt_decode.side_effect = jwt.ExpiredSignatureError("Signature has expired")
-    mock_redis.return_value = None
-    
+def _legacy_auth_env(monkeypatch):
+    from backend.infrastructure import auth
+    monkeypatch.setenv("SUPABASE_URL", "https://abcdefghijklmnopqrst.supabase.co")
+    monkeypatch.setenv("SENTINAX_SUPABASE_JWT_MODE", "legacy_hs256")
+    monkeypatch.setattr(auth, "SUPABASE_JWT_SECRET", "synthetic-legacy-secret-0123456789-abcdefghij")
+
+
+def test_auth_expired_token(monkeypatch):
+    """Süresi dolmuş token ile 401 hatası fırlatır (Phase 25D1B: gerçek imzalı token)."""
+    from backend.tests import jwt_support as js
+    _legacy_auth_env(monkeypatch)
+    token = js.sign(js.claims(exp=1), js.LEGACY_SECRET, "HS256")
     with pytest.raises(HTTPException) as exc:
-        verify_token_string("expired_token")
+        verify_token_string(token)
     assert exc.value.status_code == 401
     assert "Token has expired" in exc.value.detail
 
-@patch("backend.infrastructure.redis_cache.cache_get")
-@patch("backend.infrastructure.auth.SUPABASE_JWT_SECRET", "dummy_secret_for_tests")
-def test_auth_blacklisted_token(mock_redis):
-    """Kara listedeki token ile erişim engellenir."""
-    mock_redis.return_value = True # Found in blacklist
-    
-    with pytest.raises(HTTPException) as exc:
-        verify_token_string("revoked_token")
-    assert exc.value.status_code == 401
-    assert "This session has been signed out" in exc.value.detail
 
-
-
+def test_auth_has_no_operational_blacklist(monkeypatch):
+    """Phase 25D1B: jwt_blacklist had no writer and failed open; it is no longer consulted or claimed."""
+    from backend.tests import jwt_support as js
+    _legacy_auth_env(monkeypatch)
+    monkeypatch.setattr("backend.infrastructure.redis_cache.cache_get", lambda *a, **k: True)
+    token = js.sign(js.claims(), js.LEGACY_SECRET, "HS256")
+    assert verify_token_string(token)["sub"] == js.OWNER_ID

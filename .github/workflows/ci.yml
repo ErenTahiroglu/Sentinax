@@ -86,6 +86,16 @@ jobs:
           backend/tests/test_buffett_public_unavailable.py \
           -q --disable-socket --allow-unix-socket
 
+    # Phase 25D1B: JWT verifier + single-owner authorization contracts (synthetic keys; no network). TestClient needs AF_UNIX.
+    - name: Phase 25D1B JWT verifier and owner authorization
+      run: |
+        python -m pytest \
+          backend/tests/test_jwt_verifier_contract.py \
+          backend/tests/test_private_owner_authorization.py \
+          backend/tests/test_auth_public_and_websocket_compat.py \
+          backend/tests/test_logic_hardening.py \
+          -q --disable-socket --allow-unix-socket
+
     - name: No-crypto invariant
       run: |
         python -m pytest \

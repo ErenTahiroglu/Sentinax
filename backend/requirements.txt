@@ -93,7 +93,7 @@ supabase==2.31.0
 yfinance
 pandas
 numpy
-PyJWT
+PyJWT[crypto]
 langgraph
 prometheus-client
 prometheus-fastapi-instrumentator

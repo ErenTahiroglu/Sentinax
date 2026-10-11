@@ -22,6 +22,10 @@ services:
         sync: false
       - key: SUPABASE_JWT_SECRET
         sync: false
+      - key: SENTINAX_SUPABASE_JWT_MODE
+        sync: false
+      - key: SENTINAX_OWNER_USER_ID
+        sync: false
       - key: GEMINI_API_KEY
         sync: false
       - key: UPSTASH_REDIS_REST_URL

@@ -73,9 +73,11 @@ def register_websocket_routes(app, router=None):
              return
 
         # Token Doğrulama
+        from fastapi.concurrency import run_in_threadpool
         from backend.infrastructure.auth import verify_token_string
         try:
-             verify_token_string(token)
+             # Threadpool: a JWKS refresh is blocking network I/O and must not stall the event loop.
+             await run_in_threadpool(verify_token_string, token)
         except Exception as e:
              logger.warning(f"WebSocket: Invalid token connection attempt -> {e}")
              await websocket.close(code=1008)
