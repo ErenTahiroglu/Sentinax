@@ -261,6 +261,20 @@ jobs:
           backend/tests/test_sentinax_canonical_csv_semantics.py \
           -q --disable-socket
 
+    # Phase 25D1E6: pure, read-only import PREVIEW over the Phase 13 pipeline (Sentinax Canonical CSV v1 transaction history). No DB, no network (sockets blocked), no commit path.
+    # Fails on any skip/deselect or fewer than 74 passes.
+    - name: Phase 25D1E6 private portfolio import preview
+      run: |
+        python -m pytest backend/tests/test_portfolio_import_preview.py -q -rs --disable-socket 2>&1 | tee import_preview.log
+        if grep -Eiq "skipped|deselected" import_preview.log; then echo "import preview tests were skipped"; exit 1; fi
+        python - <<'PY'
+        import re, sys
+        m = re.search(r"(\d+) passed", open("import_preview.log").read())
+        if not m or int(m.group(1)) < 74:
+            sys.exit(f"import preview: expected >= 74 passed, got {m.group(1) if m else 'none'}")
+        print(f"import preview: {m.group(1)} passed")
+        PY
+
     # Phase 27 FIX C: In addition to (never instead of) the real PostgreSQL Phase 27 privilege/concurrency gate below; full network-socket isolation.
     - name: Phase 14 fee-tax attribution correctness
       run: |

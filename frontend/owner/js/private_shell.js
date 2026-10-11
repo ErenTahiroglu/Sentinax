@@ -4,6 +4,7 @@
  * Navigation and the simple/advanced mode are in-memory view state and are reset whenever the view is hidden, so nothing carries across sessions.
  */
 import { AUTHZ } from './private_session.js';
+import { createImportPreviewView } from './private_import_preview.js';
 
 const STATUS_TEXT = Object.freeze({
     [AUTHZ.IDLE]: '',
@@ -23,6 +24,7 @@ export function createPrivateShell(doc, session, { onSignOut, onSignOutAll }) {
     const panels = [...root.querySelectorAll('[data-panel]')];
     const navButtons = [...root.querySelectorAll('[data-target]')];
     const modeButtons = [...root.querySelectorAll('[data-mode-set]')];
+    const importPreview = createImportPreviewView(doc);
 
     function show(name) {
         panels.forEach((p) => { p.hidden = p.getAttribute('data-panel') !== name; });
@@ -37,6 +39,7 @@ export function createPrivateShell(doc, session, { onSignOut, onSignOutAll }) {
     function clearFields() {
         for (const id of ['live-reason', 'prov-version', 'prov-status', 'prov-reason-code', 'prov-generated']) $(id).textContent = '';
         $('prov-warnings').replaceChildren();
+        importPreview.clear();
     }
     function hide() {
         root.hidden = true;
@@ -78,5 +81,6 @@ export function createPrivateShell(doc, session, { onSignOut, onSignOutAll }) {
 
     session.onChange(render);
     hide();
-    return { render };
+    // Test/dev seam only: the deployed owner_app.js never calls it, so no preview is ever shown in the deployed bundle.
+    return { render, renderImportPreview: (envelope) => importPreview.render(envelope) };
 }

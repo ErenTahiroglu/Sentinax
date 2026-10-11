@@ -11,7 +11,7 @@ const owner = path.join(repo, 'frontend/owner');
 const read = (p) => fs.readFileSync(path.join(owner, p), 'utf8');
 const html = read('index.html');
 const css = read('css/deep_ocean.css');
-const PRIVATE_JS = ['js/private_session.js', 'js/private_shell.js', 'js/private_api_config.js'];
+const PRIVATE_JS = ['js/private_session.js', 'js/private_shell.js', 'js/private_api_config.js', 'js/private_import_preview.js'];
 const ALL_JS = ['js/owner_app.js', 'js/mfa_flow.js', 'js/client_config.js', 'js/owner_public_config.js', ...PRIVATE_JS];
 const appHtml = html.match(/<div id="app-root"[\s\S]*?<script type="module"/)[0];
 const text = (s) => s.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&[a-z]+;/g, ' ').replace(/\s+/g, ' ');
@@ -168,14 +168,14 @@ describe('deployment isolation and artifact contents', () => {
       expect(fs.readFileSync(f, 'utf8'), f).not.toMatch(/private_session|private_shell|private_api_config|deep_ocean|\/owner\/js\/|app-root/);
     }
   });
-  it('the Cloudflare artifact is exactly the 11 owner files + 404.html + _headers (an explicit, reviewed allowlist) and contains no legacy or public-Buffett file', async () => {
+  it('the Cloudflare artifact is exactly the 12 owner files + 404.html + _headers (an explicit, reviewed allowlist) and contains no legacy or public-Buffett file', async () => {
     const cf = await import('../../../scripts/owner_cloudflare_build.mjs');
     const out = fs.mkdtempSync(path.join(os.tmpdir(), 'iapp-'));
     try {
       await cf.buildOwnerCloudflare({ outDir: path.join(out, 'dist') });
       const files = listAll(path.join(out, 'dist')).sort();
       expect(files).toEqual(['404.html', '_headers', 'owner/css/deep_ocean.css', 'owner/css/owner.css', 'owner/index.html', 'owner/js/client_config.js', 'owner/js/mfa_flow.js', 'owner/js/owner_app.js',
-        'owner/js/owner_public_config.js', 'owner/js/private_api_config.js', 'owner/js/private_session.js', 'owner/js/private_shell.js', 'owner/vendor/supabase-js.2.117.1.mjs']);
+        'owner/js/owner_public_config.js', 'owner/js/private_api_config.js', 'owner/js/private_import_preview.js', 'owner/js/private_session.js', 'owner/js/private_shell.js', 'owner/vendor/supabase-js.2.117.1.mjs']);
       expect(files.some((f) => /buffett|sw\.js|manifest|private_ui|fixtures/i.test(f))).toBe(false);
     } finally { fs.rmSync(out, { recursive: true, force: true }); }
   });

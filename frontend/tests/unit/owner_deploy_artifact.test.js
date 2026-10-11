@@ -17,7 +17,7 @@ const REQUIRED_URLS = [
   '/owner', '/owner/', '/owner/index.html',
   '/owner/css/owner.css', '/owner/js/owner_app.js', '/owner/js/client_config.js',
   '/owner/js/owner_public_config.js', '/owner/js/mfa_flow.js', '/owner/vendor/supabase-js.2.117.1.mjs',
-  '/owner/css/deep_ocean.css', '/owner/js/private_api_config.js', '/owner/js/private_session.js', '/owner/js/private_shell.js',
+  '/owner/css/deep_ocean.css', '/owner/js/private_api_config.js', '/owner/js/private_session.js', '/owner/js/private_shell.js', '/owner/js/private_import_preview.js',
 ];
 const EXPECTED_FILES = [
   'owner/index.html',
@@ -30,6 +30,7 @@ const EXPECTED_FILES = [
   'owner/js/private_api_config.js',
   'owner/js/private_session.js',
   'owner/js/private_shell.js',
+  'owner/js/private_import_preview.js',
   'owner/vendor/supabase-js.2.117.1.mjs',
 ];
 
@@ -191,7 +192,7 @@ describe('build fails closed', () => {
     const o = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-out-'));
     return build.buildOwnerDeploy({ outDir: path.join(o, 'dist'), sourceDir: src }).then(() => 'ok', (e) => String(e.message));
   };
-  for (const missing of ['index.html', 'css/owner.css', 'js/owner_app.js', 'js/client_config.js', 'js/owner_public_config.js', 'js/mfa_flow.js', 'css/deep_ocean.css', 'js/private_api_config.js', 'js/private_session.js', 'js/private_shell.js', 'vendor/supabase-js.2.117.1.mjs']) {
+  for (const missing of ['index.html', 'css/owner.css', 'js/owner_app.js', 'js/client_config.js', 'js/owner_public_config.js', 'js/mfa_flow.js', 'css/deep_ocean.css', 'js/private_api_config.js', 'js/private_session.js', 'js/private_shell.js', 'js/private_import_preview.js', 'vendor/supabase-js.2.117.1.mjs']) {
     it(`missing ${missing} fails the build`, async () => {
       const src = copyOwner();
       fs.rmSync(path.join(src, missing));

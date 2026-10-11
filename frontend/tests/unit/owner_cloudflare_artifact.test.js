@@ -22,13 +22,14 @@ const OWNER_FILES = [
   'owner/js/private_api_config.js',
   'owner/js/private_session.js',
   'owner/js/private_shell.js',
+  'owner/js/private_import_preview.js',
   'owner/vendor/supabase-js.2.117.1.mjs',
 ];
 const PLATFORM_FILES = ['404.html', '_headers'];
 const REQUIRED_URLS = [
   '/owner', '/owner/', '/owner/index.html', '/owner/css/owner.css', '/owner/js/owner_app.js', '/owner/js/client_config.js',
   '/owner/js/owner_public_config.js', '/owner/js/mfa_flow.js', '/owner/vendor/supabase-js.2.117.1.mjs',
-  '/owner/css/deep_ocean.css', '/owner/js/private_api_config.js', '/owner/js/private_session.js', '/owner/js/private_shell.js',
+  '/owner/css/deep_ocean.css', '/owner/js/private_api_config.js', '/owner/js/private_session.js', '/owner/js/private_shell.js', '/owner/js/private_import_preview.js',
 ];
 
 let build, model, out, dist;
@@ -53,7 +54,7 @@ beforeAll(async () => {
 afterAll(() => out && fs.rmSync(out, { recursive: true, force: true }));
 
 describe('Cloudflare artifact contents', () => {
-  it('is exactly the 11 owner files plus the two platform files (404.html, _headers)', () => {
+  it('is exactly the 12 owner files plus the two platform files (404.html, _headers)', () => {
     expect(listAll(dist).sort()).toEqual([...OWNER_FILES, ...PLATFORM_FILES].sort());
   });
   it('owner files are byte-identical to the authoritative sources (SDK not duplicated or altered)', () => {

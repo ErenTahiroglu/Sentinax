@@ -21,12 +21,13 @@ const VITEST_FLOORS = {
     'buffett_render_safety.test.js': 96, // Phase 25D1E5: public Buffett renderer: adversarial text stays text, malformed evidence fails closed, no HTML sinks
     'buffett_cloudflare_artifact.test.js': 87, // Phase 25D1E5: deterministic public artifact (exact allowlist, headers, 404/no-SPA-fallback, build-time owner origin)
     'buffett_owner_entry.test.js': 58, // Phase 25D1E4: public "Sahip Girişi" entry (pinned-origin validation, no input/token, disabled when unconfigured)
+    'owner_import_preview.test.js': 51, // Phase 25D1E6: import-preview renderer (strict envelope validation, explicit not-connected default, inert text, no upload/storage/network, no feed from owner_app)
     'owner_cloudflare_artifact.test.js': 33, // Phase 25D1C5: Cloudflare Pages package (artifact, 404 vs SPA fallback, _headers, fail-closed build, no CF credentials in CI)
 };
 const PLAYWRIGHT_FLOORS = [
     { file: 'owner_bootstrap.spec.js', projects: ['chromium', 'Mobile Chrome'], perProject: 6 },
     { file: 'buffett_public.spec.js', projects: ['chromium', 'Mobile Chrome'], perProject: 13 }, // Phase 25D1E5: public artifact + safe rendering of synthetic MOCK evidence, both CSP and no-CSP pages
-    { file: 'owner_integrated_app.spec.js', projects: ['chromium', 'Mobile Chrome'], perProject: 14 }, // Phase 25D1E3: sign-in -> MFA -> server authorization -> Deep Ocean -> sign-out, failure modes, races
+    { file: 'owner_integrated_app.spec.js', projects: ['chromium', 'Mobile Chrome'], perProject: 16 }, // Phase 25D1E6 +2 (import-preview not-connected + synthetic injection); Phase 25D1E3: sign-in -> MFA -> server authorization -> Deep Ocean -> sign-out, failure modes, races
     { file: 'owner_deploy_artifact.spec.js', projects: ['chromium', 'Mobile Chrome'], perProject: 10 }, // 5 tests x (vercel legacy package + cloudflare package)
 ];
 const failures = [];
@@ -77,18 +78,18 @@ try {
     execFileSync('node', ['scripts/owner_deploy_build.mjs'], { cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     const dist = path.join(REPO, 'deploy/owner-bootstrap/dist');
     const listAll = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? listAll(path.join(d, e.name)) : [path.relative(dist, path.join(d, e.name))]));
-    const expected = ['owner/css/deep_ocean.css', 'owner/css/owner.css', 'owner/index.html', 'owner/js/client_config.js', 'owner/js/mfa_flow.js', 'owner/js/owner_app.js', 'owner/js/owner_public_config.js', 'owner/js/private_api_config.js', 'owner/js/private_session.js', 'owner/js/private_shell.js', 'owner/vendor/supabase-js.2.117.1.mjs'];
+    const expected = ['owner/css/deep_ocean.css', 'owner/css/owner.css', 'owner/index.html', 'owner/js/client_config.js', 'owner/js/mfa_flow.js', 'owner/js/owner_app.js', 'owner/js/owner_public_config.js', 'owner/js/private_api_config.js', 'owner/js/private_import_preview.js', 'owner/js/private_session.js', 'owner/js/private_shell.js', 'owner/vendor/supabase-js.2.117.1.mjs'];
     const actual = listAll(dist).sort();
     if (JSON.stringify(actual) !== JSON.stringify(expected)) fail(`deploy artifact files differ from the owner allowlist: ${JSON.stringify(actual)}`);
 } catch (e) {
     fail(`owner deploy artifact build failed (${String(e.stderr || e.message).trim()})`);
 }
-// 4b. Cloudflare Pages package: exact allowlist (7 owner files + 404.html + _headers; never _redirects/Functions/Worker/index.html at root).
+// 4b. Cloudflare Pages package: exact allowlist (12 owner files + 404.html + _headers; never _redirects/Functions/Worker/index.html at root).
 try {
     execFileSync('node', ['scripts/owner_cloudflare_build.mjs'], { cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     const cfDist = path.join(REPO, 'deploy/owner-cloudflare/dist');
     const listCf = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? listCf(path.join(d, e.name)) : [path.relative(cfDist, path.join(d, e.name))]));
-    const cfExpected = ['404.html', '_headers', 'owner/css/deep_ocean.css', 'owner/css/owner.css', 'owner/index.html', 'owner/js/client_config.js', 'owner/js/mfa_flow.js', 'owner/js/owner_app.js', 'owner/js/owner_public_config.js', 'owner/js/private_api_config.js', 'owner/js/private_session.js', 'owner/js/private_shell.js', 'owner/vendor/supabase-js.2.117.1.mjs'];
+    const cfExpected = ['404.html', '_headers', 'owner/css/deep_ocean.css', 'owner/css/owner.css', 'owner/index.html', 'owner/js/client_config.js', 'owner/js/mfa_flow.js', 'owner/js/owner_app.js', 'owner/js/owner_public_config.js', 'owner/js/private_api_config.js', 'owner/js/private_import_preview.js', 'owner/js/private_session.js', 'owner/js/private_shell.js', 'owner/vendor/supabase-js.2.117.1.mjs'];
     const cfActual = listCf(cfDist).sort();
     if (JSON.stringify(cfActual) !== JSON.stringify(cfExpected)) fail(`cloudflare artifact files differ from the allowlist: ${JSON.stringify(cfActual)}`);
 } catch (e) {
@@ -114,7 +115,7 @@ if (!ign('.vercelignore').includes('frontend/owner/') || !ign('frontend/.verceli
     const ownerJs = fs.readdirSync(path.join(REPO, 'frontend/owner/js')).filter((f) => f.endsWith('.js'));
     const clients = ownerJs.reduce((n, f) => n + (fs.readFileSync(path.join(REPO, 'frontend/owner/js', f), 'utf8').match(/createClient\(/g) || []).length, 0);
     if (clients !== 1) fail(`exactly one Supabase client is allowed in the owner tree, found ${clients}`);
-    for (const f of ['private_session.js', 'private_shell.js', 'private_api_config.js']) {
+    for (const f of ['private_session.js', 'private_shell.js', 'private_api_config.js', 'private_import_preview.js']) {
         const src = fs.readFileSync(path.join(REPO, 'frontend/owner/js', f), 'utf8');
         if (/localStorage|sessionStorage|indexedDB|document\.cookie|postMessage|BroadcastChannel|createClient|\bfetch\(/.test(src)) fail(`${f} uses storage, messaging, the SDK or the network directly`);
     }

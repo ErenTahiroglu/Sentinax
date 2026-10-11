@@ -141,7 +141,23 @@
                     <h1>Portföy</h1>
                     <p class="lead">Gerçek mevcut pozisyonlar; bilinmeyen maliyet veya tarih “bilinmiyor” olarak kalır.</p>
                     <div class="state-card state-unavailable"><span class="chip chip-unavailable">UNAVAILABLE</span><p>Doğrulanmış bir portföy kaynağı bağlı değil. Pozisyon, değer, maliyet ve kâr/zarar gösterilmiyor.</p></div>
-                    <div class="adv"><p class="note">İçe aktarma: önce mevcut pozisyon dökümü, sonra geçmiş; her adım önizleme ve açık onay gerektirecek.</p></div>
+                    <div class="import-preview">
+                        <h2>İçe aktarma önizlemesi (temel altyapı)</h2>
+                        <p class="state-line"><span id="import-preview-chip" class="chip chip-unavailable">UNAVAILABLE</span> <span id="import-preview-state-text">Önizleme hizmeti henüz bağlı değil. Dosya yükleme yok; hiçbir şey kaydedilmez.</span></p>
+                        <p class="note">Desteklenen tek biçim: Sentinax Canonical CSV işlem geçmişi biçimi. Mevcut pozisyon dökümü (anlık portföy özeti) desteklenmiyor; ayrı ve gelecekteki bir özelliktir. Pozisyon dökümünden geçmiş alım, tarih, fiyat veya maliyet uydurulmaz.</p>
+                        <ol class="import-steps">
+                            <li>Desteklenen biçimi seçin: yalnızca işlem geçmişi.</li>
+                            <li>Dosyanın geçerliliğini gözden geçirin.</li>
+                            <li>Reddedilen ve çözülmemiş kayıtları gözden geçirin.</li>
+                            <li>Hiçbir şeyin kaydedilmediğini onaylayın.</li>
+                        </ol>
+                        <div id="import-preview-summary" aria-live="polite"></div>
+                        <div class="adv" id="import-preview-advanced">
+                            <h3>Önizleme künyesi (gelişmiş)</h3>
+                            <p class="note">Ayrıştırıcı sürümü, kaynak özeti, değerlendirme sayıları, tanı kodları, çözümleme durumu ve engel nedenleri yalnızca yetkili bir önizleme sonucu varsa burada görünür. Şu an bağlı bir önizleme hizmeti yok.</p>
+                            <div id="import-preview-adv-body"></div>
+                        </div>
+                    </div>
                 </section>
 
                 <section id="panel-allocation" class="panel" data-panel="allocation">

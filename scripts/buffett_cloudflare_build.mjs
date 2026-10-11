@@ -30,7 +30,7 @@ const FORBIDDEN = [
     [/https?:\/\/(?!www\.w3\.org\/)/i, 'external URL'],
     [/fonts\.(?:googleapis|gstatic)|@import/i, 'external font or stylesheet import'],
     [/Authorization|Bearer|supabase|createClient|sb_(?:secret|publishable)_|service_role|SUPABASE|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\./i, 'authentication or credential material'],
-    [/owner_app|mfa_flow|private_session|private_shell|persistSession|signInWithPassword|\/owner\/js\//, 'owner or private-application reference'],
+    [/owner_app|mfa_flow|private_session|private_shell|private_import_preview|persistSession|signInWithPassword|\/owner\/js\//, 'owner or private-application reference'],
     [/<(?:form|input|textarea|select|dialog)\b/i, 'form or input element'],
 ];
 

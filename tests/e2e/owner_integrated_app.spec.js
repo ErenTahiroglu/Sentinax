@@ -223,7 +223,7 @@ test.describe('integrated owner application (artifact, local model)', () => {
         await expect(page.locator('#app-root')).toBeVisible();
         expect(urls.filter((u) => u.startsWith(BASE)).map((u) => new URL(u).pathname).sort()).toEqual(
             ['/owner/', '/owner/css/deep_ocean.css', '/owner/css/owner.css', '/owner/js/client_config.js', '/owner/js/mfa_flow.js', '/owner/js/owner_app.js', '/owner/js/owner_public_config.js',
-             '/owner/js/private_api_config.js', '/owner/js/private_session.js', '/owner/js/private_shell.js', '/owner/vendor/supabase-js.2.117.1.mjs', '/private/portfolio/summary'].sort());
+             '/owner/js/private_api_config.js', '/owner/js/private_import_preview.js', '/owner/js/private_session.js', '/owner/js/private_shell.js', '/owner/vendor/supabase-js.2.117.1.mjs', '/private/portfolio/summary'].sort());
         expect(await page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length)).toBe(0);
         const seenBeforeProbe = [...origins].sort();
         expect(seenBeforeProbe).toEqual([BASE, SUPA].sort());
@@ -245,6 +245,72 @@ test.describe('integrated owner application (artifact, local model)', () => {
             return out;
         });
         expect(res).toEqual({ inlineBlocked: true, foreignBlocked: true, foreignConnectBlocked: true });
+    });
+
+    // Phase 25D1E6: import-preview foundation. In the deployed artifact NO preview service is connected: the Portföy area states that, offers no upload control and makes no extra request.
+    test('Portföy import preview is explicitly "not connected": four-step simple flow, advanced note, no upload control, no extra request', async ({ page }) => {
+        await wire(page);
+        const urls = [];
+        page.on('request', (r) => urls.push(r.url()));
+        const calls = await privateApi(page);
+        await signIn(page);
+        await enrollToAal2(page);
+        await expect(page.locator('#app-root')).toBeVisible();
+        await page.locator('.nav-btn[data-target="portfolio"]').click();
+        const panel = page.locator('#panel-portfolio');
+        await expect(panel).toContainText('Önizleme hizmeti henüz bağlı değil');
+        await expect(panel).toContainText('Mevcut pozisyon dökümü');
+        await expect(panel.locator('ol.import-steps > li')).toHaveCount(4);
+        await expect(panel.locator('input, form, textarea, [type=file]')).toHaveCount(0);
+        await expect(page.locator('#import-preview-advanced')).toBeHidden();      // simple mode (default)
+        await page.locator('[data-mode-set="advanced"]').click();
+        await expect(page.locator('#import-preview-advanced')).toBeVisible();
+        await expect(page.locator('#import-preview-advanced')).toContainText('Şu an bağlı bir önizleme hizmeti yok');
+        await expect(page.locator('#import-preview-adv-body > *')).toHaveCount(0);
+        await expect(page.locator('#import-preview-summary > *')).toHaveCount(0);
+        expect(calls).toHaveLength(1);                                             // only the owner-authorization GET
+        expect(urls.filter((u) => /import|preview|upload/i.test(new URL(u).pathname.replace('private_import_preview.js', '')))).toEqual([]);
+    });
+
+    test('a synthetic preview injected by this test renders as inert text, fits every viewport and is cleared on sign-out', async ({ page }) => {
+        await wire(page);
+        await privateApi(page);
+        await signIn(page);
+        await enrollToAal2(page);
+        await expect(page.locator('#app-root')).toBeVisible();
+        await page.locator('.nav-btn[data-target="portfolio"]').click();
+        await page.locator('[data-mode-set="advanced"]').click();
+        const ok = await page.evaluate(async () => {
+            const { createImportPreviewView, IMPORT_PREVIEW_CONTRACT } = await import('/owner/js/private_import_preview.js');
+            const evil = '<img src=x onerror="window.__pwn=1"><script>window.__pwn=2</script>';
+            const sha = (c) => c.repeat(64);
+            const rec = (o) => ({ record_ordinal: 1, assessment_status: 'ready', diagnostics: [], transaction_type: 'buy', effective_date: '2026-08-28', executed_at: '2026-08-28T10:15:30+00:00',
+                instrument_reference: 'SYNTH', quantity: '10', unit_price: '150.00', trade_currency: 'USD', cash_amount: null, cash_currency: null, from_currency: null, from_amount: null,
+                to_currency: null, to_amount: null, resolution_status: 'unresolved', resolution_diagnostic_codes: ['instrument_not_found'], candidate_count: 0, identical_raw_record_of: null, ...o });
+            const env = { contract_version: IMPORT_PREVIEW_CONTRACT, status: 'needs_resolution_review', source_key: 'sentinax_canonical_csv', parser_revision: 1, file_content_sha256: sha('a'),
+                raw_manifest_sha256: sha('b'), parsed_manifest_sha256: sha('c'), assessment_manifest_sha256: sha('d'), draft_manifest_sha256: sha('e'), resolution_manifest_sha256: sha('f'),
+                record_count: 2, ready_count: 2, rejected_count: 0, unresolved_count: 0, resolved_count: 0, not_required_count: 0, unresolved_instrument_count: 2, ambiguous_instrument_count: 0,
+                resolver_key: 'synthetic.resolver', resolver_revision: 1, blocking_reasons: ['unresolved_instruments', 'preview_only_no_commit_path', 'owner_approval_not_granted'],
+                commit_authorized: false, persistent_state_changed: false, ledger_transaction_ids_generated: false, file_error_code: null,
+                records: [rec({}), rec({ record_ordinal: 2, instrument_reference: evil, identical_raw_record_of: 1, diagnostics: [{ code: 'invalid_decimal', message: evil, field_key: 'quantity' }] })] };
+            return createImportPreviewView(document).render(env);
+        });
+        expect(ok).toBe(true);
+        await expect(page.locator('#import-preview-summary')).toContainText('Enstrüman çözümleme incelemesi gerekli');
+        await expect(page.locator('#import-preview-summary')).toContainText('Hiçbir şey kaydedilmedi');
+        await expect(page.locator('#import-preview-adv-body')).toContainText('owner_approval_not_granted');
+        await expect(page.locator('#import-preview-adv-body')).toContainText('<img src=x onerror=');
+        await expect(page.locator('#panel-portfolio img, #panel-portfolio script, #panel-portfolio [onerror]')).toHaveCount(0);
+        expect(await page.evaluate(() => window.__pwn)).toBeUndefined();
+        for (const vp of [{ width: 1440, height: 900 }, { width: 820, height: 1000 }, { width: 390, height: 844 }]) {
+            await page.setViewportSize(vp);
+            const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+            expect(overflow, `${vp.width}px`).toBeLessThanOrEqual(0);
+        }
+        await page.click('#btn-app-signout');
+        await expect(page.locator('#app-root')).toBeHidden();
+        expect(await page.evaluate(() => document.getElementById('import-preview-summary').childElementCount + document.getElementById('import-preview-adv-body').childElementCount)).toBe(0);
+        expect(await page.evaluate(() => window.__pwn)).toBeUndefined();
     });
 
     test('mobile and desktop layouts have no horizontal overflow in the authorized application', async ({ page }) => {

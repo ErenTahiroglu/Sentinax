@@ -25,6 +25,7 @@ export const OWNER_ALLOWLIST = Object.freeze([
     'js/private_api_config.js',
     'js/private_session.js',
     'js/private_shell.js',
+    'js/private_import_preview.js',
     SDK_FILE,
 ]);
 

@@ -6,7 +6,7 @@ const root = path.resolve(__dirname, '../..');
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
 
 describe('static boundaries', () => {
-  const ownerFiles = ['owner/js/mfa_flow.js', 'owner/js/owner_app.js', 'owner/js/client_config.js', 'owner/js/private_session.js', 'owner/js/private_shell.js', 'owner/js/private_api_config.js', 'owner/index.html'];
+  const ownerFiles = ['owner/js/mfa_flow.js', 'owner/js/owner_app.js', 'owner/js/client_config.js', 'owner/js/private_session.js', 'owner/js/private_shell.js', 'owner/js/private_api_config.js', 'owner/js/private_import_preview.js', 'owner/index.html'];
 
   it('owner surface has no signup/OAuth/OTP entry points and no unsafe sinks or storage', () => {
     for (const f of ownerFiles) {

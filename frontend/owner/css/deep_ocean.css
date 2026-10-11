@@ -36,6 +36,13 @@ body.app-active { background: #0b1120; }
 .app .prov th { color: var(--d-muted); font-weight: 500; }
 .app .warn-list { margin: 8px 0 0; padding-left: 20px; color: var(--d-muted); }
 .app[data-mode="simple"] .adv { display: none; }
+.app .chip-preview { color: var(--d-avail); }
+.app .import-preview { margin-top: 20px; }
+.app .import-steps { padding-left: 22px; line-height: 1.7; }
+.app .import-status { font-weight: 700; }
+.app .import-scroll { max-width: 100%; overflow-x: auto; }
+.app .import-table { border-collapse: collapse; min-width: 720px; } .app .import-table th, .app .import-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--d-line); font-family: ui-monospace, Menlo, monospace; font-size: .8rem; word-break: break-word; }
+.app .import-table th { color: var(--d-muted); font-weight: 500; }
 .app .foot { text-align: center; color: var(--d-muted); font-size: .8rem; padding: 16px; border-top: 1px solid var(--d-line); }
 @media (max-width: 880px) {
     .app .layout { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 12px; }
