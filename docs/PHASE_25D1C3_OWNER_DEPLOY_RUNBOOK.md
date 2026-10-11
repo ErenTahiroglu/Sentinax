@@ -1,5 +1,7 @@
 # Phase 25D1C3 — İzole sahip sayfası dağıtımı (operatör kapısı, HENÜZ UYGULANMADI)
 
+> **SUPERSEDED (25D1C5):** hedef mimari Cloudflare Pages'tir; bu Vercel prosedürü hedef değildir. Bkz. `docs/PHASE_25D1C5_CLOUDFLARE_OWNER_RUNBOOK.md`.
+
 Durum: **paket hazır, dağıtım yok.** Canlı Vercel projesi: **NOT CONFIGURED / UNKNOWN** (bu fazda oluşturulmadı, sorgulanmadı).
 Bu belge dağıtımı yetkilendirmez. Gerçek kimlik bilgisi girmek **Gate A** (Red Team onayı) sonrasına kadar yasaktır.
 

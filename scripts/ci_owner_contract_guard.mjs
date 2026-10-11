@@ -16,10 +16,11 @@ const VITEST_FLOORS = {
     'owner_session_isolation_static.test.js': 8,
     'owner_static_boundaries.test.js': 5,
     'owner_deploy_artifact.test.js': 36, // Phase 25D1C3: isolated deployment artifact, routing, headers, build fail-closed, gitleaks scope
+    'owner_cloudflare_artifact.test.js': 29, // Phase 25D1C5: Cloudflare Pages package (artifact, 404 vs SPA fallback, _headers, fail-closed build, no CF credentials in CI)
 };
 const PLAYWRIGHT_FLOORS = [
     { file: 'owner_bootstrap.spec.js', projects: ['chromium', 'Mobile Chrome'], perProject: 6 },
-    { file: 'owner_deploy_artifact.spec.js', projects: ['chromium', 'Mobile Chrome'], perProject: 5 },
+    { file: 'owner_deploy_artifact.spec.js', projects: ['chromium', 'Mobile Chrome'], perProject: 10 }, // 5 tests x (vercel legacy package + cloudflare package)
 ];
 const failures = [];
 const fail = (m) => failures.push(m);
@@ -75,8 +76,23 @@ try {
 } catch (e) {
     fail(`owner deploy artifact build failed (${String(e.stderr || e.message).trim()})`);
 }
+// 4b. Cloudflare Pages package: exact allowlist (7 owner files + 404.html + _headers; never _redirects/Functions/Worker/index.html at root).
+try {
+    execFileSync('node', ['scripts/owner_cloudflare_build.mjs'], { cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const cfDist = path.join(REPO, 'deploy/owner-cloudflare/dist');
+    const listCf = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? listCf(path.join(d, e.name)) : [path.relative(cfDist, path.join(d, e.name))]));
+    const cfExpected = ['404.html', '_headers', 'owner/css/owner.css', 'owner/index.html', 'owner/js/client_config.js', 'owner/js/mfa_flow.js', 'owner/js/owner_app.js', 'owner/js/owner_public_config.js', 'owner/vendor/supabase-js.2.117.1.mjs'];
+    const cfActual = listCf(cfDist).sort();
+    if (JSON.stringify(cfActual) !== JSON.stringify(cfExpected)) fail(`cloudflare artifact files differ from the allowlist: ${JSON.stringify(cfActual)}`);
+} catch (e) {
+    fail(`owner cloudflare artifact build failed (${String(e.stderr || e.message).trim()})`);
+}
+for (const f of fs.readdirSync(path.join(REPO, '.github/workflows'))) {
+    if (/CLOUDFLARE_(API_TOKEN|ACCOUNT_ID)|wrangler|pages-action|pages deploy/i.test(fs.readFileSync(path.join(REPO, '.github/workflows', f), 'utf8'))) fail(`${f}: Cloudflare credentials/deploy step are not allowed in CI`);
+}
 const pwCfg = fs.readFileSync(path.join(REPO, 'playwright.config.js'), 'utf8');
 if (!pwCfg.includes('scripts/owner_deploy_serve.mjs') || !pwCfg.includes('127.0.0.1:3001')) fail('playwright.config.js does not start the owner artifact smoke server');
+if (!pwCfg.includes('owner_deploy_serve.mjs cloudflare') || !pwCfg.includes('127.0.0.1:3002')) fail('playwright.config.js does not start the Cloudflare owner artifact smoke server');
 const deployCfg = JSON.parse(fs.readFileSync(path.join(REPO, 'deploy/owner-bootstrap/vercel.json'), 'utf8'));
 const hdr = Object.fromEntries((deployCfg.headers || []).flatMap((r) => r.headers.map((h) => [h.key.toLowerCase(), h.value])));
 for (const k of ['content-security-policy', 'cache-control', 'x-frame-options', 'x-content-type-options', 'referrer-policy', 'cross-origin-opener-policy', 'cross-origin-resource-policy']) if (!hdr[k]) fail(`deploy vercel.json lacks header ${k}`);
@@ -94,4 +110,4 @@ if (failures.length) {
     console.error(`OWNER CONTRACT GUARD FAILED:\n - ${failures.join('\n - ')}`);
     process.exit(1);
 }
-console.log(`owner contract guard OK: vitest ${JSON.stringify(Object.fromEntries(Object.keys(VITEST_FLOORS).map((f) => [f, perFile[f]])))}; playwright ${JSON.stringify(pwCount)}; deploy artifact built and allowlisted; SDK bundle matches fresh build`);
+console.log(`owner contract guard OK: vitest ${JSON.stringify(Object.fromEntries(Object.keys(VITEST_FLOORS).map((f) => [f, perFile[f]])))}; playwright ${JSON.stringify(pwCount)}; deploy + cloudflare artifacts built and allowlisted; SDK bundle matches fresh build`);

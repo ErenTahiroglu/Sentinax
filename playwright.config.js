@@ -41,5 +41,12 @@ export default defineConfig({
       reuseExistingServer: !process.env.CI,
       timeout: 30 * 1000,
     },
+    {
+      // Phase 25D1C5: the built Cloudflare Pages owner package with its _headers/404.html model (local smoke only; not Cloudflare).
+      command: 'node scripts/owner_deploy_serve.mjs cloudflare',
+      url: 'http://127.0.0.1:3002/owner/',
+      reuseExistingServer: !process.env.CI,
+      timeout: 30 * 1000,
+    },
   ],
 });

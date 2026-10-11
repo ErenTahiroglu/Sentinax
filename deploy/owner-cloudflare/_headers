@@ -1,0 +1,15 @@
+# Phase 25D1C5: Cloudflare Pages headers for the isolated owner bootstrap project. Single catch-all rule (no precedence/merge ambiguity).
+# Keep in sync with deploy/owner-bootstrap/vercel.json (a unit test fails on drift). Do not add rules without Red Team review.
+# Cloudflare Pages always adds Access-Control-Allow-Origin: * ; the owner project detaches it (last line of the rule).
+/*
+  Cache-Control: no-store
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://zlggrmsolklhfgijcjnz.supabase.co; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'
+  Strict-Transport-Security: max-age=63072000; includeSubDomains
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Resource-Policy: same-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  X-Robots-Tag: noindex, nofollow
+  ! Access-Control-Allow-Origin
