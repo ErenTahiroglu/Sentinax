@@ -130,7 +130,13 @@ def test_canonical_repository_append_path_still_inserts_with_service_role_privil
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in {"update", "delete", "upsert"}:
             inner = ast.get_source_segment(source, node.func.value) or ""
             assert "portfolio_transactions" not in inner
-    assert "SUPABASE_SERVICE_ROLE_KEY" in (ROOT / "backend" / "api" / "dependencies.py").read_text(encoding="utf-8")      # current trusted backend client evidence
+    # Phase 25D1E2: the approved write boundary is the repository's INJECTED client. (This used to assert that the public API layer's dependencies.py mentioned
+    # SUPABASE_SERVICE_ROLE_KEY; that leaked a privileged factory into the API layer and was retired, so the invariant now verifies the real boundary.)
+    init = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "__init__" and "client" in [a.arg for a in n.args.args])
+    assert [a.arg for a in init.args.args][:2] == ["self", "client"]                                                    # the privileged client is supplied by the trusted composition root
+    assert not re.search(r"os\.environ|getenv|create_client|SERVICE_ROLE", source)                                       # the ledger writer never reads secrets or builds clients itself
+    api_text = "\n".join(p.read_text(encoding="utf-8") for p in (ROOT / "backend" / "api").rglob("*.py"))
+    assert not re.search(r"SUPABASE_SERVICE_ROLE_KEY\)|getenv\([\"']SUPABASE_SERVICE_ROLE_KEY|rest/v1|create_client", api_text)   # no privileged client in the public API layer
 
 
 def test_no_frontend_or_browser_code_writes_the_ledger_directly() -> None:

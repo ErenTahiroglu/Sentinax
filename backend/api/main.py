@@ -225,32 +225,17 @@ app.include_router(buffett.router)
 app.include_router(private_portfolio.router)
 
 # ── Health & Metrics Endpoints ────────────────────────────────────────────
-@app.get("/api/health")
+@app.api_route("/api/health", methods=["GET", "HEAD"])
 async def health_check():
-    """Sistem Sağlık Kontrolü (Liveness Probe)."""
-    health_status = {"status": "ok", "redis": "connected", "supabase": "connected"}
-    
-    if not cache_is_redis_active():
-        health_status["redis"] = "disconnected (fallback active)"
+    """Process liveness only (Phase 25D1E2).
 
-    try:
-        import httpx
-        supa_url = os.getenv("SUPABASE_URL", "")
-        supa_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-        if supa_url and supa_key:
-            headers = {"apikey": supa_key, "Authorization": f"Bearer {supa_key}"}
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                resp = await client.get(f"{supa_url}/rest/v1/portfolios?limit=1", headers=headers)
-                if resp.status_code not in (200, 206):
-                    health_status["supabase"] = f"error (HTTP {resp.status_code})"
-                    health_status["status"] = "degraded"
-        else:
-            health_status["supabase"] = "not configured"
-    except Exception as e:
-         health_status["supabase"] = f"error: {str(e)}"
-         health_status["status"] = "critical"
-
-    return health_status
+    Deliberately minimal and non-privileged: no credential, no database, no network, no dependency status, no exception text. It says FastAPI is
+    running, not that Redis, Supabase or any data source is ready; readiness (if ever needed) must be a separate, access-restricted design.
+    """
+    return JSONResponse(
+        content={"status": "ok"},
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
 
 @app.get("/api/metrics")
 async def get_metrics():

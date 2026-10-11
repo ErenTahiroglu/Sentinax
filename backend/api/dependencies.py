@@ -1,62 +1,30 @@
-import os
-import httpx
-from fastapi import Request, HTTPException, Depends
-from datetime import datetime, timedelta
+"""FastAPI dependency providers.
+
+Phase 25D1E2: this module holds NO privileged credential and performs NO privileged I/O. The legacy LLM-quota dependency and the API-layer
+service-role client factory were retired (no production caller existed; both reached the database with the service-role key on behalf of any
+merely-authenticated user). Trusted service-role access now lives only in explicitly injected clients of the private engine (e.g. the
+PortfolioRepository ledger writer), never in the public API layer, and private routes authorise with require_private_owner.
+"""
+from fastapi import Request, HTTPException
 
 from backend.services.chat_orchestrator import orchestrator
 from backend.infrastructure.auth import verify_jwt
+
+_RETIRED_DETAIL = "This capability is unavailable."
+
 
 def get_orchestrator():
     """Dependency Injection provider for ChatOrchestrator."""
     return orchestrator
 
 
-async def check_llm_quota(request: Request, payload=Depends(verify_jwt)):
-    """Kullanıcının LLM token kullanım miktarını kontrol eder, limit aşımında 402 döner."""
-    user_id = payload.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required.")
+async def check_llm_quota() -> None:
+    """RETIRED (Phase 25D1E2). Always fails closed; never queries a database, reads a credential or grants access.
 
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not key:
-         raise HTTPException(status_code=500, detail="Supabase configs missing.")
+    A route that still depends on it answers 503 for everyone, so a stray import cannot reintroduce non-owner privileged reads.
+    """
+    raise HTTPException(status_code=503, detail=_RETIRED_DETAIL)
 
-    async with httpx.AsyncClient() as client:
-        headers = { "apikey": key, "Authorization": f"Bearer {key}" }
-        
-        # 1. Get User Subscription Tier & Billing Cycle Start
-        sett_resp = await client.get(
-            f"{url}/rest/v1/user_settings?user_id=eq.{user_id}&select=subscription_tier,billing_cycle_start",
-            headers=headers
-        )
-        sett_data = sett_resp.json()
-        
-        tier = 'free'
-        # Default to 30 days ago if no setting row yet
-        cycle_start = (datetime.utcnow() - timedelta(days=30)).isoformat() 
-        
-        if sett_data:
-            tier = sett_data[0].get("subscription_tier", "free")
-            cycle_start = sett_data[0].get("billing_cycle_start") or cycle_start
-
-        # 2. Sum Tokens in current cycle
-        usage_resp = await client.get(
-            f"{url}/rest/v1/llm_usage_logs?user_id=eq.{user_id}&timestamp=gte.{cycle_start}&select=prompt_tokens,completion_tokens",
-            headers=headers
-        )
-        usages = usage_resp.json()
-        
-        total_tokens = sum((u.get("prompt_tokens") or 0) + (u.get("completion_tokens") or 0) for u in usages)
-        limit = 50000 if tier == 'free' else 1000000
-        
-        if total_tokens >= limit:
-            raise HTTPException(
-                status_code=402, 
-                detail=f"Token Limit Exceeded ({total_tokens}/{limit}). Please upgrade to Pro."
-            )
-            
-        return user_id
 
 async def get_current_user(request: Request) -> dict:
     """JWT Token'ı doğrular ve içindeki kullanıcı verisini (payload) döner."""
@@ -65,11 +33,7 @@ async def get_current_user(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Invalid or expired session.")
     return payload
 
+
 def get_supabase_client():
-    """Supabase client (PostgREST) instance'ı döner (Synchronous wrappers are common in FastAPI DI)."""
-    from supabase import create_client
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not key:
-        raise ValueError("Supabase configuration missing.")
-    return create_client(url, key)
+    """RETIRED (Phase 25D1E2). The public API layer never creates a service-role client."""
+    raise RuntimeError("get_supabase_client is retired: service-role clients are injected only into trusted engine components.")

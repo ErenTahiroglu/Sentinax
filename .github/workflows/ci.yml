@@ -119,6 +119,21 @@ jobs:
         print(f"private portfolio summary API: {m.group(1)} passed")
         PY
 
+    # Phase 25D1E2: privileged-access containment (minimal non-privileged /api/health, retired legacy quota dependency and API-layer service-role factory, no service-role use
+    # in backend/api). Real app, synthetic keys, sockets blocked, no credentials. Fails on any skip or fewer than 17 passes; the ledger write-surface invariant is also run
+    # here because it verifies the real approved write boundary these changes rely on.
+    - name: Phase 25D1E2 privileged access containment
+      run: |
+        python -m pytest backend/tests/test_privileged_access_containment.py backend/tests/test_portfolio_transaction_write_surface_hardening_schema.py -q -rs --disable-socket --allow-unix-socket 2>&1 | tee containment.log
+        if grep -Eiq "skipped|deselected" containment.log; then echo "containment tests were skipped"; exit 1; fi
+        python - <<'PY'
+        import re, sys
+        m = re.search(r"(\d+) passed", open("containment.log").read())
+        if not m or int(m.group(1)) < 27:
+            sys.exit(f"privileged access containment: expected >= 27 passed, got {m.group(1) if m else 'none'}")
+        print(f"privileged access containment: {m.group(1)} passed")
+        PY
+
     - name: No-crypto invariant
       run: |
         python -m pytest \
