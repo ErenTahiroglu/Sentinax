@@ -279,3 +279,12 @@ def test_private_router_source_is_pure_no_io_and_has_no_secret_or_provider_impor
     assert not re.search(r"os\.environ|getenv|httpx|requests|supabase|SERVICE_ROLE|cursor|\.execute\(|\.insert\(|\.rpc\(|open\(", src)
     assert "require_private_owner" in src and "Depends(" in src
     assert not re.search(r"@router\.(post|put|patch|delete)", src)
+
+
+def test_the_browser_test_fixture_is_exactly_the_real_contract(client, key):
+    """tests/fixtures/private_portfolio_summary_unavailable.json is replayed by the Playwright/Vitest session tests (Phase 25D1E3); it must not drift from the endpoint."""
+    fixture = json.loads((Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "private_portfolio_summary_unavailable.json").read_text(encoding="utf-8"))
+    real = client.get(PATH, headers=bearer(key)).json()
+    assert set(fixture) == CONTRACT_KEYS == set(real)
+    assert {k: v for k, v in fixture.items() if k != "generated_at"} == {k: v for k, v in real.items() if k != "generated_at"}
+    assert datetime.fromisoformat(fixture["generated_at"]).tzinfo is not None

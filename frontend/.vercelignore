@@ -1,0 +1,2 @@
+# Phase 25D1E3: legacy project rooted at frontend/ must not ship the owner sign-in or the private application (see ../.vercelignore).
+owner/

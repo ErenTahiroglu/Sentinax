@@ -17,10 +17,14 @@ export const MANIFEST_FILE = 'vendor/supabase-js.manifest.json';
 export const OWNER_ALLOWLIST = Object.freeze([
     'index.html',
     'css/owner.css',
+    'css/deep_ocean.css',
     'js/owner_app.js',
     'js/client_config.js',
     'js/owner_public_config.js',
     'js/mfa_flow.js',
+    'js/private_api_config.js',
+    'js/private_session.js',
+    'js/private_shell.js',
     SDK_FILE,
 ]);
 

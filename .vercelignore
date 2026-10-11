@@ -1,0 +1,5 @@
+# Phase 25D1E3: the owner sign-in + private application is hosted ONLY on its own isolated origin (Cloudflare Pages owner project).
+# A legacy Vercel project rooted here must never ship it (a different path on the same host is not a separate origin).
+frontend/owner/
+deploy/
+tests/fixtures/

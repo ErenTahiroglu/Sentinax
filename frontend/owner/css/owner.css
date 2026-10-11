@@ -2,10 +2,11 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; }
 .owner-shell { max-width: 460px; margin: 0 auto; padding: 24px 16px; }
-h1 { font-size: 1.4rem; } .accent { color: var(--accent); }
+/* Generic element rules are scoped to the login shell so they cannot leak into the Deep Ocean application (deep_ocean.css). */
+.owner-shell h1 { font-size: 1.4rem; } .accent { color: var(--accent); }
 .lead, .note, .status { color: var(--muted); }
-section { background: var(--panel); border-radius: 12px; padding: 16px; margin: 16px 0; }
-label { display: block; margin: 12px 0 4px; } input, select { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--muted); background: var(--bg); color: var(--text); }
-button { margin-top: 12px; margin-right: 8px; padding: 10px 14px; border: 0; border-radius: 8px; background: var(--violet); color: #fff; cursor: pointer; }
+.owner-shell section { background: var(--panel); border-radius: 12px; padding: 16px; margin: 16px 0; }
+.owner-shell label { display: block; margin: 12px 0 4px; } .owner-shell input, .owner-shell select { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--muted); background: var(--bg); color: var(--text); }
+.owner-shell button { margin-top: 12px; margin-right: 8px; padding: 10px 14px; border: 0; border-radius: 8px; background: var(--violet); color: #fff; cursor: pointer; }
 .error { color: var(--danger); } .warn { color: #ffd166; }
 [hidden] { display: none !important; }

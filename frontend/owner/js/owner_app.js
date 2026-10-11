@@ -1,6 +1,9 @@
 import { createOwnerMfaFlow, STATES } from './mfa_flow.js';
 import { OWNER_AUTH_OPTIONS, SUPABASE_SDK_PATH, resolveOwnerClientConfig } from './client_config.js';
 import { OWNER_PUBLIC_CONFIG } from './owner_public_config.js';
+import { PRIVATE_API_CONFIG } from './private_api_config.js';
+import { createPrivateSession, resolvePrivateApi } from './private_session.js';
+import { createPrivateShell } from './private_shell.js';
 
 const MESSAGES = {
     SIGN_IN_FAILED: 'Giriş başarısız. Bilgileri kontrol edin.',
@@ -80,6 +83,20 @@ async function main() {
     const client = createClient(cfg.url, cfg.key, { auth: { ...OWNER_AUTH_OPTIONS } });
     const flow = createOwnerMfaFlow(client.auth);
     flow.onChange(render);
+
+    // Phase 25D1E3: the private application lives in THIS document and uses THIS client's memory-only session (no second client, no reload, no handoff).
+    // It opens only after the MFA flow is UNLOCKED and the server's owner authorization (GET /private/portfolio/summary) has accepted a fresh token.
+    const privateSession = createPrivateSession({
+        api: resolvePrivateApi(PRIVATE_API_CONFIG),
+        flow,
+        getSession: async () => (await client.auth.getSession()).data?.session ?? null,
+        fetchImpl: (url, init) => fetch(url, init),
+    });
+    createPrivateShell(document, privateSession, {
+        onSignOut: () => flow.signOut('local'),
+        onSignOutAll: () => flow.signOut('global'),
+    });
+    flow.onChange((view) => privateSession.onFlowChange(view));
 
     $('signin-form').addEventListener('submit', async (e) => {
         e.preventDefault();

@@ -77,10 +77,10 @@ describe('owner page is independent of the legacy SPA and of third-party code', 
     expect(csp).not.toMatch(/jsdelivr|unpkg|cdnjs|https:\/\/(?!.*supabase)/);
   });
 
-  it('CSP connect-src allows exactly the configured Supabase origin', async () => {
+  it('CSP connect-src allows exactly the own origin (same-origin private API path) and the configured Supabase origin', async () => {
     const { OWNER_PUBLIC_CONFIG } = await import('../../owner/js/owner_public_config.js');
     const csp = html.match(/Content-Security-Policy"\s+content="([^"]+)"/)[1];
-    expect(csp).toContain(`connect-src ${OWNER_PUBLIC_CONFIG.supabaseUrl};`);
+    expect(csp).toContain(`connect-src 'self' ${OWNER_PUBLIC_CONFIG.supabaseUrl};`);
   });
 });
 

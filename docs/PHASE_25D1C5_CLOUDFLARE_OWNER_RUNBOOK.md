@@ -5,6 +5,7 @@ Bu belge dağıtımı yetkilendirmez. Hiçbir bulut hesabında kaynak oluşturul
 `docs/PHASE_25D1C3_OWNER_DEPLOY_RUNBOOK.md` (Vercel) bu hedef için **geçersizdir**; `deploy/owner-bootstrap/` yalnızca eski paket olarak kalır (header eşitliği testle korunur).
 
 ## Paket
+> **25D1E3 güncellemesi:** çıktı artık 13 dosyadır (11 sahip dosyası + `404.html` + `_headers`); ayrıntı `PHASE_25D1E3_SAME_ORIGIN_OWNER_SESSION.md`. Aşağıdaki 9 dosyalı liste tarihseldir.
 - Üretim: `node scripts/owner_cloudflare_build.mjs` → `deploy/owner-cloudflare/dist` (git'te yok). Yalnızca node yerleşik modülleri; ek bağımlılık yok.
 - İçerik (tam allowlist, 9 dosya): 7 sahip dosyası (`owner/index.html`, `owner/css/owner.css`, `owner/js/{owner_app,client_config,owner_public_config,mfa_flow}.js`, `owner/vendor/supabase-js.2.117.1.mjs`) + 2 platform dosyası: `404.html`, `_headers`. `_redirects`, Functions, Worker, kök `index.html`, `sw.js`, legacy/Buffett/backend dosyası **yok**.
 - Sahip dosyaları `frontend/owner/` kaynağından bayt-bayt kopyalanır; SDK SHA-256 `fd67f317…51e7` (manifest + `owner_sdk_build.mjs --check`).

@@ -48,12 +48,5 @@ export default defineConfig({
       reuseExistingServer: !process.env.CI,
       timeout: 30 * 1000,
     },
-    {
-      // Phase 25D1E1: the offline private Deep Ocean shell (private_ui/ is in no deployment artifact; local smoke only).
-      command: `python3 -c "import functools, http.server as h; h.ThreadingHTTPServer.request_queue_size = 128; h.test(HandlerClass=functools.partial(h.SimpleHTTPRequestHandler, directory='private_ui'), ServerClass=h.ThreadingHTTPServer, port=3003, bind='127.0.0.1')"`,
-      url: 'http://127.0.0.1:3003',
-      reuseExistingServer: !process.env.CI,
-      timeout: 30 * 1000,
-    },
   ],
 });

@@ -1,0 +1,16 @@
+{
+  "contract_version": "private_portfolio_summary.v1",
+  "data_status": "UNAVAILABLE",
+  "reason_code": "NO_QUALIFIED_SOURCE_CONNECTED",
+  "reason": "Özel portföy verisi için doğrulanmış bir kaynak henüz bağlı değil; bu nedenle portföy değeri, pozisyon, maliyet, getiri ve risk gösterilmiyor.",
+  "source": null,
+  "as_of": null,
+  "generated_at": "2026-01-01T00:00:00+00:00",
+  "warnings": [
+    "Bu ekran karar desteğidir; yatırım tavsiyesi veya emir değildir.",
+    "Üretilmiş, varsayılan veya örnek finansal veri gösterilmez.",
+    "Kaynak bağlı olmadığı için boş görünen alanlar 'portföy boş' anlamına gelmez."
+  ],
+  "portfolios": [],
+  "positions": []
+}

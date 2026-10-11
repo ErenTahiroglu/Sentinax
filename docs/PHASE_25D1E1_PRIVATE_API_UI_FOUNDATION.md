@@ -14,6 +14,8 @@ Yanıt `private_portfolio_summary.v1` (pydantic, `extra=forbid`): `contract_vers
 Üretim kodunda yalnızca `build_summary()` vardır ve yalnızca UNAVAILABLE döner; router yalnızca fastapi/pydantic/datetime/`private_access` içe aktarır (ağ, DB, ortam değişkeni, service-role yok — AST ile test edilir). Test verisi üretim modülünde yoktur.
 Başlıklar: başarı ve 401/403/503 hatalarında `Cache-Control: private, no-store`, `Pragma: no-cache`, `Vary: Authorization`, `nosniff` (`NoCacheMiddleware` `/private` için genişletildi). Hata gövdeleri belirteç, sahip UUID, yapılandırma adı veya URL içermez.
 
+> **25D1E3 notu:** `private_ui/` kaldırıldı; kabuk `frontend/owner/` içinde sahip girişiyle aynı belgeye entegre edildi (bkz. `PHASE_25D1E3_SAME_ORIGIN_OWNER_SESSION.md`).
+
 ## 2. Arayüz kabuğu (`private_ui/`, çevrimdışı prototip)
 Statik HTML+CSS+JS (bağımlılık yok), Deep Ocean paleti (`frontend/styles.css` ve owner sayfasından). Altı alan: Genel Bakış, Yatırım Fırsatları, Portföy, Dağılım ve Senaryolar, Piyasa Araştırması, Risk ve Kanıt; her biri açık **UNAVAILABLE** durum kartı. Sade/Gelişmiş mod bellekte (depolama yok); gelişmiş mod sözleşme alanlarını belgelenmiş durum olarak gösterir (sunucu yanıtı değil). Sayı/yüzde/para tutarı, grafik, görsel, form, giriş, depolama, ağ, belirteç yok; sıkı CSP (`connect-src 'none'`).
 **Oturum-origin kuralı:** gerçek kimlikli özel arayüz ile sahip girişi AYNI yalıtılmış özel origin'de olmalıdır; genel Buffett ayrı origin. Owner SDK oturumu bellektedir. Bu fazda giriş→portföy geçişi, URL ile belirteç aktarımı, origin'ler arası el değiştirme, localStorage, postMessage **yok**; ayrı tasarlanıp test edilmeden eklenmeyecek.

@@ -3,7 +3,7 @@
 # Cloudflare Pages always adds Access-Control-Allow-Origin: * ; the owner project detaches it (last line of the rule).
 /*
   Cache-Control: no-store
-  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://zlggrmsolklhfgijcjnz.supabase.co; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://zlggrmsolklhfgijcjnz.supabase.co; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'
   Strict-Transport-Security: max-age=63072000; includeSubDomains
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff

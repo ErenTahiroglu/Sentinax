@@ -17,10 +17,20 @@ const REQUIRED_URLS = [
   '/owner', '/owner/', '/owner/index.html',
   '/owner/css/owner.css', '/owner/js/owner_app.js', '/owner/js/client_config.js',
   '/owner/js/owner_public_config.js', '/owner/js/mfa_flow.js', '/owner/vendor/supabase-js.2.117.1.mjs',
+  '/owner/css/deep_ocean.css', '/owner/js/private_api_config.js', '/owner/js/private_session.js', '/owner/js/private_shell.js',
 ];
 const EXPECTED_FILES = [
-  'owner/index.html', 'owner/css/owner.css', 'owner/js/owner_app.js', 'owner/js/client_config.js',
-  'owner/js/owner_public_config.js', 'owner/js/mfa_flow.js', 'owner/vendor/supabase-js.2.117.1.mjs',
+  'owner/index.html',
+  'owner/css/owner.css',
+  'owner/css/deep_ocean.css',
+  'owner/js/owner_app.js',
+  'owner/js/client_config.js',
+  'owner/js/owner_public_config.js',
+  'owner/js/mfa_flow.js',
+  'owner/js/private_api_config.js',
+  'owner/js/private_session.js',
+  'owner/js/private_shell.js',
+  'owner/vendor/supabase-js.2.117.1.mjs',
 ];
 
 let build, model, out, dist;
@@ -161,7 +171,7 @@ describe('deployment config (deploy/owner-bootstrap/vercel.json)', () => {
     expect(d['default-src']).toEqual(["'none'"]);
     expect(d['script-src']).toEqual(["'self'"]);
     expect(d['style-src']).toEqual(["'self'"]);
-    expect(d['connect-src']).toEqual([pub.supabaseUrl]);
+    expect(d['connect-src']).toEqual(["'self'", pub.supabaseUrl]);
     expect(d['frame-ancestors']).toEqual(["'none'"]);
     for (const k of ['base-uri', 'form-action', 'object-src']) expect(d[k]).toEqual(["'none'"]);
     const meta = fs.readFileSync(path.join(ownerSrc, 'index.html'), 'utf8').match(/Content-Security-Policy"\s+content="([^"]+)"/)[1];
@@ -181,7 +191,7 @@ describe('build fails closed', () => {
     const o = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-out-'));
     return build.buildOwnerDeploy({ outDir: path.join(o, 'dist'), sourceDir: src }).then(() => 'ok', (e) => String(e.message));
   };
-  for (const missing of ['index.html', 'css/owner.css', 'js/owner_app.js', 'js/client_config.js', 'js/owner_public_config.js', 'js/mfa_flow.js', 'vendor/supabase-js.2.117.1.mjs']) {
+  for (const missing of ['index.html', 'css/owner.css', 'js/owner_app.js', 'js/client_config.js', 'js/owner_public_config.js', 'js/mfa_flow.js', 'css/deep_ocean.css', 'js/private_api_config.js', 'js/private_session.js', 'js/private_shell.js', 'vendor/supabase-js.2.117.1.mjs']) {
     it(`missing ${missing} fails the build`, async () => {
       const src = copyOwner();
       fs.rmSync(path.join(src, missing));

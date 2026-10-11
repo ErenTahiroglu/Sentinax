@@ -1,0 +1,46 @@
+/* Deep Ocean (navy / blue / turquoise / restrained purple) for the private application. Everything is scoped under .app so it cannot collide with the login page. */
+.app {
+    --d-bg: #0b1120; --d-bg-2: #0e1830; --d-panel: #12254a; --d-panel-2: #172e5c; --d-line: #26417a;
+    --d-text: #f1f5f9; --d-muted: #9db2d6; --d-blue: #0ea5e9; --d-turquoise: #38d6c8; --d-violet: #8b6cf6;
+    --d-unavail: #f59e0b; --d-empty: #0ea5e9; --d-avail: #10b981; --d-radius: 12px;
+    min-height: 100vh; color: var(--d-text); background: linear-gradient(180deg, var(--d-bg) 0%, var(--d-bg-2) 100%);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif; line-height: 1.5;
+}
+body.app-active { background: #0b1120; }
+.app .skip { position: absolute; left: -999px; } .app .skip:focus { left: 8px; top: 8px; background: var(--d-panel); padding: 8px 12px; z-index: 10; }
+.app .topbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 12px 20px; border-bottom: 1px solid var(--d-line); background: rgba(8, 14, 28, .85); }
+.app .brand { font-weight: 700; font-size: 1.15rem; letter-spacing: .02em; } .app .brand-sub { color: var(--d-turquoise); font-weight: 600; }
+.app .proto-banner { flex: 1 1 280px; margin: 0; padding: 6px 12px; border: 1px dashed var(--d-violet); border-radius: 8px; color: var(--d-muted); font-size: .85rem; }
+.app .mode { display: inline-flex; border: 1px solid var(--d-line); border-radius: 999px; overflow: hidden; }
+.app .mode-btn, .app .out-btn { border: 0; background: transparent; color: var(--d-muted); padding: 6px 16px; cursor: pointer; font: inherit; margin: 0; }
+.app .mode-btn[aria-pressed="true"] { background: var(--d-violet); color: #fff; }
+.app .out-btn { border: 1px solid var(--d-line); border-radius: 999px; }
+.app .out-btn:hover { color: var(--d-text); border-color: var(--d-turquoise); }
+.app .layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 24px; max-width: 1280px; margin: 0 auto; padding: 24px 20px; }
+.app .sidenav { display: flex; flex-direction: column; gap: 6px; align-self: start; position: sticky; top: 16px; }
+.app .nav-btn { text-align: left; border: 1px solid transparent; background: transparent; color: var(--d-muted); padding: 10px 14px; border-radius: 10px; cursor: pointer; font: inherit; margin: 0; }
+.app .nav-btn:hover { background: var(--d-panel); color: var(--d-text); }
+.app .nav-btn[aria-current="page"] { background: var(--d-panel-2); color: var(--d-text); border-color: var(--d-turquoise); }
+.app .content { min-width: 0; }
+.app .panel { background: var(--d-panel); border: 1px solid var(--d-line); border-radius: var(--d-radius); padding: 20px 24px; margin: 0 0 20px; }
+.app .panel[hidden] { display: none !important; }
+.app h1 { margin: 0 0 8px; font-size: 1.5rem; } .app h2 { font-size: 1.05rem; margin: 24px 0 8px; color: var(--d-turquoise); }
+.app .lead, .app .note { color: var(--d-muted); }
+.app .state-card { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 16px 0; padding: 14px 16px; border-radius: var(--d-radius); border: 1px solid var(--d-line); background: rgba(11, 17, 32, .55); }
+.app .state-card p { margin: 0; flex: 1 1 260px; }
+.app .state-unavailable { border-left: 4px solid var(--d-unavail); }
+.app .chip { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: .75rem; font-weight: 700; letter-spacing: .06em; border: 1px solid currentColor; }
+.app .chip-unavailable { color: var(--d-unavail); } .app .chip-empty { color: var(--d-empty); } .app .chip-available { color: var(--d-avail); }
+.app .legend { display: grid; grid-template-columns: max-content 1fr; gap: 10px 16px; margin: 0; } .app .legend dt { margin: 0; } .app .legend dd { margin: 0; color: var(--d-muted); }
+.app .prov { border-collapse: collapse; width: 100%; max-width: 640px; } .app .prov th, .app .prov td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--d-line); font-family: ui-monospace, Menlo, monospace; font-size: .85rem; word-break: break-word; }
+.app .prov th { color: var(--d-muted); font-weight: 500; }
+.app .warn-list { margin: 8px 0 0; padding-left: 20px; color: var(--d-muted); }
+.app[data-mode="simple"] .adv { display: none; }
+.app .foot { text-align: center; color: var(--d-muted); font-size: .8rem; padding: 16px; border-top: 1px solid var(--d-line); }
+@media (max-width: 880px) {
+    .app .layout { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 12px; }
+    .app .sidenav { position: static; flex-direction: row; flex-wrap: wrap; }
+    .app .nav-btn { flex: 1 1 calc(50% - 6px); text-align: center; border-color: var(--d-line); }
+    .app .panel { padding: 16px; } .app .topbar { padding: 10px 12px; }
+}
+@media (prefers-reduced-motion: no-preference) { .app .nav-btn, .app .mode-btn { transition: background-color .12s ease; } }
