@@ -22,7 +22,7 @@
 }
 
 body {
-    font-family: 'Outfit', sans-serif;
+    font-family: 'Outfit', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
     background-color: var(--bg-base);
     color: var(--text-primary);
     line-height: 1.5;
@@ -68,7 +68,7 @@ body {
     border: none;
     font-size: 1rem;
     font-weight: 600;
-    font-family: 'Outfit', sans-serif;
+    font-family: 'Outfit', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
     cursor: pointer;
     padding: 0.5rem 1rem;
     border-radius: 6px;
@@ -421,3 +421,15 @@ body {
     #main-content { padding: 1.25rem 1rem; }
     .portfolio-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Phase 25D1E5: static classes replacing the inline styles of the former template markup (no inline style attributes remain). */
+.invalid-evidence { border: 1px dashed var(--danger); opacity: 0.85; }
+.invalid-note { color: var(--text-secondary); margin: 0.5rem 0 0; }
+.score-meta { margin-top: 10px; }
+.score-meta-head { display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 5px; }
+.score-item.dcf-total { margin-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.1); padding-top: 10px; }
+.accent-text { color: var(--accent); }
+.accent-text.strong { font-weight: bold; }
+.veto-line { font-weight: 600; }
+.veto-pass { color: var(--success); }
+.veto-fail { color: var(--danger); }

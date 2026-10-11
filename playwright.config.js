@@ -48,5 +48,13 @@ export default defineConfig({
       reuseExistingServer: !process.env.CI,
       timeout: 30 * 1000,
     },
+    {
+      // Phase 25D1E5: the built PUBLIC Buffett artifact with its _headers/404.html model (local smoke only; not Cloudflare).
+      command: 'node scripts/buffett_harness_serve.mjs artifact',
+      url: 'http://127.0.0.1:3007/',
+      env: { BUFFETT_HARNESS_PORT: '3007' },
+      reuseExistingServer: !process.env.CI,
+      timeout: 30 * 1000,
+    },
   ],
 });

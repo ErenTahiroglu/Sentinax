@@ -18,11 +18,14 @@ const VITEST_FLOORS = {
     'owner_deploy_artifact.test.js': 44, // Phase 25D1C3: isolated deployment artifact, routing, headers, build fail-closed, gitleaks scope
     'owner_private_session.test.js': 66, // Phase 25D1E3: private-session lifecycle (server authorization gate, stale-result suppression, identity change, revalidation)
     'owner_integrated_app_static.test.js': 24, // Phase 25D1E3: integrated document contract (one client, no storage/handoff, exact CSP, honest states, deployment isolation)
+    'buffett_render_safety.test.js': 96, // Phase 25D1E5: public Buffett renderer: adversarial text stays text, malformed evidence fails closed, no HTML sinks
+    'buffett_cloudflare_artifact.test.js': 87, // Phase 25D1E5: deterministic public artifact (exact allowlist, headers, 404/no-SPA-fallback, build-time owner origin)
     'buffett_owner_entry.test.js': 58, // Phase 25D1E4: public "Sahip Girişi" entry (pinned-origin validation, no input/token, disabled when unconfigured)
     'owner_cloudflare_artifact.test.js': 33, // Phase 25D1C5: Cloudflare Pages package (artifact, 404 vs SPA fallback, _headers, fail-closed build, no CF credentials in CI)
 };
 const PLAYWRIGHT_FLOORS = [
     { file: 'owner_bootstrap.spec.js', projects: ['chromium', 'Mobile Chrome'], perProject: 6 },
+    { file: 'buffett_public.spec.js', projects: ['chromium', 'Mobile Chrome'], perProject: 13 }, // Phase 25D1E5: public artifact + safe rendering of synthetic MOCK evidence, both CSP and no-CSP pages
     { file: 'owner_integrated_app.spec.js', projects: ['chromium', 'Mobile Chrome'], perProject: 14 }, // Phase 25D1E3: sign-in -> MFA -> server authorization -> Deep Ocean -> sign-out, failure modes, races
     { file: 'owner_deploy_artifact.spec.js', projects: ['chromium', 'Mobile Chrome'], perProject: 10 }, // 5 tests x (vercel legacy package + cloudflare package)
 ];
@@ -139,6 +142,25 @@ if (!ign('.vercelignore').includes('frontend/owner/') || !ign('frontend/.verceli
     const buf = fs.readFileSync(path.join(REPO, 'frontend/buffett/index.html'), 'utf8');
     if (/<(form|input)\b|supabase|createClient/i.test(buf)) fail('public Buffett page must not contain a form, input or authentication code');
 }
+
+// 4e. Phase 25D1E5: the PUBLIC Buffett artifact. It must build, contain exactly the explicit allowlist (never an owner/SDK/private/legacy file), and the public sources must
+// stay free of HTML-injection sinks even if a test file were weakened. The artifact server for the browser tests must stay configured.
+try {
+    execFileSync('node', ['scripts/buffett_cloudflare_build.mjs'], { cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const bDist = path.join(REPO, 'deploy/buffett-cloudflare/dist');
+    const listB = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? listB(path.join(d, e.name)) : [path.relative(bDist, path.join(d, e.name))]));
+    const bExpected = ['404.html', '_headers', 'css/styles.css', 'index.html', 'js/api.js', 'js/app.js', 'js/owner_entry.js', 'js/owner_entry_config.js', 'js/ui.js'];
+    const bActual = listB(bDist).sort();
+    if (JSON.stringify(bActual) !== JSON.stringify(bExpected)) fail(`public Buffett artifact files differ from the allowlist: ${JSON.stringify(bActual)}`);
+} catch (e) {
+    fail(`public Buffett artifact build failed (${String(e.stderr || e.message).trim()})`);
+}
+for (const f of ['ui.js', 'api.js', 'app.js', 'owner_entry.js', 'owner_entry_config.js']) {
+    const src = fs.readFileSync(path.join(REPO, 'frontend/buffett/js', f), 'utf8');
+    if (/\binnerHTML\b|\bouterHTML\b|insertAdjacentHTML|document\.write|createContextualFragment|\beval\(|new Function/.test(src)) fail(`frontend/buffett/js/${f} contains an HTML-injection or code-execution sink`);
+}
+if (!pwCfgB().includes('buffett_harness_serve.mjs artifact') || !pwCfgB().includes('127.0.0.1:3007')) fail('playwright.config.js does not serve the built public Buffett artifact');
+function pwCfgB() { return fs.readFileSync(path.join(REPO, 'playwright.config.js'), 'utf8'); }
 
 // 5. Vendored SDK equals a fresh deterministic build of the lockfile version.
 try {

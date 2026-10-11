@@ -1,0 +1,13 @@
+# Phase 25D1E5: Cloudflare Pages headers for the PUBLIC Buffett project. Single catch-all rule (no precedence/merge ambiguity); no indented comments.
+# Executable code is limited to the own origin; connections are limited to the own origin (the future /buffett/* route is a separate reviewed gate).
+# Pages always adds Access-Control-Allow-Origin: * ; the last line of the rule detaches it. Local models of these headers are local evidence only.
+/*
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'
+  Strict-Transport-Security: max-age=63072000; includeSubDomains
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Resource-Policy: same-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  ! Access-Control-Allow-Origin
