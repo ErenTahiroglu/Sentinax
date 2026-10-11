@@ -9,6 +9,7 @@
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
     "test:e2e": "playwright test",
+    "test:connected": "playwright test -c playwright.connected.config.js",
     "test:screenshot": "node frontend/tests/ui/screenshot_bot.js",
     "lint": "npm run lint:js && npm run lint:py",
     "lint:js": "eslint \"frontend/js/**/*.js\"",

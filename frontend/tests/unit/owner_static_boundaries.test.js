@@ -57,7 +57,10 @@ describe('static boundaries', () => {
     walk(dir);
     for (const f of files) {
       const src = fs.readFileSync(f, 'utf8').toLowerCase();
+      // Phase 25D1E4: the only approved references to the owner login path are the pinned entry config and its validator; nothing else may mention it.
+      const approvedEntryConfig = f.endsWith(path.join('js', 'owner_entry_config.js')) || f.endsWith(path.join('js', 'owner_entry.js'));
       for (const t of ['supabase', 'owner/', 'aalgate', 'authorization', 'access_token', 'mfa']) {
+        if (approvedEntryConfig && t === 'owner/') continue;
         expect(src, `${f} must not reference ${t}`).not.toContain(t);
       }
     }

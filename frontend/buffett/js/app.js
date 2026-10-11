@@ -1,4 +1,13 @@
 document.addEventListener('DOMContentLoaded', async () => {
+    // "Sahip Girişi": a plain link to the separate, pinned owner origin. Disabled (no href) unless the pinned destination validates.
+    const ownerLink = document.getElementById('owner-entry');
+    const ownerTarget = window.ownerEntry.resolve(window.OWNER_ENTRY_CONFIG, window.location);
+    if (ownerLink && ownerTarget) {
+        ownerLink.setAttribute('href', ownerTarget);
+        ownerLink.removeAttribute('aria-disabled');
+        ownerLink.title = 'Yalıtılmış sahip giriş sayfası';
+    }
+
     // Tab Navigation
     const btnDashboard = document.getElementById('btn-dashboard');
     const btnHistory = document.getElementById('btn-history');

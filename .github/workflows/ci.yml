@@ -134,6 +134,36 @@ jobs:
         print(f"privileged access containment: {m.group(1)} passed")
         PY
 
+    # Phase 25D1E4: CONNECTED offline journey PUBLIC BUFFETT -> OWNER LOGIN -> PRIVATE SENTINAX. Chromium + Mobile Chrome run the public Buffett page and the built owner
+    # artifact; their same-origin /private/* and /buffett/* calls reach the REAL FastAPI app (real JWT verifier with a synthetic ES256 JWKS, real require_private_owner,
+    # synthetic owner) started by backend/tests/e2e_harness/real_api_server.py. This job is used because it is the only one with the Python dependencies. No Supabase, Oracle
+    # or Cloudflare is contacted; no credentials exist. Retries are off; any skip or fewer than 28 passes fails the step.
+    - name: Setup Node.js (connected owner journey)
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: package-lock.json
+
+    - name: Install Node dependencies and Chromium (connected owner journey)
+      run: |
+        npm ci
+        npx playwright install --with-deps chromium
+
+    - name: Phase 25D1E4 connected browser to real FastAPI owner journey
+      env:
+        SENTINAX_HARNESS_PYTHON: python
+      run: |
+        npx playwright test -c playwright.connected.config.js 2>&1 | tee connected.log
+        if grep -Eiq "skipped|did not run|flaky|interrupted" connected.log; then echo "connected tests were skipped or flaky"; exit 1; fi
+        python - <<'PY'
+        import re, sys
+        m = re.search(r"(\d+) passed", open("connected.log").read())
+        if not m or int(m.group(1)) < 28:
+            sys.exit(f"connected owner journey: expected >= 28 passed, got {m.group(1) if m else 'none'}")
+        print(f"connected owner journey: {m.group(1)} passed")
+        PY
+
     - name: No-crypto invariant
       run: |
         python -m pytest \

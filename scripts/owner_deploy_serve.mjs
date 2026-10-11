@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { proxyToTestApi } from './test_api_proxy.mjs';
 import { buildOwnerDeploy, DEFAULT_OUT } from './owner_deploy_build.mjs';
 import { buildOwnerCloudflare, DEFAULT_OUT as CF_OUT } from './owner_cloudflare_build.mjs';
 import * as vercel from './owner_deploy_model.mjs';
@@ -32,8 +33,12 @@ if (target === 'cloudflare') {
     headers = (p) => vercel.headersFor(config, p);
     contentType = vercel.contentType;
 }
+// Optional connected-test mode (Phase 25D1E4): SENTINAX_TEST_API_ORIGIN makes this static server forward `/private/*` (GET/HEAD only) to a loopback API, which models the
+// future Cloudflare route to the backend. Unset (the default), `/private/*` is a plain 404 like any other unknown path.
+const testApi = target === 'cloudflare' ? process.env.SENTINAX_TEST_API_ORIGIN : undefined;
 http.createServer((req, res) => {
     const pathname = new URL(req.url, 'http://x').pathname;
+    if (testApi && pathname.startsWith('/private/')) return proxyToTestApi(req, res, testApi);
     const r = resolve(pathname);
     const h = headers(pathname);
     if (r.status === 308) { res.writeHead(308, { ...h, location: r.location }); return res.end(); }

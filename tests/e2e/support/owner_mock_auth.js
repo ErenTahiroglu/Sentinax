@@ -6,7 +6,9 @@ export const CODE = '123456';
 export const SECRET = 'JBSWY3DPEHPK3PXP';
 const b64u = (o) => Buffer.from(typeof o === 'string' ? o : JSON.stringify(o)).toString('base64url');
 
-export function authServer({ uid = OWNER_UID, verifiedFactor = false } = {}) {
+// `mint(aal, uid)` (optional, async) supplies the access token instead of the built-in unsigned one: the connected tests use it to obtain tokens SIGNED by the
+// test harness so that the real FastAPI verifier can judge them. Without it the behaviour is exactly the previous synthetic one.
+export function authServer({ uid = OWNER_UID, verifiedFactor = false, mint = null } = {}) {
     const s = { factors: verifiedFactor ? [{ id: 'fac-pre', friendly_name: 'birincil', factor_type: 'totp', status: 'verified', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' }] : [], n: 0, tokens: [] };
     const user = () => ({ id: uid, aud: 'authenticated', role: 'authenticated', email: 'owner@example.invalid', created_at: '2026-01-01T00:00:00Z', app_metadata: {}, user_metadata: {}, factors: s.factors.map((f) => ({ ...f })) });
     const jwt = (aal) => {
@@ -16,10 +18,10 @@ export function authServer({ uid = OWNER_UID, verifiedFactor = false } = {}) {
         s.tokens.push(t);
         return t;
     };
-    const session = (aal) => ({ access_token: jwt(aal), token_type: 'bearer', expires_in: 3600, expires_at: Math.floor(Date.now() / 1000) + 3600, refresh_token: `r-${++s.n}`, user: user() });
-    s.handle = (method, path, body) => {
+    const session = async (aal) => ({ access_token: mint ? await mint(aal, uid) : jwt(aal), token_type: 'bearer', expires_in: 3600, expires_at: Math.floor(Date.now() / 1000) + 3600, refresh_token: `r-${++s.n}`, user: user() });
+    s.handle = async (method, path, body) => {
         const p = path.replace('/auth/v1', '');
-        if (p === '/token') return body.password === 'pw-correct' ? [200, session('aal1')] : [400, { code: 400, error_code: 'invalid_credentials', msg: 'Invalid login credentials' }];
+        if (p === '/token') return body.password === 'pw-correct' ? [200, await session('aal1')] : [400, { code: 400, error_code: 'invalid_credentials', msg: 'Invalid login credentials' }];
         if (p === '/user') return [200, user()];
         if (p === '/logout') return [204, null];
         if (p === '/factors' && method === 'POST') {
@@ -33,7 +35,7 @@ export function authServer({ uid = OWNER_UID, verifiedFactor = false } = {}) {
         if (m) {
             if (body.code !== CODE) return [400, { code: 400, error_code: 'mfa_verification_failed', msg: 'Invalid TOTP code entered' }];
             s.factors.find((f) => f.id === m[1]).status = 'verified';
-            return [200, session('aal2')];
+            return [200, await session('aal2')];
         }
         return [404, { code: 404, msg: 'not found' }];
     };
@@ -47,7 +49,7 @@ export async function wire(page, opts) {
         const req = route.request();
         if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
         const body = req.postData() ? JSON.parse(req.postData()) : {};
-        const [status, payload] = server.handle(req.method(), new URL(req.url()).pathname, body);
+        const [status, payload] = await server.handle(req.method(), new URL(req.url()).pathname, body);
         return route.fulfill({ status, headers: { ...cors, 'content-type': 'application/json' }, body: payload === null ? '' : JSON.stringify(payload) });
     });
     const logs = [];

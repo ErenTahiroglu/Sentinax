@@ -18,6 +18,7 @@ const VITEST_FLOORS = {
     'owner_deploy_artifact.test.js': 44, // Phase 25D1C3: isolated deployment artifact, routing, headers, build fail-closed, gitleaks scope
     'owner_private_session.test.js': 66, // Phase 25D1E3: private-session lifecycle (server authorization gate, stale-result suppression, identity change, revalidation)
     'owner_integrated_app_static.test.js': 24, // Phase 25D1E3: integrated document contract (one client, no storage/handoff, exact CSP, honest states, deployment isolation)
+    'buffett_owner_entry.test.js': 58, // Phase 25D1E4: public "Sahip Girişi" entry (pinned-origin validation, no input/token, disabled when unconfigured)
     'owner_cloudflare_artifact.test.js': 33, // Phase 25D1C5: Cloudflare Pages package (artifact, 404 vs SPA fallback, _headers, fail-closed build, no CF credentials in CI)
 };
 const PLAYWRIGHT_FLOORS = [
@@ -59,7 +60,7 @@ for (const { file, projects, perProject } of PLAYWRIGHT_FLOORS) {
 }
 
 // 3. No skipped / focused / TODO owner tests, and no config that excludes them.
-const ownerTestFiles = [...Object.keys(VITEST_FLOORS).map((f) => `frontend/tests/unit/${f}`), ...PLAYWRIGHT_FLOORS.map((f) => `tests/e2e/${f.file}`)];
+const ownerTestFiles = ['tests/connected/owner_connected_flow.spec.js', ...Object.keys(VITEST_FLOORS).map((f) => `frontend/tests/unit/${f}`), ...PLAYWRIGHT_FLOORS.map((f) => `tests/e2e/${f.file}`)];
 for (const rel of ownerTestFiles) {
     const src = fs.readFileSync(path.join(REPO, rel), 'utf8');
     if (/\b(?:it|test|describe)\.(?:skip|only|todo|fixme|skipIf|runIf)\b|\btest\.fail\b/.test(src)) fail(`${rel}: contains skip/only/todo/fixme/conditional test markers`);
@@ -114,6 +115,29 @@ if (!ign('.vercelignore').includes('frontend/owner/') || !ign('frontend/.verceli
         const src = fs.readFileSync(path.join(REPO, 'frontend/owner/js', f), 'utf8');
         if (/localStorage|sessionStorage|indexedDB|document\.cookie|postMessage|BroadcastChannel|createClient|\bfetch\(/.test(src)) fail(`${f} uses storage, messaging, the SDK or the network directly`);
     }
+}
+
+// 4d. Phase 25D1E4: the CONNECTED suite (real browser -> real FastAPI) must be discovered in both projects (it runs in the backend job, which has Python), its config must keep
+// retries off and start the real-API harness, the harness must stay out of production code, and the public entry must not have become a second login.
+{
+    const connected = JSON.parse(run(['playwright', 'test', '-c', 'playwright.connected.config.js', '--list', '--reporter=json']));
+    const cc = {};
+    const walkC = (suite) => {
+        for (const spec of suite.specs || []) for (const t of spec.tests || []) cc[t.projectName] = (cc[t.projectName] || 0) + 1;
+        for (const sub of suite.suites || []) walkC(sub);
+    };
+    for (const sub of connected.suites || []) walkC(sub);
+    for (const p of ['chromium', 'Mobile Chrome']) if ((cc[p] || 0) < 14) fail(`connected suite: ${cc[p] || 0} tests discovered in project ${p}, expected at least 14`);
+    const cfgC = fs.readFileSync(path.join(REPO, 'playwright.connected.config.js'), 'utf8');
+    if (!/retries:\s*0/.test(cfgC) || !cfgC.includes('backend.tests.e2e_harness.real_api_server') || !cfgC.includes('SENTINAX_TEST_API_ORIGIN')) fail('playwright.connected.config.js must keep retries:0 and start the real FastAPI harness with the forwarder');
+    const specC = fs.readFileSync(path.join(REPO, 'tests/connected/owner_connected_flow.spec.js'), 'utf8');
+    if (!specC.includes('x-correlation-id') || !specC.includes("/private/portfolio/summary") || !/foreign user/.test(specC)) fail('connected spec no longer asserts that the real backend answered (correlation id) / the foreign-user case');
+    const walkPy = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.name === 'tests' || e.name === '__pycache__' ? [] : e.isDirectory() ? walkPy(path.join(d, e.name)) : [path.join(d, e.name)]));
+    for (const f of walkPy(path.join(REPO, 'backend')).filter((x) => x.endsWith('.py'))) {
+        if (/e2e_harness|__harness|SENTINAX_HARNESS|SENTINAX_TEST_API_ORIGIN/.test(fs.readFileSync(f, 'utf8'))) fail(`${path.relative(REPO, f)}: production backend code must not reference the test harness`);
+    }
+    const buf = fs.readFileSync(path.join(REPO, 'frontend/buffett/index.html'), 'utf8');
+    if (/<(form|input)\b|supabase|createClient/i.test(buf)) fail('public Buffett page must not contain a form, input or authentication code');
 }
 
 // 5. Vendored SDK equals a fresh deterministic build of the lockfile version.

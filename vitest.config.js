@@ -12,7 +12,8 @@ export default defineConfig({
       '**/cypress/**',
       '**/.{idea,git,cache,output,temp}/**',
       'frontend-vanilla-backup/**',
-      'tests/e2e/**'
+      'tests/e2e/**',
+      'tests/connected/**' // Playwright connected suite (playwright.connected.config.js), not a Vitest file
     ],
     coverage: {
       provider: 'v8',
